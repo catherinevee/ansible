@@ -1,0 +1,485 @@
+---
+# Advanced network compliance and security audit playbook
+- name: Network Compliance and Security Audit
+  hosts: all
+  gather_facts: false
+  vars:
+    audit_timestamp: "{{ ansible_date_time.iso8601 }}"
+    compliance_standards: "{{ standards | default(['CIS', 'NIST', 'SOX', 'PCI']) }}"
+    audit_scope: "{{ scope | default('full') }}" # full, security, compliance, performance
+
+  tasks:
+  - name: Initialize compliance audit
+    ansible.builtin.debug:
+      msg:
+      - "=== Network Compliance and Security Audit ==="
+      - "Audit Scope: {{ audit_scope | upper }}"
+      - "Standards: {{ compliance_standards | join(', ') }}"
+      - "Timestamp: {{ audit_timestamp }}"
+      - "Target: {{ inventory_hostname }}"
+      - "==========================================="
+
+# Device Information Collection
+- name: Collect Device Baseline Information
+  hosts: all
+  gather_facts: false
+
+  tasks:
+  - name: Gather Cisco device information
+    cisco.ios.ios_command:
+      commands:
+      - show version
+      - show inventory
+      - show running-config | section hostname
+      - show ip interface brief
+      - show users
+      - show privilege
+      - show clock
+      - show ntp status
+    when: ansible_network_os == "ios"
+    register: cisco_device_info
+    # Collect comprehensive Cisco device information
+
+  - name: Gather Arista device information
+    arista.eos.eos_command:
+      commands:
+      - show version
+      - show inventory
+      - show hostname
+      - show ip interface brief
+      - show users
+      - show clock
+      - show ntp status
+    when: ansible_network_os == "eos"
+    register: arista_device_info
+    # Collect Arista device information
+
+  - name: Gather Juniper device information
+    junipernetworks.junos.junos_command:
+      commands:
+      - show version
+      - show chassis hardware
+      - show system information
+      - show interfaces terse
+      - show system users
+      - show system ntp status
+    when: ansible_network_os == "junos"
+    register: juniper_device_info
+    # Collect Juniper device information
+
+  - name: Gather Palo Alto system information
+    paloaltonetworks.panos.panos_op:
+      provider: "{{ panos_provider }}"
+      cmd: "{{ item }}"
+    loop:
+    - "show system info"
+    - "show admins"
+    - "show clock"
+    - "show ntp"
+    when: "'palo_alto' in group_names"
+    register: panos_system_info
+    # Collect PAN-OS system information
+
+    # Security Configuration Audit
+- name: Security Configuration Compliance Check
+  hosts: cisco_devices
+  gather_facts: false
+  when: audit_scope in ['full', 'security', 'compliance']
+
+  tasks:
+  - name: Check password policy compliance
+    cisco.ios.ios_command:
+      commands:
+      - show running-config | section service password
+      - show running-config | section enable secret
+      - show running-config | section username
+      - show running-config | section login
+    register: password_policy_check
+    # Audit password policies
+
+  - name: Verify AAA configuration
+    cisco.ios.ios_command:
+      commands:
+      - show running-config | section aaa
+      - show aaa servers
+      - show aaa sessions
+    register: aaa_config_check
+    # Verify AAA configuration compliance
+
+  - name: Check SSH configuration
+    cisco.ios.ios_command:
+      commands:
+      - show running-config | section ssh
+      - show ip ssh
+      - show running-config | section transport input
+    register: ssh_config_check
+    # Audit SSH configuration
+
+  - name: Verify SNMP security
+    cisco.ios.ios_command:
+      commands:
+      - show running-config | section snmp-server
+      - show snmp
+      - show snmp community
+    register: snmp_security_check
+    # Check SNMP security configuration
+
+  - name: Check console and VTY security
+    cisco.ios.ios_command:
+      commands:
+      - show running-config | section line con
+      - show running-config | section line vty
+      - show line
+    register: line_security_check
+    # Audit console and VTY line security
+
+  - name: Verify logging configuration
+    cisco.ios.ios_command:
+      commands:
+      - show running-config | section logging
+      - show logging
+    register: logging_config_check
+    # Check logging configuration compliance
+
+  - name: Check NTP security
+    cisco.ios.ios_command:
+      commands:
+      - show running-config | section ntp
+      - show ntp status
+      - show ntp associations
+    register: ntp_security_check
+    # Verify NTP configuration and synchronization
+
+    # Access Control List Audit
+- name: ACL Compliance and Security Audit
+  hosts: cisco_devices
+  gather_facts: false
+  when: audit_scope in ['full', 'security']
+
+  tasks:
+  - name: Audit standard ACLs
+    cisco.ios.ios_command:
+      commands:
+      - show access-lists | section Standard
+      - show running-config | section access-list
+    register: standard_acl_audit
+    # Audit standard access control lists
+
+  - name: Audit extended ACLs
+    cisco.ios.ios_command:
+      commands:
+      - show access-lists | section Extended
+      - show ip access-lists
+    register: extended_acl_audit
+    # Audit extended access control lists
+
+  - name: Check ACL application on interfaces
+    cisco.ios.ios_command:
+      commands:
+      - show ip interface | include access list
+      - show running-config | section interface
+    register: acl_interface_audit
+    # Verify ACL application on interfaces
+
+  - name: Analyze ACL hit counts
+    cisco.ios.ios_command:
+      commands:
+      - show access-lists | include matches
+    register: acl_hit_analysis
+    # Analyze ACL rule usage
+
+    # Network Protocol Security Audit
+- name: Network Protocol Security Compliance
+  hosts: cisco_devices
+  gather_facts: false
+  when: audit_scope in ['full', 'security', 'compliance']
+
+  tasks:
+  - name: Audit OSPF security
+    cisco.ios.ios_command:
+      commands:
+      - show running-config | section router ospf
+      - show ip ospf interface
+      - show ip ospf neighbor detail
+    register: ospf_security_audit
+    when: "'ospf' in enabled_protocols | default([])"
+    # Audit OSPF security configuration
+
+  - name: Audit BGP security
+    cisco.ios.ios_command:
+      commands:
+      - show running-config | section router bgp
+      - show ip bgp summary
+      - show ip bgp neighbors
+    register: bgp_security_audit
+    when: "'bgp' in enabled_protocols | default([])"
+    # Audit BGP security configuration
+
+  - name: Check HSRP/VRRP security
+    cisco.ios.ios_command:
+      commands:
+      - show running-config | section standby
+      - show standby brief
+      - show vrrp brief
+    register: fhrp_security_audit
+    # Audit first-hop redundancy protocol security
+
+  - name: Verify STP security features
+    cisco.ios.ios_command:
+      commands:
+      - show spanning-tree summary
+      - show running-config | section spanning-tree
+      - show spanning-tree interface
+    register: stp_security_audit
+    # Audit spanning tree security features
+
+    # Interface and VLAN Security Audit
+- name: Interface and VLAN Security Compliance
+  hosts: cisco_devices
+  gather_facts: false
+  when: audit_scope in ['full', 'security']
+
+  tasks:
+  - name: Audit interface security features
+    cisco.ios.ios_command:
+      commands:
+      - show interfaces status
+      - show port-security
+      - show interfaces switchport
+      - show running-config | section interface
+    register: interface_security_audit
+    # Audit interface security configurations
+
+  - name: Check VLAN security
+    cisco.ios.ios_command:
+      commands:
+      - show vlan brief
+      - show running-config | section vlan
+      - show vtp status
+    register: vlan_security_audit
+    # Audit VLAN security configurations
+
+  - name: Verify trunk security
+    cisco.ios.ios_command:
+      commands:
+      - show interfaces trunk
+      - show running-config | include switchport trunk
+    register: trunk_security_audit
+    # Audit trunk port security
+
+    # Performance and Resource Audit
+- name: Network Performance and Resource Audit
+  hosts: all
+  gather_facts: false
+  when: audit_scope in ['full', 'performance']
+
+  tasks:
+  - name: Check CPU and memory utilization
+    cisco.ios.ios_command:
+      commands:
+      - show processes cpu sorted
+      - show memory summary
+      - show version | include uptime
+    when: ansible_network_os == "ios"
+    register: cisco_resource_audit
+    # Check Cisco resource utilization
+
+  - name: Monitor interface utilization
+    cisco.ios.ios_command:
+      commands:
+      - show interfaces | include rate
+      - show interfaces summary
+    when: ansible_network_os == "ios"
+    register: cisco_interface_utilization
+    # Monitor interface performance
+
+  - name: Check buffer and queue statistics
+    cisco.ios.ios_command:
+      commands:
+      - show buffers
+      - show interfaces | include queue
+    when: ansible_network_os == "ios"
+    register: cisco_buffer_stats
+    # Check buffer utilization
+
+    # Compliance Analysis and Scoring
+- name: Analyze Compliance Results
+  hosts: all
+  gather_facts: false
+
+  tasks:
+  - name: Initialize compliance scoring
+    ansible.builtin.set_fact:
+      compliance_score: 0
+      total_checks: 0
+      compliance_issues: []
+      compliance_passed: []
+    # Initialize compliance tracking variables
+
+  - name: Evaluate password policy compliance
+    ansible.builtin.set_fact:
+      compliance_score: "{{ compliance_score + 10 }}"
+      compliance_passed: "{{ compliance_passed + ['Password Policy'] }}"
+    when:
+    - password_policy_check is defined
+    - "'enable secret' in password_policy_check.stdout[1]"
+    - "'service password-encryption' in password_policy_check.stdout[0]"
+    # Score password policy compliance
+
+  - name: Check for password policy violations
+    ansible.builtin.set_fact:
+      compliance_issues: "{{ compliance_issues + ['Weak password policy detected'] }}"
+    when:
+    - password_policy_check is defined
+    - "'enable secret' not in password_policy_check.stdout[1]"
+    # Track password policy violations
+
+  - name: Evaluate AAA compliance
+    ansible.builtin.set_fact:
+      compliance_score: "{{ compliance_score + 15 }}"
+      compliance_passed: "{{ compliance_passed + ['AAA Configuration'] }}"
+    when:
+    - aaa_config_check is defined
+    - "'aaa new-model' in aaa_config_check.stdout[0]"
+    # Score AAA configuration compliance
+
+  - name: Evaluate SSH security compliance
+    ansible.builtin.set_fact:
+      compliance_score: "{{ compliance_score + 10 }}"
+      compliance_passed: "{{ compliance_passed + ['SSH Security'] }}"
+    when:
+    - ssh_config_check is defined
+    - "'version 2' in ssh_config_check.stdout[1]"
+    # Score SSH security compliance
+
+  - name: Check for SSH violations
+    ansible.builtin.set_fact:
+      compliance_issues: "{{ compliance_issues + ['SSH version 1 enabled or insecure configuration'] }}"
+    when:
+    - ssh_config_check is defined
+    - "'version 2' not in ssh_config_check.stdout[1]"
+    # Track SSH security violations
+
+  - name: Evaluate SNMP security
+    ansible.builtin.set_fact:
+      compliance_score: "{{ compliance_score + 10 }}"
+      compliance_passed: "{{ compliance_passed + ['SNMP Security'] }}"
+    when:
+    - snmp_security_check is defined
+    - "'public' not in snmp_security_check.stdout[0]"
+    - "'private' not in snmp_security_check.stdout[0]"
+    # Score SNMP security compliance
+
+  - name: Check for SNMP violations
+    ansible.builtin.set_fact:
+      compliance_issues: "{{ compliance_issues + ['Default SNMP communities detected'] }}"
+    when:
+    - snmp_security_check is defined
+    - ("'public' in snmp_security_check.stdout[0]" or "'private' in snmp_security_check.stdout[0]")
+    # Track SNMP security violations
+
+  - name: Calculate final compliance score
+    ansible.builtin.set_fact:
+      total_checks: 5
+      compliance_percentage: "{{ ((compliance_score | int) / 55 * 100) | round(1) }}"
+    # Calculate overall compliance percentage
+
+    # Generate Compliance Report
+- name: Generate Comprehensive Compliance Report
+  hosts: all
+  gather_facts: false
+
+  tasks:
+  - name: Compile compliance audit data
+    ansible.builtin.set_fact:
+      audit_results:
+        device_info:
+          hostname: "{{ inventory_hostname }}"
+          ip_address: "{{ ansible_host }}"
+          device_type: "{{ ansible_network_os }}"
+          audit_timestamp: "{{ audit_timestamp }}"
+          audit_scope: "{{ audit_scope }}"
+        compliance_summary:
+          score: "{{ compliance_score | default(0) }}"
+          percentage: "{{ compliance_percentage | default(0) }}"
+          total_checks: "{{ total_checks | default(0) }}"
+          passed_checks: "{{ compliance_passed | default([]) }}"
+          failed_checks: "{{ compliance_issues | default([]) }}"
+        security_findings:
+          password_policy: "{{ password_policy_check | default({}) }}"
+          aaa_config: "{{ aaa_config_check | default({}) }}"
+          ssh_config: "{{ ssh_config_check | default({}) }}"
+          snmp_security: "{{ snmp_security_check | default({}) }}"
+          acl_audit: "{{ standard_acl_audit | default({}) }}"
+        performance_metrics:
+          resource_usage: "{{ cisco_resource_audit | default({}) }}"
+          interface_stats: "{{ cisco_interface_utilization | default({}) }}"
+    # Compile comprehensive audit results
+
+  - name: Generate compliance report
+    ansible.builtin.template:
+      src: "compliance_audit_report.j2"
+      dest: "{{ playbook_dir }}/../reports/compliance_{{ inventory_hostname }}_{{ ansible_date_time.date }}.html"
+      mode: '0644'
+    delegate_to: localhost
+    vars:
+      audit_data: "{{ audit_results }}"
+    # Generate detailed compliance report
+
+  - name: Display compliance summary
+    ansible.builtin.debug:
+      msg:
+      - "=== Compliance Audit Summary ==="
+      - "Device: {{ inventory_hostname }}"
+      - "Compliance Score: {{ compliance_score | default(0) }}/55"
+      - "Compliance Percentage: {{ compliance_percentage | default(0) }}%"
+      - "Passed Checks: {{ compliance_passed | length | default(0) }}"
+      - "Failed Checks: {{ compliance_issues | length | default(0) }}"
+      - "Report: compliance_{{ inventory_hostname }}_{{ ansible_date_time.date }}.html"
+      - "==============================="
+    # Display compliance summary
+
+    # Remediation Recommendations
+- name: Generate Remediation Recommendations
+  hosts: all
+  gather_facts: false
+  when: compliance_issues | default([]) | length > 0
+
+  tasks:
+  - name: Create remediation plan
+    ansible.builtin.set_fact:
+      remediation_actions:
+      - action: "Implement strong password policy"
+        priority: "High"
+        command: "service password-encryption"
+        condition: "{{ 'Weak password policy detected' in compliance_issues | default([]) }}"
+      - action: "Configure secure SNMP communities"
+        priority: "High"
+        command: "no snmp-server community public"
+        condition: "{{ 'Default SNMP communities detected' in compliance_issues | default([]) }}"
+      - action: "Enable SSH version 2 only"
+        priority: "Medium"
+        command: "ip ssh version 2"
+        condition: "{{ 'SSH version 1 enabled or insecure configuration' in compliance_issues | default([]) }}"
+    # Create prioritized remediation plan
+
+  - name: Generate remediation script
+    ansible.builtin.template:
+      src: "remediation_script.j2"
+      dest: "{{ playbook_dir }}/../scripts/remediation_{{ inventory_hostname }}_{{ ansible_date_time.date }}.txt"
+      mode: '0644'
+    delegate_to: localhost
+    vars:
+      remediation_data: "{{ remediation_actions }}"
+      device_name: "{{ inventory_hostname }}"
+    # Generate automated remediation script
+
+  - name: Display remediation summary
+    ansible.builtin.debug:
+      msg:
+      - "=== Remediation Required ==="
+      - "Issues Found: {{ compliance_issues | length }}"
+      - "Remediation Script: remediation_{{ inventory_hostname }}_{{ ansible_date_time.date }}.txt"
+      - "Review and apply recommended fixes"
+      - "=========================="
+    # Display remediation information

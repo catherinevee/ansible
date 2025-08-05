@@ -1,0 +1,921 @@
+---
+# Palo Alto Networks Advanced Features Configuration Variables
+# Extended configuration for advanced threat prevention, Panorama, and SD-WAN
+
+# Advanced WildFire Configuration
+panos_wildfire_config:
+  global_settings:
+    file_size_limit: 10 # MB
+    report_grayware: yes
+    report_benign: no
+    cloud_inline_analysis: yes
+  analysis_profiles:
+  - name: "strict-analysis"
+    description: "Strict WildFire analysis for critical systems"
+    rules:
+    - name: "strict-rule"
+      applications: [ "any" ]
+      file_types: [ "pe", "pdf", "ms-office", "jar", "apk", "flash", "archive" ]
+      direction: "both"
+      analysis_type: "public-cloud"
+  - name: "default-analysis"
+    description: "Standard WildFire analysis profile"
+    rules:
+    - name: "default-rule"
+      applications: [ "web-browsing", "ssl", "ftp", "smtp" ]
+      file_types: [ "pe", "pdf", "ms-office" ]
+      direction: "both"
+      analysis_type: "public-cloud"
+
+# DNS Security Configuration
+panos_dns_security:
+  profiles:
+  - name: "enterprise-dns-security"
+    description: "Enterprise DNS security profile with comprehensive protection"
+    botnet_categories:
+    - name: "pan-dns-sec-cc"
+      log_level: "high"
+      action: "sinkhole"
+      packet_capture: "single-packet"
+    - name: "pan-dns-sec-ddns"
+      log_level: "medium"
+      action: "sinkhole"
+      packet_capture: "disable"
+    - name: "pan-dns-sec-malware"
+      log_level: "high"
+      action: "sinkhole"
+      packet_capture: "single-packet"
+    - name: "pan-dns-sec-phishing"
+      log_level: "high"
+      action: "sinkhole"
+      packet_capture: "single-packet"
+    custom_lists:
+    - name: "corporate-blocklist"
+      action: "sinkhole"
+      log_level: "high"
+    - name: "threat-intel-feeds"
+      action: "sinkhole"
+      log_level: "medium"
+    sinkhole:
+      ipv4_address: "pan-sinkhole-default-ip"
+      ipv6_address: "::1"
+
+# SSL Decryption Advanced Configuration
+panos_ssl_decryption:
+  certificates:
+  - name: "ssl-decrypt-cert"
+    cert_file: "/path/to/ssl-decrypt-certificate.pem"
+    format: "pem"
+    passphrase: "{{ vault_ssl_decrypt_passphrase }}"
+  - name: "forward-trust-cert"
+    cert_file: "/path/to/forward-trust-certificate.pem"
+    format: "pem"
+  decryption_policies:
+  - rule_name: "decrypt-outbound-enterprise"
+    source_zones: [ "trust" ]
+    dest_zones: [ "untrust" ]
+    source_ips: [ "Internal_Network" ]
+    dest_ips: [ "any" ]
+    applications: [ "web-browsing", "ssl" ]
+    services: [ "application-default" ]
+    url_categories: [ "business-and-economy", "computer-and-internet-info" ]
+    action: "decrypt"
+    decryption_profile: "outbound-decrypt-profile"
+    log_setting: "ssl-decrypt-logs"
+    description: "Decrypt outbound SSL traffic for inspection"
+  - rule_name: "decrypt-inbound-dmz"
+    source_zones: [ "untrust" ]
+    dest_zones: [ "dmz" ]
+    source_ips: [ "any" ]
+    dest_ips: [ "DMZ_Network" ]
+    applications: [ "web-browsing", "ssl" ]
+    services: [ "service-https" ]
+    action: "decrypt"
+    decryption_profile: "inbound-decrypt-profile"
+    log_setting: "ssl-decrypt-logs"
+    description: "Decrypt inbound SSL traffic to DMZ services"
+  - rule_name: "no-decrypt-financial"
+    source_zones: [ "trust" ]
+    dest_zones: [ "untrust" ]
+    source_ips: [ "Internal_Network" ]
+    dest_ips: [ "any" ]
+    applications: [ "web-browsing", "ssl" ]
+    services: [ "application-default" ]
+    url_categories: [ "financial-services", "health-and-medicine" ]
+    action: "no-decrypt"
+    log_setting: "ssl-decrypt-logs"
+    description: "Do not decrypt financial and medical traffic"
+  decryption_profiles:
+  - name: "outbound-decrypt-profile"
+    ssl_protocol:
+      min_version: "tls1-1"
+      max_version: "max"
+      keyxchg_algo_dhe: yes
+      keyxchg_algo_rsa: yes
+      keyxchg_algo_ecdhe: yes
+      enc_algo_3des: no
+      enc_algo_aes_128_cbc: yes
+      enc_algo_aes_256_cbc: yes
+      enc_algo_aes_128_gcm: yes
+      enc_algo_aes_256_gcm: yes
+      auth_algo_sha1: yes
+      auth_algo_sha256: yes
+      auth_algo_sha384: yes
+      auth_algo_md5: no
+    decrypt_settings:
+      certificate_name: "ssl-decrypt-cert"
+      session_ticket_lifetime: 300
+      strip_alpn: no
+      disabled_url_categories: [ "financial-services", "health-and-medicine" ]
+  - name: "inbound-decrypt-profile"
+    ssl_protocol:
+      min_version: "tls1-2"
+      max_version: "max"
+      keyxchg_algo_dhe: yes
+      keyxchg_algo_rsa: yes
+      keyxchg_algo_ecdhe: yes
+      enc_algo_3des: no
+      enc_algo_aes_128_cbc: yes
+      enc_algo_aes_256_cbc: yes
+      enc_algo_aes_128_gcm: yes
+      enc_algo_aes_256_gcm: yes
+      auth_algo_sha1: no
+      auth_algo_sha256: yes
+      auth_algo_sha384: yes
+      auth_algo_md5: no
+    decrypt_settings:
+      certificate_name: "forward-trust-cert"
+      session_ticket_lifetime: 600
+      strip_alpn: no
+
+# User-ID Advanced Configuration
+panos_userid_config:
+  agents:
+  - name: "domain-controller-1"
+    host: "{{ domain_controller_1_ip | default('10.10.1.100') }}"
+    port: 5007
+    ntlm_auth: yes
+    ldap_proxy: no
+    collector_name: "DC1-UserID"
+    secret: "{{ vault_userid_agent_secret }}"
+  - name: "domain-controller-2"
+    host: "{{ domain_controller_2_ip | default('10.10.1.101') }}"
+    port: 5007
+    ntlm_auth: yes
+    ldap_proxy: no
+    collector_name: "DC2-UserID"
+    secret: "{{ vault_userid_agent_secret }}"
+  group_mapping:
+    include_groups:
+    - "CN=Domain Users,CN=Users,DC=corp,DC=example,DC=com"
+    - "CN=IT Department,OU=Groups,DC=corp,DC=example,DC=com"
+    - "CN=Finance Department,OU=Groups,DC=corp,DC=example,DC=com"
+    - "CN=Executive Team,OU=Groups,DC=corp,DC=example,DC=com"
+    exclude_groups:
+    - "CN=Service Accounts,OU=Groups,DC=corp,DC=example,DC=com"
+    - "CN=Computer Accounts,CN=Users,DC=corp,DC=example,DC=com"
+    update_interval: 3600
+
+# Authentication Profiles
+panos_authentication_profiles:
+- name: "corporate-ldap"
+  lockout:
+    failed_attempts: 3
+    lockout_time: 30
+  username_modifier: "%USERINPUT%@corp.example.com"
+  ldap_settings:
+    server: "{{ ldap_server | default('10.10.1.100') }}"
+    port: 389
+    type: "active-directory"
+    base_dn: "DC=corp,DC=example,DC=com"
+    bind_dn: "CN=ldap-bind,OU=Service Accounts,DC=corp,DC=example,DC=com"
+    bind_password: "{{ vault_ldap_bind_password }}"
+    ssl: false
+- name: "secure-ldap"
+  lockout:
+    failed_attempts: 5
+    lockout_time: 60
+  username_modifier: "%USERINPUT%"
+  ldap_settings:
+    server: "{{ secure_ldap_server | default('10.10.1.102') }}"
+    port: 636
+    type: "active-directory"
+    base_dn: "DC=corp,DC=example,DC=com"
+    bind_dn: "CN=secure-ldap-bind,OU=Service Accounts,DC=corp,DC=example,DC=com"
+    bind_password: "{{ vault_secure_ldap_bind_password }}"
+    ssl: true
+
+# Advanced Anti-Malware Configuration
+panos_advanced_malware:
+  profiles:
+  - name: "enterprise-antimalware"
+    description: "Enterprise anti-malware with machine learning"
+    decoders:
+    - name: "http"
+      action: "reset-both"
+      wildfire_action: "reset-both"
+      machine_learning_action: "alert"
+      ml_threshold: 75
+    - name: "smtp"
+      action: "reset-both"
+      wildfire_action: "reset-both"
+      machine_learning_action: "reset-both"
+      ml_threshold: 50
+    - name: "pop3"
+      action: "alert"
+      wildfire_action: "alert"
+      machine_learning_action: "alert"
+      ml_threshold: 60
+    - name: "imap"
+      action: "alert"
+      wildfire_action: "alert"
+      machine_learning_action: "alert"
+      ml_threshold: 60
+    - name: "ftp"
+      action: "reset-both"
+      wildfire_action: "reset-both"
+      machine_learning_action: "alert"
+      ml_threshold: 65
+    - name: "smb"
+      action: "reset-both"
+      wildfire_action: "reset-both"
+      machine_learning_action: "reset-both"
+      ml_threshold: 50
+    application_exceptions:
+    - application: "office365-base"
+      action: "allow"
+    - application: "google-base"
+      action: "allow"
+    machine_learning:
+      windows_pe:
+        enable: yes
+        action: "alert"
+      powershell:
+        enable: yes
+        action: "reset-both"
+
+# Behavioral Analysis Configuration
+panos_behavioral_analysis:
+  profiles:
+  - name: "enterprise-behavioral"
+    description: "Enterprise behavioral analysis with advanced threat detection"
+    rules:
+    - name: "critical-threats"
+      severities: [ "critical" ]
+      categories: [ "spyware", "adware", "phishing-url" ]
+      action: "block-ip"
+      track_by: "source-and-destination"
+      duration: 3600
+      packet_capture: "single-packet"
+      sinkhole:
+        ipv4: "pan-sinkhole-default-ip"
+        ipv6: "::1"
+    - name: "high-threats"
+      severities: [ "high" ]
+      categories: [ "spyware", "adware", "malware-url" ]
+      action: "alert"
+      packet_capture: "disable"
+      sinkhole:
+        ipv4: "pan-sinkhole-default-ip"
+        ipv6: "::1"
+    - name: "medium-threats"
+      severities: [ "medium" ]
+      categories: [ "spyware", "suspicious-url" ]
+      action: "alert"
+      packet_capture: "disable"
+      sinkhole:
+        ipv4: "pan-sinkhole-default-ip"
+        ipv6: "::1"
+    botnet_lists:
+    - name: "pan-dns-sec-cc"
+      action: "sinkhole"
+      track_by: "source"
+      duration: 7200
+      packet_capture: "single-packet"
+    - name: "known-malware-domains"
+      action: "block-ip"
+      track_by: "source-and-destination"
+      duration: 86400
+      packet_capture: "single-packet"
+    dns_categories:
+    - name: "pan-dns-sec-malware"
+      log_level: "high"
+      action: "sinkhole"
+    - name: "pan-dns-sec-phishing"
+      log_level: "high"
+      action: "sinkhole"
+    - name: "pan-dns-sec-cc"
+      log_level: "medium"
+      action: "sinkhole"
+    default_sinkhole:
+      ipv4: "pan-sinkhole-default-ip"
+      ipv6: "::1"
+
+# IoT Security Configuration (if licensed)
+panos_iot_security:
+  profiles:
+  - name: "enterprise-iot-security"
+    description: "Enterprise IoT security profile for device protection"
+    device_risk_behaviors:
+    - name: "suspicious-dns-queries"
+      severity: "high"
+      action: "alert"
+      log_level: "high"
+    - name: "abnormal-traffic-patterns"
+      severity: "medium"
+      action: "alert"
+      log_level: "medium"
+    - name: "unauthorized-protocols"
+      severity: "high"
+      action: "block"
+      log_level: "high"
+    policy_violations:
+    - name: "unapproved-applications"
+      severity: "medium"
+      action: "alert"
+      log_level: "medium"
+    - name: "insecure-communications"
+      severity: "high"
+      action: "block"
+      log_level: "high"
+    suspicious_domains:
+      action: "alert"
+      log_level: "medium"
+      packet_capture: "disable"
+
+# Threat Intelligence Configuration
+panos_threat_intelligence:
+  external_lists:
+  - name: "corporate-threat-feed"
+    type: "ip"
+    url: "https://threatintel.example.com/ip-feed.txt"
+    certificate_profile: "None"
+    auth:
+      username: "{{ vault_threat_intel_username }}"
+      password: "{{ vault_threat_intel_password }}"
+    recurring:
+      frequency: "hourly"
+      at: 0
+    description: "Corporate threat intelligence IP feed"
+    exceptions: []
+  - name: "domain-threat-feed"
+    type: "domain"
+    url: "https://threatintel.example.com/domain-feed.txt"
+    certificate_profile: "None"
+    auth:
+      username: "{{ vault_threat_intel_username }}"
+      password: "{{ vault_threat_intel_password }}"
+    recurring:
+      frequency: "daily"
+      at: "02:30"
+    description: "Corporate threat intelligence domain feed"
+    exceptions: [ "example.com", "corp.example.com" ]
+  - name: "url-threat-feed"
+    type: "url"
+    url: "https://threatintel.example.com/url-feed.txt"
+    certificate_profile: "ssl-client-cert"
+    auth:
+      username: ""
+      password: ""
+    recurring:
+      frequency: "daily"
+      at: "03:00"
+    description: "External URL threat intelligence feed"
+    exceptions: []
+
+# Custom Applications
+panos_custom_applications:
+- name: "custom-erp-app"
+  category: "business-systems"
+  subcategory: "database"
+  technology: "client-server"
+  risk_level: 3
+  description: "Custom ERP application for enterprise"
+  default_ports: [ "tcp/8080", "tcp/8443" ]
+  ident_by_ip_protocol: no
+  signatures:
+  - name: "erp-login"
+    comment: "ERP application login signature"
+    scope: "transaction"
+    order_free: no
+    and_conditions:
+    - name: "http-req"
+      or_conditions:
+      - name: "uri-match"
+        operator:
+          type: "pattern-match"
+          context: "http-req-uri-path"
+          pattern: "/erp/login"
+- name: "custom-chat-app"
+  category: "collaboration"
+  subcategory: "instant-messaging"
+  technology: "peer-to-peer"
+  risk_level: 2
+  description: "Custom enterprise chat application"
+  default_ports: [ "tcp/9090", "udp/9091" ]
+  ident_by_ip_protocol: no
+  signatures:
+  - name: "chat-handshake"
+    comment: "Chat application handshake"
+    scope: "session"
+    order_free: yes
+    and_conditions:
+    - name: "tcp-req"
+      or_conditions:
+      - name: "pattern-match"
+        operator:
+          type: "pattern-match"
+          context: "first-packet"
+          pattern: "CHAT_HELLO"
+
+# Log Correlation Configuration
+panos_log_correlation:
+  correlation_objects:
+  - name: "failed-login-attempts"
+    description: "Track failed authentication attempts"
+    time_attribute: "time_generated"
+    interval: 300
+    threshold: 5
+    group_by: [ "src", "user" ]
+    filter: "(eventid eq 'auth-fail')"
+  - name: "malware-detections"
+    description: "Track malware detection events"
+    time_attribute: "time_generated"
+    interval: 60
+    threshold: 1
+    group_by: [ "src", "dst" ]
+    filter: "(subtype eq 'virus') or (subtype eq 'spyware')"
+  - name: "data-exfiltration"
+    description: "Detect potential data exfiltration"
+    time_attribute: "time_generated"
+    interval: 900
+    threshold: 100
+    group_by: [ "src", "dst" ]
+    filter: "(bytes_sent gt 10000000)"
+  correlation_rules:
+  - name: "brute-force-attack"
+    description: "Detect brute force authentication attacks"
+    log_type: "system"
+    time_period: 300
+    threshold: 1
+    correlation_object: "failed-login-attempts"
+    tag_name: "brute-force-attack"
+    actions:
+    - name: "tag-source"
+      type: "tagging"
+      timeout: 3600
+      target: "source-address"
+    - name: "email-admin"
+      type: "email"
+      email_server: "smtp-relay"
+      to: "security@example.com"
+      subject: "Security Alert: Brute Force Attack Detected"
+  - name: "malware-outbreak"
+    description: "Detect malware outbreak patterns"
+    log_type: "threat"
+    time_period: 300
+    threshold: 1
+    correlation_object: "malware-detections"
+    tag_name: "malware-outbreak"
+    actions:
+    - name: "quarantine-source"
+      type: "tagging"
+      timeout: 7200
+      target: "source-address"
+
+# Panorama Configuration Variables
+panorama_device_groups:
+- name: "headquarters"
+  description: "Headquarters firewall group"
+  parent: null
+  devices:
+  - serial: "{{ hq_firewall_1_serial }}"
+    vsys: [ "vsys1" ]
+  - serial: "{{ hq_firewall_2_serial }}"
+    vsys: [ "vsys1" ]
+  reference_templates: [ "hq-template-stack" ]
+- name: "branch-offices"
+  description: "Branch office firewall group"
+  parent: "headquarters"
+  devices:
+  - serial: "{{ branch_firewall_1_serial }}"
+    vsys: [ "vsys1" ]
+  - serial: "{{ branch_firewall_2_serial }}"
+    vsys: [ "vsys1" ]
+  reference_templates: [ "branch-template-stack" ]
+- name: "datacenter"
+  description: "Data center firewall group"
+  parent: null
+  devices:
+  - serial: "{{ dc_firewall_1_serial }}"
+    vsys: [ "vsys1", "vsys2" ]
+  - serial: "{{ dc_firewall_2_serial }}"
+    vsys: [ "vsys1", "vsys2" ]
+  reference_templates: [ "dc-template-stack" ]
+
+panorama_managed_devices:
+- device_group: "headquarters"
+  serial_number: "{{ hq_firewall_1_serial }}"
+- device_group: "headquarters"
+  serial_number: "{{ hq_firewall_2_serial }}"
+- device_group: "branch-offices"
+  serial_number: "{{ branch_firewall_1_serial }}"
+- device_group: "branch-offices"
+  serial_number: "{{ branch_firewall_2_serial }}"
+- device_group: "datacenter"
+  serial_number: "{{ dc_firewall_1_serial }}"
+- device_group: "datacenter"
+  serial_number: "{{ dc_firewall_2_serial }}"
+
+panorama_templates:
+- name: "base-template"
+  description: "Base configuration template for all firewalls"
+  settings:
+    default_vsys: "vsys1"
+  config:
+    hostname_template: "$serial"
+    domain: "corp.example.com"
+    dns_servers: [ "10.10.1.100", "10.10.1.101", "8.8.8.8" ]
+    ntp_servers: [ "ntp1.corp.example.com", "ntp2.corp.example.com" ]
+    timezone: "US/Eastern"
+    hostname_type_syslog: "FQDN"
+    dhcp_send_hostname: yes
+    dhcp_send_client_id: yes
+    dhcp_accept_hostname: no
+    dhcp_accept_domain: no
+    interfaces:
+    - name: "ethernet1/1"
+      layer3:
+        dhcp_enable: no
+        ip: "192.168.1.1/24"
+        management_profile: "allow-mgmt"
+      comment: "Management interface"
+    - name: "ethernet1/2"
+      layer3:
+        dhcp_enable: no
+        ip: "10.0.1.1/24"
+      comment: "Internal interface"
+    zones:
+    - name: "trust"
+      interfaces: [ "ethernet1/2" ]
+      protection_profile: "strict"
+      enable_user_identification: yes
+    - name: "untrust"
+      interfaces: [ "ethernet1/3" ]
+      protection_profile: "internet"
+      enable_user_identification: no
+
+panorama_template_stacks:
+- name: "hq-template-stack"
+  description: "Template stack for headquarters firewalls"
+  templates: [ "base-template", "hq-specific-template" ]
+  devices:
+  - serial: "{{ hq_firewall_1_serial }}"
+    vsys: [ "vsys1" ]
+  - serial: "{{ hq_firewall_2_serial }}"
+    vsys: [ "vsys1" ]
+- name: "branch-template-stack"
+  description: "Template stack for branch office firewalls"
+  templates: [ "base-template", "branch-specific-template" ]
+  devices:
+  - serial: "{{ branch_firewall_1_serial }}"
+    vsys: [ "vsys1" ]
+  - serial: "{{ branch_firewall_2_serial }}"
+    vsys: [ "vsys1" ]
+
+panorama_shared_policies:
+- device_group: "shared"
+  rule_name: "Allow-DNS"
+  description: "Allow DNS queries from all internal networks"
+  source_zone: [ "trust" ]
+  dest_zone: [ "untrust" ]
+  source_ip: [ "any" ]
+  dest_ip: [ "any" ]
+  application: [ "dns" ]
+  service: [ "application-default" ]
+  action: "allow"
+  log_setting: "default"
+  log_end: true
+  location: "pre"
+- device_group: "shared"
+  rule_name: "Allow-NTP"
+  description: "Allow NTP synchronization"
+  source_zone: [ "trust" ]
+  dest_zone: [ "untrust" ]
+  source_ip: [ "any" ]
+  dest_ip: [ "any" ]
+  application: [ "ntp" ]
+  service: [ "application-default" ]
+  action: "allow"
+  log_setting: "default"
+  log_end: true
+  location: "pre"
+
+panorama_content_updates:
+  threats:
+    frequency: "daily"
+    time: "01:02"
+    sync_to_peer: yes
+    threshold: 48
+  antivirus:
+    frequency: "daily"
+    time: "01:04"
+    sync_to_peer: yes
+    threshold: 48
+  globalprotect:
+    frequency: "weekly"
+    day: "sunday"
+    time: "01:06"
+
+panorama_ha_config:
+  group_id: 1
+  peer_ip: "{{ panorama_peer_ip }}"
+  backup_peer_ip: "{{ panorama_backup_peer_ip }}"
+  config_sync_enabled: yes
+  passive_link_state: "shutdown"
+  monitor_fail_holddown: 1
+  ha1_port: "ethernet1/1"
+  ha1_ip: "{{ panorama_ha1_ip }}"
+  ha1_netmask: "255.255.255.0"
+  ha1_gateway: "{{ panorama_ha1_gateway }}"
+  ha1_backup:
+    port: "ethernet1/2"
+    ip: "{{ panorama_ha1_backup_ip }}"
+    netmask: "255.255.255.0"
+
+# SD-WAN Configuration Variables
+panos_sdwan_interfaces:
+- interface: "ethernet1/1"
+  ip_address: "203.0.113.10/30"
+  comment: "Primary ISP connection - MPLS"
+  management_profile: "allow-ping-snmp"
+  sdwan_settings:
+    upstream_nat:
+      enable: no
+    link_type: "ethernet"
+    permit_peer_flows: no
+    tunnel_monitor:
+      enable: yes
+      destination_ip: "8.8.8.8"
+      proxy_id: "any"
+      tunneled: no
+- interface: "ethernet1/2"
+  ip_address: "203.0.114.10/30"
+  comment: "Secondary ISP connection - Internet"
+  management_profile: "allow-ping-snmp"
+  sdwan_settings:
+    upstream_nat:
+      enable: yes
+      static_ip: "203.0.114.10"
+      translated_address: "203.0.114.100"
+    link_type: "ethernet"
+    permit_peer_flows: no
+    tunnel_monitor:
+      enable: yes
+      destination_ip: "1.1.1.1"
+      proxy_id: "any"
+      tunneled: no
+
+panos_sdwan_zones:
+- zone_name: "sdwan-zone-1"
+  interfaces: [ "ethernet1/1" ]
+  zone_protection_profile: "sdwan-protection"
+  enable_user_identification: no
+  log_setting: "default"
+- zone_name: "sdwan-zone-2"
+  interfaces: [ "ethernet1/2" ]
+  zone_protection_profile: "sdwan-protection"
+  enable_user_identification: no
+  log_setting: "default"
+
+panos_sdwan_policies:
+- name: "critical-app-mpls"
+  description: "Route critical applications via MPLS"
+  source_zones: [ "trust" ]
+  destination_zones: [ "untrust" ]
+  source_addresses: [ "any" ]
+  destination_addresses: [ "any" ]
+  applications: [ "oracle", "sap", "ms-sql-db" ]
+  services: [ "any" ]
+  action:
+    forward:
+      target: "ethernet1/1"
+      monitor:
+        ip: "8.8.8.8"
+        disable_if_unreachable: yes
+      symmetric_return: yes
+  path_monitor:
+    enable: yes
+    failure_condition: "any"
+    hold_time: 2
+- name: "internet-traffic-loadbalance"
+  description: "Load balance internet traffic across both links"
+  source_zones: [ "trust" ]
+  destination_zones: [ "untrust" ]
+  source_addresses: [ "any" ]
+  destination_addresses: [ "any" ]
+  applications: [ "web-browsing", "ssl", "ftp" ]
+  services: [ "any" ]
+  action:
+    forward:
+      target: "ethernet1/2"
+      monitor:
+        ip: "1.1.1.1"
+        disable_if_unreachable: yes
+  path_monitor:
+    enable: yes
+    failure_condition: "any"
+    hold_time: 2
+
+panos_path_quality_monitoring:
+- name: "mpls-path-monitor"
+  description: "Monitor MPLS path quality"
+  enable: yes
+  probe_type: "icmp"
+  probe_interval: 1
+  probe_count: 3
+  jitter_threshold: 50
+  latency_threshold: 100
+  packet_loss_threshold: 1
+  probe_interface: "ethernet1/1"
+  destinations:
+  - name: "google-dns"
+    ip: "8.8.8.8"
+    enable: yes
+  - name: "corporate-dc"
+    ip: "{{ corporate_dc_ip }}"
+    enable: yes
+- name: "internet-path-monitor"
+  description: "Monitor Internet path quality"
+  enable: yes
+  probe_type: "icmp"
+  probe_interval: 2
+  probe_count: 3
+  jitter_threshold: 100
+  latency_threshold: 200
+  packet_loss_threshold: 2
+  probe_interface: "ethernet1/2"
+  destinations:
+  - name: "cloudflare-dns"
+    ip: "1.1.1.1"
+    enable: yes
+  - name: "public-web"
+    ip: "8.8.4.4"
+    enable: yes
+
+# Advanced QoS Configuration
+panos_advanced_qos_profiles:
+- name: "enterprise-qos-profile"
+  description: "Enterprise QoS profile with guaranteed bandwidth"
+  aggregate_bandwidth_mbps: 1000
+  classes:
+  - name: "class1"
+    priority: 1
+    bandwidth_mbps: 400
+    guaranteed_percentage: 40
+    maximum_percentage: 100
+  - name: "class2"
+    priority: 2
+    bandwidth_mbps: 300
+    guaranteed_percentage: 30
+    maximum_percentage: 60
+  - name: "class3"
+    priority: 4
+    bandwidth_mbps: 200
+    guaranteed_percentage: 20
+    maximum_percentage: 40
+  - name: "class4"
+    priority: 7
+    bandwidth_mbps: 100
+    guaranteed_percentage: 10
+    maximum_percentage: 20
+
+panos_traffic_shaping_policies:
+- name: "prioritize-voice-video"
+  description: "High priority for voice and video traffic"
+  from_zones: [ "trust" ]
+  to_zones: [ "untrust" ]
+  source: [ "any" ]
+  destination: [ "any" ]
+  application: [ "skype", "webex", "zoom", "sip" ]
+  service: [ "any" ]
+  action:
+    qos_class: "class1"
+    dscp_marking:
+      dscp: "ef"
+- name: "business-critical-apps"
+  description: "Medium-high priority for business applications"
+  from_zones: [ "trust" ]
+  to_zones: [ "untrust", "dmz" ]
+  source: [ "Internal_Network" ]
+  destination: [ "any" ]
+  application: [ "oracle", "sap", "ms-sharepoint", "ms-exchange" ]
+  service: [ "any" ]
+  action:
+    qos_class: "class2"
+    dscp_marking:
+      dscp: "af31"
+- name: "limit-p2p-traffic"
+  description: "Limit peer-to-peer and streaming traffic"
+  from_zones: [ "trust" ]
+  to_zones: [ "untrust" ]
+  source: [ "any" ]
+  destination: [ "any" ]
+  application: [ "bittorrent", "youtube", "netflix", "facebook-video" ]
+  service: [ "any" ]
+  action:
+    qos_class: "class4"
+    police:
+      enable: yes
+      aggregate_rate: 50
+      burst_size: 15000
+
+# Microsegmentation Configuration
+panos_microsegmentation_policies:
+- rule_name: "servers-to-database-allow"
+  description: "Allow application servers to access database"
+  source_zone: [ "server-zone" ]
+  dest_zone: [ "database-zone" ]
+  source_ip: [ "App-Servers" ]
+  dest_ip: [ "Database-Servers" ]
+  application: [ "oracle", "ms-sql-db", "mysql" ]
+  service: [ "application-default" ]
+  action: "allow"
+  log_end: true
+  log_setting: "default"
+- rule_name: "workstation-to-server-limited"
+  description: "Limited workstation access to servers"
+  source_zone: [ "workstation-zone" ]
+  dest_zone: [ "server-zone" ]
+  source_ip: [ "Workstation-Network" ]
+  source_user: [ "any" ]
+  dest_ip: [ "Web-Servers" ]
+  application: [ "web-browsing", "ssl", "ssh" ]
+  service: [ "application-default" ]
+  action: "allow"
+  log_end: true
+  log_setting: "default"
+- rule_name: "block-lateral-movement"
+  description: "Block lateral movement between server subnets"
+  source_zone: [ "server-zone" ]
+  dest_zone: [ "server-zone" ]
+  source_ip: [ "any" ]
+  dest_ip: [ "any" ]
+  application: [ "any" ]
+  service: [ "any" ]
+  action: "deny"
+  log_end: true
+  log_setting: "security-logs"
+
+panos_dynamic_address_groups:
+- name: "Compromised-Hosts"
+  description: "Dynamically populated compromised hosts"
+  dynamic_filter: "'malware-infected' and 'active-threat'"
+- name: "High-Risk-Users"
+  description: "Users flagged as high risk"
+  dynamic_filter: "'user-risk-score' > 80"
+- name: "Unpatched-Systems"
+  description: "Systems missing critical patches"
+  dynamic_filter: "'patch-level' < 90 and 'criticality' eq 'high'"
+
+# Branch Office Configuration
+panos_branch_ipsec_tunnels:
+- tunnel_name: "branch-1-tunnel"
+  tunnel_interface: "tunnel.1"
+  ike_gateway: "branch-1-gateway"
+  ipsec_crypto_profile: "default"
+- tunnel_name: "branch-2-tunnel"
+  tunnel_interface: "tunnel.2"
+  ike_gateway: "branch-2-gateway"
+  ipsec_crypto_profile: "aes256-sha256"
+
+panos_branch_ike_gateways:
+- gateway_name: "branch-1-gateway"
+  interface: "ethernet1/1"
+  peer_ip_type: "ip"
+  peer_ip: "{{ branch_1_public_ip }}"
+  pre_shared_key: "{{ vault_branch_1_psk }}"
+  ikev1_exchange_mode: "main"
+  ikev1_crypto_profile: "default"
+  ikev2_crypto_profile: "default"
+  enable_passive_mode: no
+  enable_nat_traversal: yes
+  nat_traversal_keep_alive: 10
+  enable_fragmentation: yes
+- gateway_name: "branch-2-gateway"
+  interface: "ethernet1/2"
+  peer_ip_type: "ip"
+  peer_ip: "{{ branch_2_public_ip }}"
+  pre_shared_key: "{{ vault_branch_2_psk }}"
+  ikev1_exchange_mode: "main"
+  ikev1_crypto_profile: "aes256-sha256"
+  ikev2_crypto_profile: "aes256-sha256"
+  enable_passive_mode: no
+  enable_nat_traversal: yes
+  nat_traversal_keep_alive: 15
+  enable_fragmentation: yes
+
+panos_branch_connectivity_tests:
+- test_ip: "{{ branch_1_internal_ip | default('192.168.10.1') }}"
+- test_ip: "{{ branch_2_internal_ip | default('192.168.20.1') }}"
+- test_ip: "{{ headquarters_internal_ip | default('10.0.1.1') }}"

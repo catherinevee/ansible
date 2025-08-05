@@ -1,0 +1,479 @@
+---
+# Cisco NX-OS Data Center Configuration Playbook
+# Specialized configuration for Cisco Nexus switches in data center environments
+# Supports: Nexus 9000, 7000, 5000 series with advanced data center features
+
+- name: Deploy Cisco NX-OS Data Center Configuration
+  hosts: cisco_nxos_devices
+  gather_facts: false
+  connection: network_cli
+  vars:
+    ansible_network_os: nxos
+    ansible_user: "{{ vault_cisco_username }}"
+    ansible_password: "{{ vault_cisco_password }}"
+
+  tasks:
+  # Phase 1: Basic NX-OS System Configuration
+  - name: "Phase 1: Configure NX-OS System Settings"
+    block:
+    - name: Configure hostname and domain
+      cisco.nxos.nxos_system:
+        hostname: "{{ nxos_system_config.hostname }}"
+        domain_name: "{{ nxos_system_config.domain_name }}"
+        domain_lookup: "{{ nxos_system_config.domain_lookup | default(false) }}"
+        name_servers: "{{ nxos_system_config.name_servers }}"
+      tags: [ system, nxos ]
+
+    - name: Enable required features
+      cisco.nxos.nxos_feature:
+        feature: "{{ item }}"
+        state: enabled
+      loop: "{{ nxos_features.enabled_features }}"
+      tags: [ features, nxos ]
+
+    - name: Configure NTP settings
+      cisco.nxos.nxos_ntp:
+        server: "{{ item.server }}"
+        vrf: "{{ item.vrf | default('default') }}"
+        key_id: "{{ item.key_id | default(omit) }}"
+        prefer: "{{ item.prefer | default(false) }}"
+        state: present
+      loop: "{{ nxos_ntp_config.ntp_servers }}"
+      tags: [ ntp, time, nxos ]
+
+  # Phase 2: VRF Configuration for Multi-Tenancy
+  - name: "Phase 2: Configure VRFs for Multi-Tenancy"
+    block:
+    - name: Create VRFs
+      cisco.nxos.nxos_vrf:
+        name: "{{ item.name }}"
+        description: "{{ item.description }}"
+        rd: "{{ item.rd }}"
+        admin_state: "{{ item.admin_state | default('up') }}"
+      loop: "{{ nxos_vrf_config.vrfs }}"
+      tags: [ vrf, multi_tenancy, nxos ]
+
+    - name: Configure VRF interfaces
+      cisco.nxos.nxos_vrf_interface:
+        vrf: "{{ item.vrf }}"
+        interface: "{{ item.interface }}"
+      loop: "{{ nxos_vrf_config.vrf_interfaces }}"
+      tags: [ vrf, interfaces, nxos ]
+
+  # Phase 3: Advanced VLAN Configuration
+  - name: "Phase 3: Configure VLANs and Fabric Extender"
+    block:
+    - name: Create VLANs with advanced features
+      cisco.nxos.nxos_vlans:
+        config:
+        - vlan_id: "{{ item.vlan_id }}"
+          name: "{{ item.name }}"
+          state: "{{ item.state | default('active') }}"
+          mapped_vni: "{{ item.vni | default(omit) }}"
+      loop: "{{ nxos_vlan_config.vlans }}"
+      tags: [ vlans, nxos ]
+
+    - name: Configure VLAN interfaces (SVIs)
+      cisco.nxos.nxos_l3_interfaces:
+        config:
+        - name: "Vlan{{ item.vlan_id }}"
+          ipv4:
+          - address: "{{ item.svi_ip }}/{{ item.svi_mask }}"
+          ipv6: "{{ item.ipv6_config | default(omit) }}"
+      loop: "{{ nxos_vlan_config.vlans }}"
+      when: item.svi_ip is defined
+      tags: [ svi, l3, nxos ]
+
+    - name: Configure Fabric Extender (FEX)
+      cisco.nxos.nxos_config:
+        lines:
+        - "fex {{ item.fex_id }}"
+        - "pinning max-links {{ item.max_links | default(1) }}"
+        - "description {{ item.description }}"
+        parents: []
+      loop: "{{ nxos_fex_config.fex_units }}"
+      when: nxos_fex_config.fex_units is defined
+      tags: [ fex, nxos ]
+
+  # Phase 4: Port-Channel and vPC Configuration
+  - name: "Phase 4: Configure Port-Channels and vPC"
+    block:
+    - name: Configure port-channels
+      cisco.nxos.nxos_lag_interfaces:
+        config:
+        - name: "Port-channel{{ item.po_id }}"
+          members:
+          - member: "{{ member.interface }}"
+            mode: "{{ member.mode | default('active') }}"
+          mode: "{{ item.lacp_mode | default('active') }}"
+      loop: "{{ nxos_portchannel_config.port_channels }}"
+      tags: [ portchannel, lacp, nxos ]
+
+    - name: Configure vPC domain
+      cisco.nxos.nxos_config:
+        lines:
+        - "vpc domain {{ nxos_vpc_config.domain_id }}"
+        - "peer-keepalive destination {{ nxos_vpc_config.peer_keepalive_ip }} source {{ nxos_vpc_config.peer_keepalive_source }}"
+        - "peer-switch"
+        - "peer-gateway"
+        - "auto-recovery"
+        parents: []
+      when: nxos_vpc_config is defined
+      tags: [ vpc, nxos ]
+
+    - name: Configure vPC peer-link
+      cisco.nxos.nxos_config:
+        lines:
+        - "vpc peer-link"
+        parents:
+        - "interface Port-channel{{ nxos_vpc_config.peer_link_po }}"
+      when: nxos_vpc_config.peer_link_po is defined
+      tags: [ vpc, peer_link, nxos ]
+
+    - name: Configure vPC member ports
+      cisco.nxos.nxos_config:
+        lines:
+        - "vpc {{ item.vpc_id }}"
+        parents:
+        - "interface Port-channel{{ item.po_id }}"
+      loop: "{{ nxos_vpc_config.vpc_members }}"
+      when: nxos_vpc_config.vpc_members is defined
+      tags: [ vpc, members, nxos ]
+
+  # Phase 5: VXLAN EVPN Configuration
+  - name: "Phase 5: Configure VXLAN EVPN Overlay"
+    block:
+    - name: Configure NVE interface
+      cisco.nxos.nxos_config:
+        lines:
+        - "interface nve1"
+        - "no shutdown"
+        - "host-reachability protocol bgp"
+        - "source-interface {{ nxos_vxlan_config.source_interface }}"
+        - "member vni {{ item.vni }}"
+        - "ingress-replication protocol bgp"
+        parents: []
+      loop: "{{ nxos_vxlan_config.vni_members }}"
+      when: nxos_vxlan_config is defined
+      tags: [ vxlan, evpn, nxos ]
+
+    - name: Configure EVPN instance
+      cisco.nxos.nxos_config:
+        lines:
+        - "evpn"
+        - "vni {{ item.vni }} l2"
+        - "rd {{ item.rd }}"
+        - "route-target import {{ item.rt_import }}"
+        - "route-target export {{ item.rt_export }}"
+        parents: []
+      loop: "{{ nxos_evpn_config.l2_vnis }}"
+      when: nxos_evpn_config.l2_vnis is defined
+      tags: [ evpn, l2vni, nxos ]
+
+    - name: Map VLANs to VNIs
+      cisco.nxos.nxos_config:
+        lines:
+        - "vlan {{ item.vlan_id }}"
+        - "vn-segment {{ item.vni }}"
+        parents: []
+      loop: "{{ nxos_vxlan_config.vlan_vni_mapping }}"
+      when: nxos_vxlan_config.vlan_vni_mapping is defined
+      tags: [ vxlan, vni_mapping, nxos ]
+
+  # Phase 6: BGP EVPN Configuration
+  - name: "Phase 6: Configure BGP for EVPN"
+    block:
+    - name: Configure BGP global settings
+      cisco.nxos.nxos_bgp_global:
+        config:
+          as_number: "{{ nxos_bgp_config.as_number }}"
+          router_id: "{{ nxos_bgp_config.router_id }}"
+          log_neighbor_changes: true
+      tags: [ bgp, evpn, nxos ]
+
+    - name: Configure BGP EVPN address family
+      cisco.nxos.nxos_config:
+        lines:
+        - "router bgp {{ nxos_bgp_config.as_number }}"
+        - "address-family l2vpn evpn"
+        - "maximum-paths {{ nxos_bgp_config.evpn_max_paths | default(8) }}"
+        - "retain route-target all"
+        parents: []
+      tags: [ bgp, evpn, address_family, nxos ]
+
+    - name: Configure BGP EVPN neighbors
+      cisco.nxos.nxos_config:
+        lines:
+        - "neighbor {{ item.neighbor_ip }}"
+        - "remote-as {{ item.remote_as }}"
+        - "update-source {{ nxos_bgp_config.update_source }}"
+        - "address-family l2vpn evpn"
+        - "send-community"
+        - "send-community extended"
+        - "route-reflector-client"
+        parents:
+        - "router bgp {{ nxos_bgp_config.as_number }}"
+      loop: "{{ nxos_bgp_config.evpn_neighbors }}"
+      tags: [ bgp, evpn, neighbors, nxos ]
+
+  # Phase 7: Spine-Leaf Underlay Configuration
+  - name: "Phase 7: Configure Underlay Routing (OSPF/ISIS)"
+    block:
+    - name: Configure OSPF for underlay
+      cisco.nxos.nxos_ospfv2:
+        config:
+          processes:
+          - process_id: "{{ nxos_underlay_config.ospf.process_id }}"
+            router_id: "{{ nxos_underlay_config.ospf.router_id }}"
+            areas:
+            - area_id: "{{ item.area_id }}"
+              networks:
+              - address: "{{ item.network }}"
+                wildcard_bits: "{{ item.wildcard }}"
+      loop: "{{ nxos_underlay_config.ospf.areas }}"
+      when: nxos_underlay_config.routing_protocol == 'ospf'
+      tags: [ underlay, ospf, nxos ]
+
+    - name: Configure ISIS for underlay
+      cisco.nxos.nxos_config:
+        lines:
+        - "router isis {{ nxos_underlay_config.isis.process_name }}"
+        - "net {{ nxos_underlay_config.isis.net_id }}"
+        - "is-type {{ nxos_underlay_config.isis.is_type }}"
+        - "address-family ipv4 unicast"
+        parents: []
+      when: nxos_underlay_config.routing_protocol == 'isis'
+      tags: [ underlay, isis, nxos ]
+
+    - name: Configure underlay interfaces
+      cisco.nxos.nxos_l3_interfaces:
+        config:
+        - name: "{{ item.interface }}"
+          ipv4:
+          - address: "{{ item.ip_address }}/{{ item.mask }}"
+      loop: "{{ nxos_underlay_config.p2p_links }}"
+      tags: [ underlay, p2p, nxos ]
+
+  # Phase 8: Quality of Service (QoS)
+  - name: "Phase 8: Configure Advanced QoS"
+    block:
+    - name: Configure QoS class maps
+      cisco.nxos.nxos_config:
+        lines:
+        - "class-map type qos match-{{ item.match_type }} {{ item.name }}"
+        - "match {{ item.match_criteria }}"
+        parents: []
+      loop: "{{ nxos_qos_config.class_maps }}"
+      when: nxos_qos_config.class_maps is defined
+      tags: [ qos, class_maps, nxos ]
+
+    - name: Configure QoS policy maps
+      cisco.nxos.nxos_config:
+        lines:
+        - "policy-map type qos {{ item.name }}"
+        - "class {{ class.class_name }}"
+        - "{{ class.action }}"
+        parents: []
+      loop: "{{ nxos_qos_config.policy_maps }}"
+      when: nxos_qos_config.policy_maps is defined
+      tags: [ qos, policy_maps, nxos ]
+
+    - name: Configure queuing policies
+      cisco.nxos.nxos_config:
+        lines:
+        - "policy-map type queuing {{ item.name }}"
+        - "class type queuing {{ queue.class_name }}"
+        - "bandwidth percent {{ queue.bandwidth }}"
+        - "random-detect {{ queue.wred | default('') }}"
+        parents: []
+      loop: "{{ nxos_qos_config.queuing_policies }}"
+      when: nxos_qos_config.queuing_policies is defined
+      tags: [ qos, queuing, nxos ]
+
+  # Phase 9: Data Center Security Features
+  - name: "Phase 9: Configure Data Center Security"
+    block:
+    - name: Configure First Hop Security Protocol (FHSRP)
+      cisco.nxos.nxos_config:
+        lines:
+        - "feature hsrp"
+        - "interface {{ item.interface }}"
+        - "hsrp version {{ item.version | default(2) }}"
+        - "hsrp {{ item.group_id }}"
+        - "ip {{ item.virtual_ip }}"
+        - "priority {{ item.priority | default(100) }}"
+        - "preempt"
+        parents: []
+      loop: "{{ nxos_fhsrp_config.hsrp_groups }}"
+      when: nxos_fhsrp_config.hsrp_groups is defined
+      tags: [ fhsrp, security, nxos ]
+
+    - name: Configure Dynamic ARP Inspection
+      cisco.nxos.nxos_config:
+        lines:
+        - "ip arp inspection vlan {{ nxos_security_config.dai_vlans | join(',') }}"
+        - "ip arp inspection validate src-mac dst-mac ip"
+        parents: []
+      when: nxos_security_config.dai_vlans is defined
+      tags: [ dai, security, nxos ]
+
+    - name: Configure DHCP Snooping
+      cisco.nxos.nxos_config:
+        lines:
+        - "ip dhcp snooping"
+        - "ip dhcp snooping vlan {{ nxos_security_config.dhcp_snooping_vlans | join(',') }}"
+        parents: []
+      when: nxos_security_config.dhcp_snooping_vlans is defined
+      tags: [ dhcp_snooping, security, nxos ]
+
+  # Phase 10: Monitoring and Analytics
+  - name: "Phase 10: Configure Monitoring and Analytics"
+    block:
+    - name: Configure NetFlow/sFlow
+      cisco.nxos.nxos_config:
+        lines:
+        - "feature netflow"
+        - "flow record {{ item.name }}"
+        - "match ipv4 source address"
+        - "match ipv4 destination address"
+        - "match transport source-port"
+        - "match transport destination-port"
+        - "match ipv4 protocol"
+        - "collect counter bytes"
+        - "collect counter packets"
+        - "collect timestamp sys-uptime first"
+        - "collect timestamp sys-uptime last"
+        parents: []
+      loop: "{{ nxos_monitoring_config.flow_records }}"
+      when: nxos_monitoring_config.flow_records is defined
+      tags: [ netflow, monitoring, nxos ]
+
+    - name: Configure SPAN sessions
+      cisco.nxos.nxos_config:
+        lines:
+        - "monitor session {{ item.session_id }}"
+        - "source interface {{ item.source_interface }} {{ item.direction }}"
+        - "destination interface {{ item.destination_interface }}"
+        - "no shut"
+        parents: []
+      loop: "{{ nxos_monitoring_config.span_sessions }}"
+      when: nxos_monitoring_config.span_sessions is defined
+      tags: [ span, monitoring, nxos ]
+
+    - name: Configure SNMP for data center monitoring
+      cisco.nxos.nxos_snmp_server:
+        config:
+          communities:
+          - name: "{{ vault_snmp_community_ro }}"
+            group: network-operator
+            acl: "{{ nxos_snmp_config.ro_acl | default(omit) }}"
+          hosts:
+          - host: "{{ item.host }}"
+            community: "{{ item.community }}"
+            version: "{{ item.version }}"
+            traps: "{{ item.traps | default(true) }}"
+      loop: "{{ nxos_snmp_config.snmp_hosts }}"
+      when: nxos_snmp_config.snmp_hosts is defined
+      no_log: true
+      tags: [ snmp, monitoring, nxos ]
+
+  post_tasks:
+  # Phase 11: Verification and Reporting
+  - name: "Phase 11: NX-OS Configuration Verification"
+    block:
+    - name: Verify system status
+      cisco.nxos.nxos_command:
+        commands:
+        - "show version"
+        - "show module"
+        - "show environment"
+      register: nxos_system_status
+      tags: [ verification, system ]
+
+    - name: Verify VRF configuration
+      cisco.nxos.nxos_command:
+        commands:
+        - "show vrf"
+        - "show vrf interface"
+      register: nxos_vrf_status
+      tags: [ verification, vrf ]
+
+    - name: Verify VXLAN EVPN status
+      cisco.nxos.nxos_command:
+        commands:
+        - "show nve interface"
+        - "show bgp l2vpn evpn summary"
+        - "show l2route evpn mac all"
+      register: nxos_vxlan_status
+      ignore_errors: true
+      tags: [ verification, vxlan, evpn ]
+
+    - name: Verify vPC status
+      cisco.nxos.nxos_command:
+        commands:
+        - "show vpc"
+        - "show vpc consistency-parameters global"
+      register: nxos_vpc_status
+      ignore_errors: true
+      tags: [ verification, vpc ]
+
+    - name: Generate NX-OS deployment report
+      copy:
+        content: |
+          Cisco NX-OS Data Center Deployment Report
+          ========================================
+          Device: {{ inventory_hostname }}
+          Platform: {{ ansible_net_model | default('Nexus Switch') }}
+          Software Version: {{ ansible_net_version | default('Unknown') }}
+          Deployment Time: {{ ansible_date_time.iso8601 }}
+
+          === SYSTEM STATUS ===
+          {{ nxos_system_status.stdout[0] | default('System status not available') }}
+
+          === MODULE STATUS ===
+          {{ nxos_system_status.stdout[1] | default('Module status not available') }}
+
+          === ENVIRONMENTAL STATUS ===
+          {{ nxos_system_status.stdout[2] | default('Environmental status not available') }}
+
+          === VRF CONFIGURATION ===
+          {{ nxos_vrf_status.stdout[0] | default('VRF status not available') }}
+
+          {% if nxos_vxlan_status.stdout is defined %}
+          === VXLAN EVPN STATUS ===
+          NVE Interface Status:
+          {{ nxos_vxlan_status.stdout[0] | default('VXLAN not configured') }}
+
+          BGP EVPN Summary:
+          {{ nxos_vxlan_status.stdout[1] | default('BGP EVPN not configured') }}
+
+          L2 Route Table:
+          {{ nxos_vxlan_status.stdout[2] | default('No L2 routes') }}
+          {% endif %}
+
+          {% if nxos_vpc_status.stdout is defined %}
+          === vPC STATUS ===
+          {{ nxos_vpc_status.stdout[0] | default('vPC not configured') }}
+
+          vPC Consistency Parameters:
+          {{ nxos_vpc_status.stdout[1] | default('vPC consistency check not available') }}
+          {% endif %}
+
+          === CONFIGURATION SUMMARY ===
+          VRFs Configured: {{ (nxos_vrf_config.vrfs | default([])) | length }}
+          VLANs Configured: {{ (nxos_vlan_config.vlans | default([])) | length }}
+          Port-Channels: {{ (nxos_portchannel_config.port_channels | default([])) | length }}
+          VXLAN VNIs: {{ (nxos_vxlan_config.vni_members | default([])) | length }}
+          BGP EVPN Neighbors: {{ (nxos_bgp_config.evpn_neighbors | default([])) | length }}
+
+          Features Enabled: {{ (nxos_features.enabled_features | default([])) | join(', ') }}
+
+          Status: {{ 'SUCCESS' if ansible_failed_task is not defined else 'FAILED' }}
+        dest: "{{ playbook_dir }}/../reports/cisco/{{ inventory_hostname }}_nxos_datacenter_{{ ansible_date_time.epoch }}.txt"
+      delegate_to: localhost
+      tags: [ reporting ]
+
+# Example usage:
+# ansible-playbook cisco_nxos_datacenter.yml --limit cisco_nxos_devices
+# ansible-playbook cisco_nxos_datacenter.yml --tags vxlan,evpn
+# ansible-playbook cisco_nxos_datacenter.yml --tags vpc --check

@@ -1,0 +1,422 @@
+---
+# ====================================================================
+# COMPREHENSIVE CISCO EVPN/VXLAN/eBGP DATA CENTER CONFIGURATION
+# ====================================================================
+# This file contains advanced configuration variables for modern Cisco
+# data center deployments with EVPN-VXLAN overlay and eBGP underlay
+# ====================================================================
+
+# ====================================
+# GLOBAL EVPN-VXLAN SETTINGS
+# ====================================
+evpn_enabled: true
+vxlan_enabled: true
+ebgp_underlay_enabled: true
+
+# VXLAN Global Configuration
+vxlan_global_config:
+  nv_overlay: true
+  vn_segment_vlan_based: true
+  evpn_overlay: true
+  anycast_gateway_mac: "0000.1111.2222"
+
+# NVE Interface Configuration
+nve_interface_config:
+  source_interface: "Loopback1"
+  host_reachability_protocol: "bgp"
+  multisite_border_gateway: false
+  global_ingress_replication_bgp: true
+
+# ====================================
+# eBGP UNDERLAY CONFIGURATION
+# ====================================
+# Spine-Leaf eBGP Underlay with RFC7938 BGP design
+bgp_underlay_config:
+  # BGP Global Settings
+  keepalive_timer: 3
+  holdtime_timer: 9
+  maximum_paths: 64
+  ibgp_maximum_paths: 64
+  bestpath_as_path_multipath_relax: true
+  bestpath_compare_routerid: true
+
+  # Administrative Distances
+  admin_distances:
+    ebgp: 20
+    ibgp: 200
+    local: 200
+
+  # Route Advertisement Settings
+  advertise_loopbacks: true
+  advertise_p2p_links: true
+  suppress_fib_pending: true
+
+# eBGP Underlay Neighbors (Example for Leaf01)
+ebgp_underlay_neighbors:
+- neighbor_ip: "10.1.1.0"
+  remote_asn: "65100"
+  description: "Spine01-Underlay"
+  interface: "Ethernet1/1"
+  bfd_enabled: true
+  maximum_routes: 12000
+- neighbor_ip: "10.1.1.2"
+  remote_asn: "65100"
+  description: "Spine02-Underlay"
+  interface: "Ethernet1/2"
+  bfd_enabled: true
+  maximum_routes: 12000
+- neighbor_ip: "10.1.1.4"
+  remote_asn: "65100"
+  description: "Spine03-Underlay"
+  interface: "Ethernet1/3"
+  bfd_enabled: true
+  maximum_routes: 12000
+- neighbor_ip: "10.1.1.6"
+  remote_asn: "65100"
+  description: "Spine04-Underlay"
+  interface: "Ethernet1/4"
+  bfd_enabled: true
+  maximum_routes: 12000
+
+# BGP ASN Assignments for Data Center
+datacenter_asn_assignments:
+  spine_asns:
+  - asn: "65100"
+    description: "Spine Switches"
+  leaf_asns:
+  - asn: "65201"
+    description: "Leaf01-02 (MLAG Pair)"
+  - asn: "65202"
+    description: "Leaf03-04 (MLAG Pair)"
+  - asn: "65203"
+    description: "Leaf05-06 (MLAG Pair)"
+  - asn: "65204"
+    description: "Border Leaf Switches"
+
+# ====================================
+# EVPN OVERLAY CONFIGURATION
+# ====================================
+# EVPN Route Reflector Configuration
+evpn_route_reflectors:
+- rr_ip: "10.0.0.1"
+  rr_asn: "65100"
+  rr_id: "spine01"
+  description: "Primary EVPN Route Reflector"
+- rr_ip: "10.0.0.2"
+  rr_asn: "65100"
+  rr_id: "spine02"
+  description: "Secondary EVPN Route Reflector"
+
+# EVPN Global Settings
+evpn_global_config:
+  route_target_format: "auto"
+  route_distinguisher_format: "auto"
+  advertise_default_gw: true
+  duplicate_address_detection:
+    enabled: true
+    max_moves: 5
+    time_window: 180
+    freeze_time: 1800
+
+# EVPN Address Family Configuration
+evpn_address_family_config:
+  retain_route_target: "all"
+  advertise_ipv4_unicast: true
+  replication_type: "ingress"
+  update_source: "Loopback0"
+  ebgp_multihop_ttl: 5
+
+# ====================================
+# VXLAN VNI ASSIGNMENTS
+# ====================================
+# Layer 2 VNI Assignments
+vxlan_l2_vnis:
+- vlan_id: 10
+  vni: 10010
+  vlan_name: "USER_VLAN"
+  multicast_group: "239.1.1.10"
+  suppress_arp: true
+  anycast_gateway: "10.10.10.1/24"
+- vlan_id: 20
+  vni: 10020
+  vlan_name: "VOICE_VLAN"
+  multicast_group: "239.1.1.20"
+  suppress_arp: true
+  anycast_gateway: "10.10.20.1/24"
+- vlan_id: 30
+  vni: 10030
+  vlan_name: "GUEST_VLAN"
+  multicast_group: "239.1.1.30"
+  suppress_arp: true
+  anycast_gateway: "10.10.30.1/24"
+- vlan_id: 100
+  vni: 10100
+  vlan_name: "SERVER_VLAN"
+  multicast_group: "239.1.1.100"
+  suppress_arp: true
+  anycast_gateway: "10.10.100.1/24"
+- vlan_id: 200
+  vni: 10200
+  vlan_name: "STORAGE_VLAN"
+  multicast_group: "239.1.1.200"
+  suppress_arp: true
+  anycast_gateway: "10.10.200.1/24"
+
+# Layer 3 VNI Assignments for VRF
+evpn_l3_vnis:
+- vrf_name: "TENANT-A"
+  l3_vni: 50001
+  vlan_id: 3001
+  anycast_gateway_mac: "0000.1111.2222"
+  route_target: "65000:50001"
+  route_distinguisher: "auto"
+- vrf_name: "TENANT-B"
+  l3_vni: 50002
+  vlan_id: 3002
+  anycast_gateway_mac: "0000.1111.2222"
+  route_target: "65000:50002"
+  route_distinguisher: "auto"
+
+# VLAN to VNI Mapping
+vxlan_vlan_vni_mappings:
+- vlan_id: 10
+  vni: 10010
+- vlan_id: 20
+  vni: 10020
+- vlan_id: 30
+  vni: 10030
+- vlan_id: 100
+  vni: 10100
+- vlan_id: 200
+  vni: 10200
+- vlan_id: 3001
+  vni: 50001
+- vlan_id: 3002
+  vni: 50002
+
+# ====================================
+# EVPN MULTIHOMING CONFIGURATION
+# ====================================
+evpn_multihoming_enabled: true
+
+# Ethernet Segment Configuration for Dual-Homed Servers
+evpn_ethernet_segments:
+- interface: "port-channel10"
+  esi_id: "ES1"
+  esi_value: "0000.0000.0000.0000.0001"
+  redundancy_mode: "single-active"
+  df_wait_time: 3
+  description: "Dual-homed Server 1"
+- interface: "port-channel20"
+  esi_id: "ES2"
+  esi_value: "0000.0000.0000.0000.0002"
+  redundancy_mode: "all-active"
+  df_wait_time: 3
+  description: "Dual-homed Server 2"
+- interface: "port-channel30"
+  esi_id: "ES3"
+  esi_value: "0000.0000.0000.0000.0003"
+  redundancy_mode: "single-active"
+  df_wait_time: 5
+  description: "Dual-homed Storage Array"
+
+# ====================================
+# BFD CONFIGURATION
+# ====================================
+# BFD Global Settings for Fast Convergence
+bfd_global_config:
+  interval: 250
+  min_rx: 250
+  multiplier: 3
+  echo_mode: false
+
+# BFD Enabled Interfaces
+bfd_enabled_interfaces:
+- interface: "Ethernet1/1"
+  description: "To Spine01"
+- interface: "Ethernet1/2"
+  description: "To Spine02"
+- interface: "Ethernet1/3"
+  description: "To Spine03"
+- interface: "Ethernet1/4"
+  description: "To Spine04"
+
+# ====================================
+# ROUTE POLICIES AND FILTERING
+# ====================================
+# EVPN Route Maps
+evpn_route_maps:
+- name: "EVPN-IN"
+  action: "permit"
+  sequence: 10
+  match_criteria: "evpn route-type 2"
+  set_action: "local-preference 150"
+- name: "EVPN-OUT"
+  action: "permit"
+  sequence: 10
+  match_criteria: "evpn route-type 2"
+  set_action: "community 65000:100"
+- name: "BGP-UNDERLAY-IN"
+  action: "permit"
+  sequence: 10
+  match_criteria: "ip address prefix-list LOOPBACKS"
+  set_action: "local-preference 100"
+- name: "BGP-UNDERLAY-OUT"
+  action: "permit"
+  sequence: 10
+  match_criteria: "ip address prefix-list LOOPBACKS"
+  set_action: "metric 0"
+
+# BGP AS-Path Access Lists
+bgp_as_path_lists:
+- list_number: 1
+  action: "permit"
+  regex: "^65[0-9]+$"
+  description: "Permit leaf ASNs"
+- list_number: 2
+  action: "permit"
+  regex: "^65100$"
+  description: "Permit spine ASN"
+
+# Community Lists for Traffic Engineering
+bgp_community_lists:
+- name: "TENANT-A-ROUTES"
+  action: "permit"
+  community: "65000:1001"
+- name: "TENANT-B-ROUTES"
+  action: "permit"
+  community: "65000:1002"
+- name: "CRITICAL-SERVICES"
+  action: "permit"
+  community: "65000:2000"
+
+# ====================================
+# QOS CONFIGURATION FOR VXLAN
+# ====================================
+# VXLAN QoS Policies
+vxlan_qos_policies:
+- policy_name: "VXLAN-POLICY"
+  bandwidth: 10000000
+  priority: 5000000
+  queue_limit: 5000
+  dscp_marking: 26
+- policy_name: "EVPN-CONTROL-POLICY"
+  bandwidth: 1000000
+  priority: 900000
+  queue_limit: 1000
+  dscp_marking: 48
+
+# QoS Interface Applications
+vxlan_qos_interfaces:
+- interface: "nve1"
+  policy_name: "VXLAN-POLICY"
+- interface: "Loopback0"
+  policy_name: "EVPN-CONTROL-POLICY"
+
+# ====================================
+# FABRIC ADDRESSING SCHEME
+# ====================================
+# Loopback Addressing
+fabric_loopbacks:
+  spine01:
+    loopback0: "10.0.0.1/32"
+    loopback1: "10.1.0.1/32"
+  spine02:
+    loopback0: "10.0.0.2/32"
+    loopback1: "10.1.0.2/32"
+  leaf01:
+    loopback0: "10.0.0.11/32"
+    loopback1: "10.1.0.11/32"
+  leaf02:
+    loopback0: "10.0.0.12/32"
+    loopback1: "10.1.0.12/32"
+
+# Point-to-Point Link Addressing
+fabric_p2p_links:
+  leaf01_spine01:
+    leaf_ip: "10.1.1.1/31"
+    spine_ip: "10.1.1.0/31"
+  leaf01_spine02:
+    leaf_ip: "10.1.1.3/31"
+    spine_ip: "10.1.1.2/31"
+  leaf02_spine01:
+    leaf_ip: "10.1.1.5/31"
+    spine_ip: "10.1.1.4/31"
+  leaf02_spine02:
+    leaf_ip: "10.1.1.7/31"
+    spine_ip: "10.1.1.6/31"
+
+# ====================================
+# MONITORING AND TROUBLESHOOTING
+# ====================================
+# EVPN Monitoring Configuration
+evpn_monitoring:
+  snmp_traps:
+  - "bgp"
+  - "nve"
+  - "l2vpn evpn"
+  event_manager:
+  - name: "EVPN_NEIGHBOR_DOWN"
+    trigger: "syslog pattern \"BGP.*EVPN.*neighbor.*Down\""
+    action: "snmp-trap strdata \"EVPN neighbor down\""
+  - name: "VXLAN_TUNNEL_DOWN"
+    trigger: "syslog pattern \"NVE.*tunnel.*down\""
+    action: "syslog msg \"VXLAN tunnel failure\""
+
+# Verification Commands
+verification_commands:
+  vxlan:
+  - "show nve interface nve1"
+  - "show nve vni"
+  - "show nve peers"
+  - "show fabric forwarding"
+  evpn:
+  - "show bgp l2vpn evpn summary"
+  - "show bgp l2vpn evpn"
+  - "show evpn instance"
+  - "show evpn ethernet-segment"
+  underlay:
+  - "show bgp ipv4 unicast summary"
+  - "show ip route bgp"
+  - "show bfd neighbors"
+
+# ====================================
+# SECURITY AND HARDENING
+# ====================================
+# BGP Security Configuration
+bgp_security:
+  ttl_security:
+    enabled: true
+    hop_count: 1
+  md5_authentication:
+    enabled: true
+    key_chain: "BGP-AUTH"
+  maximum_prefix_limits:
+    ipv4_unicast: 12000
+    l2vpn_evpn: 50000
+
+# Access Control Lists for Management
+mgmt_acls:
+- name: "MGMT-ACCESS"
+  rules:
+  - "permit tcp 10.100.1.0 0.0.0.255 any eq 22"
+  - "permit tcp 10.100.1.0 0.0.0.255 any eq 443"
+  - "permit udp 10.100.1.0 0.0.0.255 any eq 161"
+  - "deny ip any any log"
+
+# ====================================
+# DISASTER RECOVERY AND BACKUP
+# ====================================
+# Configuration Backup Settings
+config_backup:
+  schedule: "daily"
+  retention_days: 30
+  backup_server: "10.100.1.100"
+  backup_protocol: "scp"
+
+# Multi-Site EVPN Configuration
+multisite_evpn:
+  enabled: false
+  site_id: 1
+  delay_restore_time: 300
+  dci_tracking_enabled: true

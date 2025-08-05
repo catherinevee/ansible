@@ -1,0 +1,326 @@
+---
+# Comprehensive network troubleshooting and diagnostics playbook
+- name: Network Troubleshooting and Diagnostics
+  hosts: all
+  gather_facts: false
+  vars:
+    troubleshooting_timestamp: "{{ ansible_date_time.iso8601 }}"
+    diagnostic_tests:
+      connectivity: true
+      interface_status: true
+      routing_table: true
+      arp_table: true
+      mac_table: true
+      spanning_tree: true
+      protocol_status: true
+
+  tasks:
+  - name: Display troubleshooting session information
+    ansible.builtin.debug:
+      msg:
+      - "=== Network Troubleshooting Session ==="
+      - "Timestamp: {{ troubleshooting_timestamp }}"
+      - "Target Device: {{ inventory_hostname }}"
+      - "Device Type: {{ ansible_network_os | default('unknown') }}"
+      - "Diagnostic Tests: {{ diagnostic_tests.keys() | select('extract', diagnostic_tests) | list }}"
+      - "======================================="
+
+# Cisco Network Diagnostics
+- name: Cisco Network Diagnostics
+  hosts: cisco_devices
+  gather_facts: false
+  connection: network_cli
+
+  tasks:
+  - name: Gather comprehensive device information
+    cisco.ios.ios_facts:
+      gather_subset:
+      - all
+    register: cisco_device_facts
+    # Collect comprehensive device information
+
+  - name: Check interface status and statistics
+    cisco.ios.ios_command:
+      commands:
+      - show interfaces
+      - show interfaces summary
+      - show interfaces status
+      - show interfaces counters
+      - show interfaces description
+    register: cisco_interface_diagnostics
+    when: diagnostic_tests.interface_status
+    # Comprehensive interface diagnostics
+
+  - name: Check routing and forwarding information
+    cisco.ios.ios_command:
+      commands:
+      - show ip route summary
+      - show ip route | begin Gateway
+      - show ip cef summary
+      - show ip arp
+      - show mac address-table
+    register: cisco_routing_diagnostics
+    when: diagnostic_tests.routing_table or diagnostic_tests.arp_table or diagnostic_tests.mac_table
+    # Routing and forwarding diagnostics
+
+  - name: Check spanning tree status
+    cisco.ios.ios_command:
+      commands:
+      - show spanning-tree summary
+      - show spanning-tree
+      - show spanning-tree interface
+      - show spanning-tree blockedports
+    register: cisco_stp_diagnostics
+    when: diagnostic_tests.spanning_tree
+    # Spanning tree diagnostics
+
+  - name: Check protocol status
+    cisco.ios.ios_command:
+      commands:
+      - show ip protocols
+      - show ip bgp summary
+      - show ip ospf neighbor
+      - show ip eigrp neighbor
+      - show cdp neighbors detail
+      - show lldp neighbors detail
+    register: cisco_protocol_diagnostics
+    when: diagnostic_tests.protocol_status
+    ignore_errors: true
+    # Protocol status diagnostics
+
+  - name: Perform connectivity tests
+    cisco.ios.ios_ping:
+      dest: "{{ item }}"
+      count: 5
+      timeout: 10
+    loop: "{{ connectivity_test_targets | default(['8.8.8.8', '1.1.1.1']) }}"
+    register: cisco_ping_results
+    when: diagnostic_tests.connectivity
+    ignore_errors: true
+    # Connectivity testing
+
+  - name: Check hardware and environmental status
+    cisco.ios.ios_command:
+      commands:
+      - show version
+      - show inventory
+      - show environment all
+      - show processes cpu
+      - show memory
+      - show flash
+    register: cisco_hardware_diagnostics
+    ignore_errors: true
+    # Hardware and system diagnostics
+
+  - name: Check for error messages and alarms
+    cisco.ios.ios_command:
+      commands:
+      - show logging | include Error|Warning|Critical
+      - show logging | last 50
+      - show tech-support
+    register: cisco_error_diagnostics
+    ignore_errors: true
+    # Error and alarm diagnostics
+
+    # Arista Network Diagnostics
+- name: Arista Network Diagnostics
+  hosts: arista_devices
+  gather_facts: false
+  connection: httpapi
+
+  tasks:
+  - name: Gather Arista device facts
+    arista.eos.eos_facts:
+      gather_subset:
+      - all
+    register: arista_device_facts
+    # Collect Arista device information
+
+  - name: Check Arista interface diagnostics
+    arista.eos.eos_command:
+      commands:
+      - show interfaces
+      - show interfaces status
+      - show interfaces counters
+      - show interfaces description
+      - show interfaces transceiver
+    register: arista_interface_diagnostics
+    when: diagnostic_tests.interface_status
+    # Arista interface diagnostics
+
+  - name: Check Arista MLAG status
+    arista.eos.eos_command:
+      commands:
+      - show mlag
+      - show mlag detail
+      - show mlag interfaces
+    register: arista_mlag_diagnostics
+    ignore_errors: true
+    # MLAG-specific diagnostics
+
+  - name: Check EVPN/VXLAN status
+    arista.eos.eos_command:
+      commands:
+      - show bgp evpn summary
+      - show vxlan vtep
+      - show vxlan address-table
+      - show interface vxlan1
+    register: arista_evpn_diagnostics
+    ignore_errors: true
+    # EVPN/VXLAN diagnostics for data center
+
+    # Juniper Network Diagnostics
+- name: Juniper Network Diagnostics
+  hosts: juniper_devices
+  gather_facts: false
+  connection: netconf
+
+  tasks:
+  - name: Gather Juniper device facts
+    junipernetworks.junos.junos_facts:
+      gather_subset:
+      - all
+    register: juniper_device_facts
+    # Collect Juniper device information
+
+  - name: Check Juniper interface diagnostics
+    junipernetworks.junos.junos_command:
+      commands:
+      - show interfaces terse
+      - show interfaces extensive
+      - show interfaces diagnostics optics
+      format: text
+    register: juniper_interface_diagnostics
+    when: diagnostic_tests.interface_status
+    # Juniper interface diagnostics
+
+  - name: Check routing protocol status
+    junipernetworks.junos.junos_command:
+      commands:
+      - show route summary
+      - show bgp summary
+      - show ospf neighbor
+      - show isis adjacency
+      format: text
+    register: juniper_protocol_diagnostics
+    when: diagnostic_tests.protocol_status
+    ignore_errors: true
+    # Juniper routing protocol diagnostics
+
+    # Palo Alto Diagnostics
+- name: Palo Alto Network Diagnostics
+  hosts: palo_alto_devices
+  gather_facts: false
+  connection: local
+
+  tasks:
+  - name: Check Palo Alto system status
+    paloaltonetworks.panos.panos_op:
+      provider: "{{ panos_provider }}"
+      cmd: "show system info"
+    register: panos_system_info
+    # Palo Alto system information
+
+  - name: Check interface status
+    paloaltonetworks.panos.panos_op:
+      provider: "{{ panos_provider }}"
+      cmd: "show interface all"
+    register: panos_interface_status
+    when: diagnostic_tests.interface_status
+    # Interface status check
+
+  - name: Check security policy hit counts
+    paloaltonetworks.panos.panos_op:
+      provider: "{{ panos_provider }}"
+      cmd: "show rule-hit-count vsys vsys1 rule-base security rules all"
+    register: panos_policy_hits
+    # Security policy usage statistics
+
+  - name: Check threat logs
+    paloaltonetworks.panos.panos_op:
+      provider: "{{ panos_provider }}"
+      cmd: "show log threat last-hour"
+    register: panos_threat_logs
+    # Recent security threats
+
+    # Generate Comprehensive Diagnostics Report
+- name: Generate Network Diagnostics Report
+  hosts: all
+  gather_facts: false
+
+  tasks:
+  - name: Compile diagnostics data
+    ansible.builtin.set_fact:
+      diagnostics_summary:
+        device: "{{ inventory_hostname }}"
+        timestamp: "{{ troubleshooting_timestamp }}"
+        device_type: "{{ ansible_network_os | default('unknown') }}"
+        device_facts: "{{ cisco_device_facts | default(arista_device_facts) | default(juniper_device_facts) | default({}) }}"
+        interface_diagnostics: "{{ cisco_interface_diagnostics | default(arista_interface_diagnostics) | default(juniper_interface_diagnostics) | default({}) }}"
+        connectivity_results: "{{ cisco_ping_results | default({}) }}"
+        protocol_status: "{{ cisco_protocol_diagnostics | default(arista_mlag_diagnostics) | default(juniper_protocol_diagnostics) | default({}) }}"
+        hardware_status: "{{ cisco_hardware_diagnostics | default({}) }}"
+        error_logs: "{{ cisco_error_diagnostics | default({}) }}"
+    # Compile comprehensive diagnostics data
+
+  - name: Generate detailed diagnostics report
+    ansible.builtin.template:
+      src: "network_diagnostics_report.j2"
+      dest: "{{ playbook_dir }}/../reports/network_diagnostics_{{ inventory_hostname }}_{{ ansible_date_time.date }}.txt"
+      mode: '0644'
+    delegate_to: localhost
+    vars:
+      diagnostics_data: "{{ diagnostics_summary }}"
+    # Generate detailed diagnostics report
+
+  - name: Display diagnostics summary
+    ansible.builtin.debug:
+      msg:
+      - "=== Diagnostics Summary for {{ inventory_hostname }} ==="
+      - "Device Type: {{ ansible_network_os | default('unknown') }}"
+      - "Hostname: {{ ansible_net_hostname | default('unknown') }}"
+      - "Version: {{ ansible_net_version | default('unknown') }}"
+      - "Model: {{ ansible_net_model | default('unknown') }}"
+      - "Serial: {{ ansible_net_serialnum | default('unknown') }}"
+      - "Uptime: {{ ansible_net_uptime | default('unknown') }}"
+      - "Interface Count: {{ ansible_net_interfaces | length if ansible_net_interfaces is defined else 'unknown' }}"
+      - "Report Generated: reports/network_diagnostics_{{ inventory_hostname }}_{{ ansible_date_time.date }}.txt"
+      - "================================================"
+    # Display summary information
+
+    # Network Performance Analysis
+- name: Network Performance Analysis
+  hosts: cisco_devices,arista_devices
+  gather_facts: false
+
+  tasks:
+  - name: Analyze interface utilization
+    block:
+    - name: Collect interface statistics (baseline)
+      cisco.ios.ios_command:
+        commands:
+        - show interfaces | include rate
+        - show interfaces summary
+      register: baseline_stats
+      when: ansible_network_os == "ios"
+
+    - name: Wait for measurement interval
+      ansible.builtin.pause:
+        seconds: "{{ performance_measurement_interval | default(60) }}"
+      # Wait to collect comparative statistics
+
+    - name: Collect interface statistics (comparison)
+      cisco.ios.ios_command:
+        commands:
+        - show interfaces | include rate
+        - show interfaces summary
+      register: comparison_stats
+      when: ansible_network_os == "ios"
+
+    - name: Calculate utilization trends
+      ansible.builtin.debug:
+        msg: "Interface utilization analysis completed - review detailed reports"
+      # Performance trend analysis would be implemented here
+
+    when: diagnostic_tests.interface_status
+    # Performance analysis block

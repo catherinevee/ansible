@@ -1,0 +1,547 @@
+---
+# Palo Alto Networks device-specific variables - Enterprise Configuration
+ansible_connection: local
+ansible_python_interpreter: "{{ ansible_playbook_python }}"
+
+# PAN-OS connection settings with enhanced security
+panos_provider:
+  ip_address: "{{ ansible_host }}"
+  username: "{{ vault_panos_username }}"
+  password: "{{ vault_panos_password }}"
+  api_key: "{{ vault_panos_api_key }}"
+  timeout: 120
+  port: 443
+  verify_ssl: true
+
+# Enterprise security zones with protection profiles
+panos_security_zones:
+- zone_name: trust
+  mode: layer3
+  interfaces:
+  - ethernet1/1
+  - ethernet1/2
+  zone_protection_profile: strict
+  enable_user_identification: true
+  log_setting: default
+- zone_name: untrust
+  mode: layer3
+  interfaces:
+  - ethernet1/3
+  zone_protection_profile: internet
+  enable_user_identification: false
+  log_setting: default
+- zone_name: dmz
+  mode: layer3
+  interfaces:
+  - ethernet1/4
+  - ethernet1/5
+  zone_protection_profile: dmz
+  enable_user_identification: true
+  log_setting: default
+- zone_name: guest
+  mode: layer3
+  interfaces:
+  - ethernet1/6
+  zone_protection_profile: guest
+  enable_user_identification: false
+  log_setting: default
+
+# Enhanced interface configurations for enterprise deployment
+panos_interface_config:
+  management_interfaces:
+  - if_name: ethernet1/1
+    mode: layer3
+    ip: "{{ mgmt_ip | default('dhcp') }}"
+    zone_name: trust
+    enable_dhcp: false
+    comment: "Management interface for internal access"
+  data_interfaces:
+  - if_name: ethernet1/2
+    mode: layer3
+    zone_name: trust
+    ip: "{{ trust_ip }}"
+    comment: "Internal trusted network interface"
+  - if_name: ethernet1/3
+    mode: layer3
+    zone_name: untrust
+    ip: "{{ untrust_ip }}"
+    comment: "External untrusted network interface"
+  - if_name: ethernet1/4
+    mode: layer3
+    zone_name: dmz
+    ip: "{{ dmz_ip | default('192.168.100.1/24') }}"
+    comment: "DMZ network interface for public services"
+  - if_name: ethernet1/5
+    mode: layer3
+    zone_name: dmz
+    ip: "{{ dmz_backup_ip | default('192.168.101.1/24') }}"
+    comment: "Secondary DMZ interface for redundancy"
+  - if_name: ethernet1/6
+    mode: layer3
+    zone_name: guest
+    ip: "{{ guest_ip | default('192.168.200.1/24') }}"
+    comment: "Guest network interface"
+
+# Comprehensive address objects for enterprise networks
+panos_address_objects:
+- name: "Internal_Network"
+  value: "10.0.0.0/8"
+  type: "ip-netmask"
+  description: "Internal corporate network"
+- name: "DMZ_Network"
+  value: "192.168.100.0/24"
+  type: "ip-netmask"
+  description: "Demilitarized zone network"
+- name: "DMZ_Backup_Network"
+  value: "192.168.101.0/24"
+  type: "ip-netmask"
+  description: "Secondary DMZ network"
+- name: "Guest_Network"
+  value: "192.168.200.0/24"
+  type: "ip-netmask"
+  description: "Guest wireless network"
+- name: "Management_Network"
+  value: "10.255.0.0/16"
+  type: "ip-netmask"
+  description: "Network management subnet"
+- name: "Critical_Servers"
+  value: "10.10.0.0/24"
+  type: "ip-netmask"
+  description: "Critical server subnet"
+
+# Enterprise security policies with comprehensive coverage
+panos_security_policies:
+- rule_name: "Allow-Critical-Server-Access"
+  source_zone: [ "trust" ]
+  destination_zone: [ "trust" ]
+  source_ip: [ "Internal_Network" ]
+  destination_ip: [ "Critical_Servers" ]
+  application: [ "ssh", "https", "ping", "dns" ]
+  action: "allow"
+  log_setting: "default"
+  profile_setting: "strict"
+  description: "Allow access to critical servers"
+- rule_name: "Allow-Internal-to-DMZ"
+  source_zone: [ "trust" ]
+  destination_zone: [ "dmz" ]
+  source_ip: [ "Internal_Network" ]
+  destination_ip: [ "DMZ_Network", "DMZ_Backup_Network" ]
+  application: [ "web-browsing", "ssl", "ssh", "ping" ]
+  action: "allow"
+  log_setting: "default"
+  profile_setting: "default"
+  description: "Internal access to DMZ services"
+- rule_name: "Allow-DMZ-to-Internet"
+  source_zone: [ "dmz" ]
+  destination_zone: [ "untrust" ]
+  source_ip: [ "DMZ_Network", "DMZ_Backup_Network" ]
+  destination_ip: [ "any" ]
+  application: [ "web-browsing", "ssl", "dns", "ntp" ]
+  action: "allow"
+  log_setting: "default"
+  profile_setting: "internet"
+  description: "DMZ outbound internet access"
+- rule_name: "Allow-Internal-to-Internet"
+  source_zone: [ "trust" ]
+  destination_zone: [ "untrust" ]
+  source_ip: [ "Internal_Network" ]
+  destination_ip: [ "any" ]
+  application: [ "any" ]
+  action: "allow"
+  log_setting: "default"
+  profile_setting: "default"
+  description: "Internal users internet access"
+- rule_name: "Allow-Guest-to-Internet"
+  source_zone: [ "guest" ]
+  destination_zone: [ "untrust" ]
+  source_ip: [ "Guest_Network" ]
+  destination_ip: [ "any" ]
+  application: [ "web-browsing", "ssl", "dns" ]
+  action: "allow"
+  log_setting: "default"
+  profile_setting: "guest"
+  description: "Guest network internet access"
+- rule_name: "Block-Guest-to-Internal"
+  source_zone: [ "guest" ]
+  destination_zone: [ "trust", "dmz" ]
+  source_ip: [ "Guest_Network" ]
+  destination_ip: [ "any" ]
+  application: [ "any" ]
+  action: "deny"
+  log_setting: "default"
+  description: "Block guest access to internal networks"
+- rule_name: "Deny-All"
+  source_zone: [ "any" ]
+  destination_zone: [ "any" ]
+  source_ip: [ "any" ]
+  destination_ip: [ "any" ]
+  application: [ "any" ]
+  action: "deny"
+  log_setting: "default"
+  description: "Default deny all rule"
+
+# Comprehensive NAT policies for enterprise traffic
+panos_nat_policies:
+- rule_name: "Internal-to-Internet-NAT"
+  source_zone: [ "trust" ]
+  destination_zone: [ "untrust" ]
+  source_ip: [ "Internal_Network" ]
+  destination_ip: [ "any" ]
+  service: "any"
+  nat_type: "ipv4"
+  snat_type: "dynamic-ip-and-port"
+  snat_interface: "ethernet1/3"
+  description: "NAT for internal network internet access"
+- rule_name: "DMZ-to-Internet-NAT"
+  source_zone: [ "dmz" ]
+  destination_zone: [ "untrust" ]
+  source_ip: [ "DMZ_Network", "DMZ_Backup_Network" ]
+  destination_ip: [ "any" ]
+  service: "any"
+  nat_type: "ipv4"
+  snat_type: "dynamic-ip-and-port"
+  snat_interface: "ethernet1/3"
+  description: "NAT for DMZ network internet access"
+- rule_name: "Guest-to-Internet-NAT"
+  source_zone: [ "guest" ]
+  destination_zone: [ "untrust" ]
+  source_ip: [ "Guest_Network" ]
+  destination_ip: [ "any" ]
+  service: "any"
+  nat_type: "ipv4"
+  snat_type: "dynamic-ip-and-port"
+  snat_interface: "ethernet1/3"
+  description: "NAT for guest network internet access"
+- rule_name: "DMZ-Web-Server-DNAT"
+  source_zone: [ "untrust" ]
+  destination_zone: [ "dmz" ]
+  source_ip: [ "any" ]
+  destination_ip: [ "{{ external_web_ip }}" ]
+  service: "service-http"
+  nat_type: "ipv4"
+  dnat_address: "{{ internal_web_server }}"
+  description: "DNAT for public web server access"
+
+# Quality of Service configuration for enterprise traffic management
+panos_qos_config:
+  qos_profiles:
+  - name: "Critical-Priority"
+    class_bandwidth_type: "percentage"
+    class_bandwidth: 40
+    priority: 1
+    max_bandwidth: 1000000
+    description: "Critical business applications"
+  - name: "High-Priority"
+    class_bandwidth_type: "percentage"
+    class_bandwidth: 30
+    priority: 2
+    max_bandwidth: 750000
+    description: "High priority business traffic"
+  - name: "Medium-Priority"
+    class_bandwidth_type: "percentage"
+    class_bandwidth: 20
+    priority: 4
+    max_bandwidth: 500000
+    description: "Standard business traffic"
+  - name: "Low-Priority"
+    class_bandwidth_type: "percentage"
+    class_bandwidth: 10
+    priority: 7
+    max_bandwidth: 250000
+    description: "Best effort traffic"
+
+# Comprehensive security profiles for threat prevention
+panos_security_profiles:
+  antivirus_profiles:
+  - name: "strict"
+    description: "Strict antivirus profile for critical systems"
+    decoder:
+    - name: "http"
+      action: "reset-both"
+      wildfire_action: "reset-both"
+    - name: "smtp"
+      action: "reset-both"
+      wildfire_action: "reset-both"
+    - name: "pop3"
+      action: "reset-both"
+      wildfire_action: "reset-both"
+    - name: "imap"
+      action: "reset-both"
+      wildfire_action: "reset-both"
+    - name: "ftp"
+      action: "reset-both"
+      wildfire_action: "reset-both"
+  - name: "default"
+    description: "Default antivirus profile"
+    decoder:
+    - name: "http"
+      action: "default"
+      wildfire_action: "default"
+    - name: "smtp"
+      action: "default"
+      wildfire_action: "default"
+  - name: "internet"
+    description: "Internet-facing antivirus profile"
+    decoder:
+    - name: "http"
+      action: "alert"
+      wildfire_action: "alert"
+    - name: "smtp"
+      action: "alert"
+      wildfire_action: "alert"
+  anti_spyware_profiles:
+  - name: "strict"
+    description: "Strict anti-spyware profile"
+    rules:
+    - name: "simple-critical"
+      severity: [ "critical", "high", "medium" ]
+      action: "reset-both"
+      packet_capture: "single-packet"
+    - name: "simple-informational"
+      severity: [ "informational", "low" ]
+      action: "alert"
+  - name: "default"
+    description: "Default anti-spyware profile"
+    rules:
+    - name: "simple-critical"
+      severity: [ "critical", "high" ]
+      action: "reset-both"
+    - name: "simple-informational"
+      severity: [ "informational" ]
+      action: "default"
+  vulnerability_profiles:
+  - name: "strict"
+    description: "Strict vulnerability profile"
+    rules:
+    - name: "simple-client-critical"
+      severity: [ "critical", "high", "medium" ]
+      action: "reset-both"
+      packet_capture: "single-packet"
+    - name: "simple-server-critical"
+      severity: [ "critical", "high", "medium" ]
+      action: "reset-both"
+      packet_capture: "single-packet"
+  - name: "default"
+    description: "Default vulnerability profile"
+    rules:
+    - name: "simple-client-critical"
+      severity: [ "critical", "high" ]
+      action: "reset-both"
+    - name: "simple-server-critical"
+      severity: [ "critical", "high" ]
+      action: "reset-both"
+
+# URL filtering profiles for web content control
+panos_url_filtering:
+  profiles:
+  - name: "strict"
+    description: "Strict URL filtering for critical systems"
+    allow_categories: [ "business-and-economy", "computer-and-internet-info", "financial-services" ]
+    block_categories: [ "adult", "malware", "phishing", "command-and-control", "gambling", "games", "social-networking" ]
+    alert_categories: [ "high-risk", "medium-risk", "low-risk" ]
+    credential_enforcement: true
+  - name: "default"
+    description: "Default URL filtering profile"
+    allow_categories: [ "business-and-economy", "computer-and-internet-info", "educational-institutions" ]
+    block_categories: [ "adult", "malware", "phishing", "command-and-control", "gambling" ]
+    alert_categories: [ "high-risk", "medium-risk" ]
+  - name: "guest"
+    description: "Guest network URL filtering"
+    allow_categories: [ "business-and-economy", "computer-and-internet-info" ]
+    block_categories: [ "adult", "malware", "phishing", "command-and-control", "gambling", "games", "social-networking", "streaming-media" ]
+    alert_categories: [ "high-risk", "medium-risk", "low-risk" ]
+
+# GlobalProtect VPN configuration for remote access
+panos_globalprotect:
+  portals:
+  - name: "Enterprise-GP-Portal"
+    interface: "ethernet1/3"
+    ip_address: "{{ gp_portal_ip | default('203.0.113.100') }}"
+    certificate_profile: "default"
+    client_auth:
+      allow_list: "all"
+      cookie_timeout: 24
+    satellite_config:
+      enable: true
+      polling_timeout: 60
+  gateways:
+  - name: "Enterprise-GP-Gateway"
+    interface: "ethernet1/3"
+    ip_address: "{{ gp_gateway_ip | default('203.0.113.101') }}"
+    local_address: "ethernet1/3"
+    tunnel_interface: "tunnel.1"
+    client_config:
+      ip_pool: "192.168.250.1-192.168.250.100"
+      dns_servers: [ "{{ internal_dns1 }}", "{{ internal_dns2 }}" ]
+      wins_servers: [ "{{ internal_wins }}" ]
+
+# High Availability configuration for enterprise deployment
+panos_ha_config:
+  group_id: 1
+  mode: "active-passive"
+  peer_ip: "{{ ha_peer_ip }}"
+  backup_link: "ethernet1/8"
+  control_link: "ethernet1/7"
+  session_sync: true
+  session_sync_network: "ethernet1/7"
+  election_timers:
+    promotion_hold_time: 2000
+    hello_interval: 8000
+    heartbeat_interval: 1000
+    preemption_hold_time: 60
+  monitoring:
+    link_monitoring: true
+    path_monitoring: true
+
+# Enterprise network profiles
+panos_network_profiles:
+  monitor_profiles:
+  - name: "critical"
+    interval: 1
+    threshold: 3
+    action: "fail-over"
+  - name: "default"
+    interval: 3
+    threshold: 5
+    action: "wait-recover"
+  interface_management_profiles:
+  - name: "allow-mgmt"
+    permitted_ips: [ "{{ mgmt_network | default('10.255.0.0/16') }}" ]
+    https: true
+    ssh: true
+    snmp: true
+    ping: true
+    userid_service: true
+    userid_syslog_listener_ssl: true
+  - name: "allow-ping-only"
+    permitted_ips: [ "any" ]
+    ping: true
+
+# Comprehensive SNMP configuration
+panos_snmp_config:
+  snmp_setup:
+    snmp_version: "v3"
+    v3_users:
+    - username: "{{ vault_snmp_v3_user }}"
+      auth_protocol: "SHA"
+      auth_password: "{{ vault_snmp_v3_auth }}"
+      priv_protocol: "AES"
+      priv_password: "{{ vault_snmp_v3_priv }}"
+    location: "{{ datacenter_location | default('Enterprise Datacenter') }}"
+    contact: "{{ snmp_contact | default('IT Operations') }}"
+  trap_settings:
+    server_profiles:
+    - name: "primary-monitoring"
+      address: "{{ monitoring_server | default('10.255.1.100') }}"
+      community: "{{ vault_snmp_community_ro }}"
+      version: "v3"
+      username: "{{ vault_snmp_v3_user }}"
+    - name: "secondary-monitoring"
+      address: "{{ backup_monitoring_server | default('10.255.1.101') }}"
+      community: "{{ vault_snmp_community_ro }}"
+      version: "v3"
+      username: "{{ vault_snmp_v3_user }}"
+
+# Enhanced logging configuration
+panos_logging_config:
+  log_settings:
+    system:
+      format: "IETF"
+      facility: "LOG_LOCAL0"
+      server_profiles:
+      - name: "primary-syslog"
+        server: "{{ syslog_server | default('10.255.1.102') }}"
+        protocol: "SSL"
+        port: 6514
+        format: "IETF"
+        facility: "LOG_LOCAL0"
+      - name: "secondary-syslog"
+        server: "{{ backup_syslog_server | default('10.255.1.103') }}"
+        protocol: "UDP"
+        port: 514
+        format: "BSD"
+        facility: "LOG_LOCAL1"
+  log_forwarding_profiles:
+  - name: "security-logs"
+    enhanced_logging: true
+    log_type: "threat"
+    filter: "All Logs"
+    syslog_profiles: [ "primary-syslog", "secondary-syslog" ]
+  - name: "traffic-logs"
+    enhanced_logging: true
+    log_type: "traffic"
+    filter: "All Logs"
+    syslog_profiles: [ "primary-syslog" ]
+  - name: "system-logs"
+    enhanced_logging: true
+    log_type: "system"
+    filter: "All Logs"
+    syslog_profiles: [ "primary-syslog", "secondary-syslog" ]
+
+# Certificate management for enterprise deployment
+panos_certificates:
+  certificates:
+  - name: "device-certificate"
+    common_name: "{{ inventory_hostname }}.{{ domain_name }}"
+    country_code: "US"
+    state: "California"
+    locality: "San Jose"
+    organization: "{{ company_name | default('Enterprise Corp') }}"
+    organizational_unit: "Information Technology"
+    email: "{{ cert_email | default('it@enterprise.com') }}"
+  - name: "web-server-certificate"
+    common_name: "{{ external_web_fqdn }}"
+    country_code: "US"
+    state: "California"
+    locality: "San Jose"
+    organization: "{{ company_name | default('Enterprise Corp') }}"
+    organizational_unit: "Information Technology"
+
+# Administrator accounts with role-based access
+panos_admin_accounts:
+  administrators:
+  - username: "admin"
+    authentication_profile: "local"
+    role: "superuser"
+    password_hash: "{{ vault_panos_admin_hash }}"
+    client_certificate_only: false
+  - username: "security-admin"
+    authentication_profile: "local"
+    role: "securityadmin"
+    password_hash: "{{ vault_panos_secadmin_hash }}"
+    client_certificate_only: false
+  - username: "network-admin"
+    authentication_profile: "local"
+    role: "networkadmin"
+    password_hash: "{{ vault_panos_netadmin_hash }}"
+    client_certificate_only: false
+  - username: "readonly"
+    authentication_profile: "local"
+    role: "superreader"
+    password_hash: "{{ vault_panos_readonly_hash }}"
+    client_certificate_only: false
+  - username: "audit"
+    authentication_profile: "local"
+    role: "auditadmin"
+    password_hash: "{{ vault_panos_audit_hash }}"
+    client_certificate_only: false
+
+# Device certificates and SSL decryption
+panos_ssl_decryption:
+  ssl_decrypt_profiles:
+  - name: "decrypt-inbound"
+    ssl_protocol_settings:
+      min_version: "tls1-1"
+      max_version: "max"
+      auth_algo_sha1: true
+      auth_algo_sha256: true
+      auth_algo_md5: false
+    ssl_decrypt_settings:
+      decrypt_cert_name: "device-certificate"
+  - name: "decrypt-outbound"
+    ssl_protocol_settings:
+      min_version: "tls1-2"
+      max_version: "max"
+      auth_algo_sha1: false
+      auth_algo_sha256: true
+      auth_algo_md5: false

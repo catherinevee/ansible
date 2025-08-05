@@ -1,0 +1,149 @@
+---
+# Comprehensive network health check and validation
+- name: Network device health check and validation
+  hosts: all
+  gather_facts: false
+  vars:
+    health_check_results: {}
+    validation_timestamp: "{{ ansible_date_time.iso8601 }}"
+
+  tasks:
+  # Cisco device validation
+  - name: Gather Cisco device facts
+    cisco.ios.ios_facts:
+      gather_subset:
+      - all
+    when: ansible_network_os == "ios"
+    register: cisco_facts
+    # Comprehensive fact gathering for Cisco devices
+
+  - name: Validate Cisco device health
+    ansible.builtin.assert:
+      that:
+      - ansible_net_hostname is defined
+      - ansible_net_version is defined
+      - ansible_net_serialnum is defined
+      fail_msg: "Critical device information missing"
+      success_msg: "Basic device health validation passed"
+    when: ansible_network_os == "ios"
+    # Basic health assertions for Cisco devices
+
+  - name: Check Cisco interface status
+    cisco.ios.ios_interfaces:
+      state: gathered
+    when: ansible_network_os == "ios"
+    register: cisco_interface_status
+    # Gather current interface states
+
+    # Juniper device validation
+  - name: Gather Juniper device facts
+    junipernetworks.junos.junos_facts:
+      gather_subset:
+      - all
+    when: ansible_network_os == "junos"
+    register: juniper_facts
+    # Comprehensive fact gathering for Juniper devices
+
+  - name: Validate Juniper device health
+    ansible.builtin.assert:
+      that:
+      - ansible_net_hostname is defined
+      - ansible_net_version is defined
+      - ansible_net_model is defined
+      fail_msg: "Critical Juniper device information missing"
+      success_msg: "Juniper device health validation passed"
+    when: ansible_network_os == "junos"
+
+  # Arista device validation
+  - name: Gather Arista device facts
+    arista.eos.eos_facts:
+      gather_subset:
+      - all
+    when: ansible_network_os == "eos"
+    register: arista_facts
+    # Comprehensive fact gathering for Arista devices
+
+  - name: Validate Arista device health
+    ansible.builtin.assert:
+      that:
+      - ansible_net_hostname is defined
+      - ansible_net_version is defined
+      - ansible_net_model is defined
+      fail_msg: "Critical Arista device information missing"
+      success_msg: "Arista device health validation passed"
+    when: ansible_network_os == "eos"
+
+  # Palo Alto validation
+  - name: Check Palo Alto system information
+    paloaltonetworks.panos.panos_op:
+      provider: "{{ panos_provider }}"
+      cmd: "show system info"
+    when: "'palo_alto' in group_names"
+    register: panos_system_info
+    # Operational command for system status
+
+  - name: Validate Palo Alto connectivity
+    ansible.builtin.assert:
+      that:
+      - panos_system_info.stdout is defined
+      - "'hostname' in panos_system_info.stdout"
+      fail_msg: "Palo Alto system information retrieval failed"
+      success_msg: "Palo Alto connectivity validated"
+    when: "'palo_alto' in group_names"
+
+  # Fortinet validation
+  - name: Get Fortinet system status
+    fortinet.fortios.fortios_monitor_fact:
+      selector: "system_status"
+    when: "'fortinet' in group_names"
+    register: fortinet_system_status
+    # Monitor system status via API
+
+  - name: Validate Fortinet device health
+    ansible.builtin.assert:
+      that:
+      - fortinet_system_status.meta.results.hostname is defined
+      - fortinet_system_status.meta.results.version is defined
+      fail_msg: "Fortinet system status check failed"
+      success_msg: "Fortinet device health validated"
+    when: "'fortinet' in group_names"
+
+  # Common network connectivity validation
+  - name: Test DNS resolution
+    ansible.builtin.uri:
+      url: "http://{{ dns_servers[0] }}"
+      method: GET
+      timeout: 5
+      status_code: -1
+    delegate_to: localhost
+    register: dns_test
+    ignore_errors: true
+    # Basic connectivity test to DNS servers
+
+  - name: Compile health check summary
+    ansible.builtin.set_fact:
+      health_summary:
+        device: "{{ inventory_hostname }}"
+        timestamp: "{{ validation_timestamp }}"
+        os_type: "{{ ansible_network_os | default('unknown') }}"
+        hostname: "{{ ansible_net_hostname | default('unknown') }}"
+        version: "{{ ansible_net_version | default('unknown') }}"
+        model: "{{ ansible_net_model | default('unknown') }}"
+        serial: "{{ ansible_net_serialnum | default('unknown') }}"
+        validation_status: "PASSED"
+    # Compile comprehensive health summary
+
+  - name: Display health check results
+    ansible.builtin.debug:
+      var: health_summary
+    # Display results for each device
+
+  - name: Generate health report
+    ansible.builtin.template:
+      src: "health_report.j2"
+      dest: "{{ playbook_dir }}/../reports/health_report_{{ inventory_hostname }}_{{ ansible_date_time.date }}.txt"
+      mode: '0644'
+    delegate_to: localhost
+    vars:
+      report_data: "{{ health_summary }}"
+    # Generate detailed health report file

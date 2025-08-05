@@ -1,0 +1,130 @@
+---
+# Centralized syslog configuration for network devices
+- name: Configure syslog on Cisco devices
+  cisco.ios.ios_config:
+    lines:
+    - "logging {{ item.server }} transport {{ item.transport | default('udp') }} port {{ item.port | default('514') }}"
+    - "logging trap {{ item.severity | default('informational') }}"
+    - "logging facility {{ item.facility | default('local0') }}"
+    - "logging source-interface {{ item.source_interface | default(management_interface) | default('Loopback0') }}"
+    loop: "{{ syslog_servers }}"
+  when: ansible_network_os == "ios"
+  notify: save_configuration
+  # Configure syslog on Cisco devices with customizable parameters
+
+- name: Configure advanced logging on Cisco devices
+  cisco.ios.ios_config:
+    lines:
+    - "logging buffered {{ syslog_buffer_size | default('16384') }} {{ syslog_buffer_severity | default('informational') }}"
+    - "logging console {{ syslog_console_severity | default('critical') }}"
+    - "logging monitor {{ syslog_monitor_severity | default('debugging') }}"
+    - "logging rate-limit {{ syslog_rate_limit | default('100') }}"
+    - "service timestamps log datetime msec localtime show-timezone"
+    - "service sequence-numbers"
+  when: ansible_network_os == "ios"
+  notify: save_configuration
+  # Configure advanced logging features for better log management
+
+- name: Configure syslog on Arista devices
+  arista.eos.eos_config:
+    lines:
+    - "logging host {{ item.server }} {{ item.port | default('514') }} transport {{ item.transport | default('udp') }}"
+    - "logging level {{ item.severity | default('informational') }}"
+    - "logging facility {{ item.facility | default('local0') }}"
+    - "logging source-interface {{ item.source_interface | default(management_interface) | default('Management1') }}"
+    loop: "{{ syslog_servers }}"
+  when: ansible_network_os == "eos"
+  # Configure syslog on Arista EOS devices
+
+- name: Configure syslog on Juniper devices
+  junipernetworks.junos.junos_config:
+    lines:
+    - "set system syslog host {{ item.server }} any {{ item.severity | default('info') }}"
+    - "set system syslog host {{ item.server }} port {{ item.port | default('514') }}"
+    - "set system syslog host {{ item.server }} facility-override {{ item.facility | default('local0') }}"
+    - "set system syslog host {{ item.server }} source-address {{ item.source_address | default(ansible_host) }}"
+    loop: "{{ syslog_servers }}"
+  when: ansible_network_os == "junos"
+  # Configure syslog on Juniper Junos devices
+
+- name: Configure structured logging for Palo Alto devices
+  paloaltonetworks.panos.panos_config_element:
+    provider: "{{ panos_provider }}"
+    xpath: "/config/shared/log-settings/syslog"
+    element: |
+      <server>
+        <name>{{ item.name | default(item.server) }}</name>
+        <server>{{ item.server }}</server>
+        <transport>{{ item.transport | default('UDP') }}</transport>
+        <port>{{ item.port | default('514') }}</port>
+        <format>{{ item.format | default('BSD') }}</format>
+        <facility>{{ item.facility | default('LOG_USER') }}</facility>
+      </server>
+    loop: "{{ syslog_servers }}"
+  when: "'palo_alto' in group_names"
+  # Configure syslog on Palo Alto firewalls
+
+- name: Configure syslog on Fortinet devices
+  fortinet.fortios.fortios_log_syslogd_setting:
+    state: present
+    log_syslogd_setting:
+      status: "enable"
+      server: "{{ syslog_servers[0].server }}"
+      port: "{{ syslog_servers[0].port | default('514') }}"
+      facility: "{{ syslog_servers[0].facility | default('local0') }}"
+      source_ip: "{{ ansible_host }}"
+      format: "{{ syslog_format | default('default') }}"
+  when: "'fortinet' in group_names"
+  # Configure primary syslog server on Fortinet devices
+
+- name: Configure additional syslog servers on Fortinet
+  fortinet.fortios.fortios_log_syslogd2_setting:
+    state: present
+    log_syslogd2_setting:
+      status: "enable"
+      server: "{{ item.server }}"
+      port: "{{ item.port | default('514') }}"
+      facility: "{{ item.facility | default('local0') }}"
+      source_ip: "{{ ansible_host }}"
+    loop: "{{ syslog_servers[1:] }}"
+  when:
+  - "'fortinet' in group_names"
+  - syslog_servers | length > 1
+  # Configure secondary syslog servers on Fortinet devices
+
+- name: Verify syslog configuration
+  block:
+  - name: Test syslog connectivity
+    ansible.builtin.command:
+      cmd: "logger -n {{ item.server }} -P {{ item.port | default('514') }} 'Ansible syslog test from {{ inventory_hostname }}'"
+    loop: "{{ syslog_servers }}"
+    register: syslog_test_results
+    delegate_to: localhost
+    # Test syslog connectivity from control node
+
+  - name: Generate test log entries
+    cisco.ios.ios_command:
+      commands:
+      - "send log Ansible syslog configuration test - {{ ansible_date_time.iso8601 }}"
+    when: ansible_network_os == "ios"
+    # Generate test log entry on Cisco devices
+
+  - name: Generate test log entries on Arista
+    arista.eos.eos_command:
+      commands:
+      - "send log level informational message Ansible syslog test - {{ ansible_date_time.iso8601 }}"
+    when: ansible_network_os == "eos"
+    # Generate test log entry on Arista devices
+
+  - name: Display syslog test summary
+    ansible.builtin.debug:
+      msg:
+      - "Syslog configuration completed for {{ inventory_hostname }}"
+      - "Configured {{ syslog_servers | length }} syslog servers"
+      - "Test log entries generated"
+      - "Monitor syslog servers for incoming logs"
+  rescue:
+  - name: Syslog configuration error
+    ansible.builtin.debug:
+      msg: "Syslog configuration encountered errors - check server connectivity"
+  # Verify syslog configuration with comprehensive testing

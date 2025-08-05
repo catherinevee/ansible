@@ -1,0 +1,428 @@
+---
+# Firmware and Software Update Playbook
+# Manages firmware updates across multi-vendor network infrastructure
+- name: Network Device Firmware and Software Updates
+  hosts: all
+  gather_facts: true
+  serial: "{{ update_batch_size | default(1) }}" # Process devices one at a time by default for safety
+  vars:
+    report_timestamp: "{{ ansible_date_time.iso8601 }}"
+    update_mode: "{{ mode | default('check') }}" # check, download, install, rollback
+    firmware_server: "{{ fw_server | default('tftp://10.255.1.200') }}"
+    backup_before_update: "{{ backup | default(true) }}"
+    reboot_after_update: "{{ reboot | default(false) }}"
+
+  pre_tasks:
+  - name: Create firmware update report directory
+    file:
+      path: "{{ playbook_dir }}/../reports/firmware_updates"
+      state: directory
+    delegate_to: localhost
+    run_once: true
+
+  - name: Create firmware backup directory
+    file:
+      path: "{{ playbook_dir }}/../backups/firmware/{{ inventory_hostname }}"
+      state: directory
+    delegate_to: localhost
+    when: backup_before_update
+
+  - name: Initialize firmware update report
+    template:
+      src: "{{ playbook_dir }}/../templates/deployment_summary.j2"
+      dest: "{{ playbook_dir }}/../reports/firmware_updates/firmware_update_{{ report_timestamp | regex_replace(':', '-') }}.txt"
+    vars:
+      deployment_type: "Firmware Update"
+      deployment_scope: "{{ update_mode | upper }}"
+    delegate_to: localhost
+    run_once: true
+
+  tasks:
+  # Pre-update backup and validation
+  - name: Backup current configuration before firmware update
+    block:
+    - name: Backup Cisco configuration
+      cisco.ios.ios_config:
+        backup: true
+        backup_options:
+          filename: "{{ inventory_hostname }}_pre_firmware_{{ report_timestamp | regex_replace(':', '-') }}.cfg"
+          dir_path: "{{ playbook_dir }}/../backups/firmware/{{ inventory_hostname }}"
+      when: ansible_network_os == "ios"
+
+    - name: Backup Arista configuration
+      arista.eos.eos_config:
+        backup: true
+        backup_options:
+          filename: "{{ inventory_hostname }}_pre_firmware_{{ report_timestamp | regex_replace(':', '-') }}.cfg"
+          dir_path: "{{ playbook_dir }}/../backups/firmware/{{ inventory_hostname }}"
+      when: ansible_network_os == "eos"
+
+    - name: Backup Juniper configuration
+      junipernetworks.junos.junos_config:
+        backup: true
+        backup_options:
+          filename: "{{ inventory_hostname }}_pre_firmware_{{ report_timestamp | regex_replace(':', '-') }}.cfg"
+          dir_path: "{{ playbook_dir }}/../backups/firmware/{{ inventory_hostname }}"
+      when: ansible_network_os == "junos"
+
+    when: backup_before_update and update_mode in ['install', 'download']
+
+  # Check current firmware versions
+  - name: Check current firmware versions
+    block:
+    - name: Get Cisco firmware version
+      cisco.ios.ios_command:
+        commands:
+        - "show version"
+        - "show boot"
+        - "dir bootflash:"
+        - "show file systems"
+      register: cisco_firmware_info
+      when: ansible_network_os == "ios"
+
+    - name: Get Arista firmware version
+      arista.eos.eos_command:
+        commands:
+        - "show version"
+        - "show boot-config"
+        - "dir flash:"
+        - "show file systems"
+      register: arista_firmware_info
+      when: ansible_network_os == "eos"
+
+    - name: Get Juniper firmware version
+      junipernetworks.junos.junos_command:
+        commands:
+        - "show version"
+        - "show system storage"
+        - "file list /var/tmp/"
+      register: juniper_firmware_info
+      when: ansible_network_os == "junos"
+
+    - name: Get Palo Alto firmware version
+      paloaltonetworks.panos.panos_op:
+        cmd: |
+          <show>
+            <system>
+              <info/>
+            </system>
+          </show>
+      register: panos_firmware_info
+      when: ansible_connection == "local" and "'palo_alto' in group_names"
+
+  # Cisco Firmware Update Process
+  - name: Cisco firmware update process
+    block:
+    - name: Download Cisco firmware image
+      cisco.ios.ios_command:
+        commands:
+        - "copy {{ firmware_server }}/{{ cisco_firmware.image_name }} bootflash:"
+        wait_for:
+        - result[0] contains "copied"
+      register: cisco_download_result
+      when: update_mode in ['download', 'install']
+
+    - name: Verify Cisco firmware image integrity
+      cisco.ios.ios_command:
+        commands:
+        - "verify /md5 bootflash:{{ cisco_firmware.image_name }}"
+      register: cisco_verify_result
+      when:
+      - update_mode in ['download', 'install']
+      - cisco_firmware.md5_hash is defined
+
+    - name: Set Cisco boot variable for new firmware
+      cisco.ios.ios_config:
+        lines:
+        - "boot system bootflash:{{ cisco_firmware.image_name }}"
+        match: line
+      when:
+      - update_mode == 'install'
+      - cisco_verify_result is succeeded or cisco_firmware.md5_hash is not defined
+
+    - name: Save Cisco configuration before reboot
+      cisco.ios.ios_config:
+        save_when: always
+      when: update_mode == 'install'
+
+    - name: Reboot Cisco device for firmware update
+      cisco.ios.ios_command:
+        commands:
+        - "reload in 1"
+        prompt:
+        - "confirm"
+        answer:
+        - "y"
+      when:
+      - update_mode == 'install'
+      - reboot_after_update
+
+    - name: Wait for Cisco device to come back online
+      wait_for_connection:
+        delay: 60
+        timeout: 600
+      when:
+      - update_mode == 'install'
+      - reboot_after_update
+
+    when:
+    - "'cisco' in group_names"
+    - ansible_network_os == "ios"
+    - cisco_firmware is defined
+
+  # Arista Firmware Update Process
+  - name: Arista firmware update process
+    block:
+    - name: Download Arista firmware image
+      arista.eos.eos_command:
+        commands:
+        - "copy {{ firmware_server }}/{{ arista_firmware.image_name }} flash:"
+      register: arista_download_result
+      when: update_mode in ['download', 'install']
+
+    - name: Verify Arista firmware image
+      arista.eos.eos_command:
+        commands:
+        - "verify flash:{{ arista_firmware.image_name }}"
+      register: arista_verify_result
+      when: update_mode in ['download', 'install']
+
+    - name: Set Arista boot configuration
+      arista.eos.eos_config:
+        lines:
+        - "boot system flash:{{ arista_firmware.image_name }}"
+        match: line
+      when:
+      - update_mode == 'install'
+      - arista_verify_result is succeeded
+
+    - name: Save Arista configuration
+      arista.eos.eos_config:
+        save_when: always
+      when: update_mode == 'install'
+
+    - name: Reboot Arista device for firmware update
+      arista.eos.eos_command:
+        commands:
+        - "reload force"
+      when:
+      - update_mode == 'install'
+      - reboot_after_update
+
+    - name: Wait for Arista device to come back online
+      wait_for_connection:
+        delay: 120
+        timeout: 600
+      when:
+      - update_mode == 'install'
+      - reboot_after_update
+
+    when:
+    - "'arista' in group_names"
+    - ansible_network_os == "eos"
+    - arista_firmware is defined
+
+  # Juniper Firmware Update Process
+  - name: Juniper firmware update process
+    block:
+    - name: Download Juniper firmware package
+      junipernetworks.junos.junos_command:
+        commands:
+        - "file copy {{ firmware_server }}/{{ juniper_firmware.package_name }} /var/tmp/"
+      register: juniper_download_result
+      when: update_mode in ['download', 'install']
+
+    - name: Install Juniper firmware package
+      junipernetworks.junos.junos_install_config:
+        src: "/var/tmp/{{ juniper_firmware.package_name }}"
+        reboot: "{{ reboot_after_update }}"
+        validate: true
+        force_host: true
+      register: juniper_install_result
+      when:
+      - update_mode == 'install'
+      - juniper_download_result is succeeded
+
+    - name: Wait for Juniper device to come back online
+      wait_for_connection:
+        delay: 180
+        timeout: 900
+      when:
+      - update_mode == 'install'
+      - reboot_after_update
+      - juniper_install_result is succeeded
+
+    when:
+    - "'juniper' in group_names"
+    - ansible_network_os == "junos"
+    - juniper_firmware is defined
+
+  # Palo Alto Firmware Update Process
+  - name: Palo Alto firmware update process
+    block:
+    - name: Download Palo Alto firmware
+      paloaltonetworks.panos.panos_software:
+        version: "{{ panos_firmware.version }}"
+        sync: true
+        timeout: 1800
+      register: panos_download_result
+      when: update_mode in ['download', 'install']
+
+    - name: Install Palo Alto firmware
+      paloaltonetworks.panos.panos_software:
+        version: "{{ panos_firmware.version }}"
+        install: true
+        restart: "{{ reboot_after_update }}"
+        sync: true
+        timeout: 3600
+      register: panos_install_result
+      when:
+      - update_mode == 'install'
+      - panos_download_result is succeeded
+
+    - name: Wait for Palo Alto device to come back online
+      wait_for_connection:
+        delay: 300
+        timeout: 1200
+      when:
+      - update_mode == 'install'
+      - reboot_after_update
+      - panos_install_result is succeeded
+
+    when:
+    - "'palo_alto' in group_names"
+    - ansible_connection == "local"
+    - panos_firmware is defined
+
+  # Post-update validation
+  - name: Post-update validation
+    block:
+    - name: Verify Cisco firmware update
+      cisco.ios.ios_command:
+        commands:
+        - "show version"
+        - "show boot"
+      register: cisco_post_update_info
+      when:
+      - ansible_network_os == "ios"
+      - update_mode == 'install'
+
+    - name: Verify Arista firmware update
+      arista.eos.eos_command:
+        commands:
+        - "show version"
+        - "show boot-config"
+      register: arista_post_update_info
+      when:
+      - ansible_network_os == "eos"
+      - update_mode == 'install'
+
+    - name: Verify Juniper firmware update
+      junipernetworks.junos.junos_command:
+        commands:
+        - "show version"
+        - "show chassis routing-engine"
+      register: juniper_post_update_info
+      when:
+      - ansible_network_os == "junos"
+      - update_mode == 'install'
+
+    - name: Verify Palo Alto firmware update
+      paloaltonetworks.panos.panos_op:
+        cmd: |
+          <show>
+            <system>
+              <info/>
+            </system>
+          </show>
+      register: panos_post_update_info
+      when:
+      - ansible_connection == "local"
+      - "'palo_alto' in group_names"
+      - update_mode == 'install'
+
+  # Rollback capability
+  - name: Firmware rollback process
+    block:
+    - name: Rollback Cisco firmware
+      cisco.ios.ios_config:
+        lines:
+        - "boot system bootflash:{{ cisco_firmware.previous_image }}"
+        match: line
+      when:
+      - ansible_network_os == "ios"
+      - cisco_firmware.previous_image is defined
+
+    - name: Rollback Arista firmware
+      arista.eos.eos_config:
+        lines:
+        - "boot system flash:{{ arista_firmware.previous_image }}"
+        match: line
+      when:
+      - ansible_network_os == "eos"
+      - arista_firmware.previous_image is defined
+
+    - name: Rollback Juniper firmware
+      junipernetworks.junos.junos_rollback:
+        rollback: 1
+        comment: "Firmware update rollback"
+        confirm: 5
+      when: ansible_network_os == "junos"
+
+    when: update_mode == 'rollback'
+
+  # Generate firmware update report
+  - name: Generate firmware update report
+    template:
+      src: "{{ playbook_dir }}/../templates/deployment_summary.j2"
+      dest: "{{ playbook_dir }}/../reports/firmware_updates/{{ inventory_hostname }}_firmware_{{ report_timestamp | regex_replace(':', '-') }}.txt"
+    vars:
+      deployment_type: "Firmware Update"
+      device_status: "{{ 'SUCCESS' if ansible_failed_task is not defined else 'FAILED' }}"
+      update_performed: "{{ update_mode }}"
+      pre_update_info: "{{ cisco_firmware_info | default(arista_firmware_info) | default(juniper_firmware_info) | default(panos_firmware_info) | default({}) }}"
+      post_update_info: "{{ cisco_post_update_info | default(arista_post_update_info) | default(juniper_post_update_info) | default(panos_post_update_info) | default({}) }}"
+      backup_created: "{{ backup_before_update }}"
+      reboot_performed: "{{ reboot_after_update }}"
+    delegate_to: localhost
+
+  post_tasks:
+  - name: Cleanup temporary firmware files
+    block:
+    - name: Remove Cisco temporary files
+      cisco.ios.ios_command:
+        commands:
+        - "delete bootflash:{{ cisco_firmware.image_name }}"
+        prompt:
+        - "confirm"
+        answer:
+        - "y"
+      when:
+      - ansible_network_os == "ios"
+      - update_mode == 'install'
+      - cisco_firmware.cleanup | default(false)
+
+    - name: Remove Arista temporary files
+      arista.eos.eos_command:
+        commands:
+        - "delete flash:{{ arista_firmware.image_name }}"
+      when:
+      - ansible_network_os == "eos"
+      - update_mode == 'install'
+      - arista_firmware.cleanup | default(false)
+
+    - name: Remove Juniper temporary files
+      junipernetworks.junos.junos_command:
+        commands:
+        - "file delete /var/tmp/{{ juniper_firmware.package_name }}"
+      when:
+      - ansible_network_os == "junos"
+      - update_mode == 'install'
+      - juniper_firmware.cleanup | default(false)
+
+    when: update_mode == 'install'
+
+  handlers:
+  - name: Emergency rollback
+    include_tasks: "{{ playbook_dir }}/../roles/emergency_rollback/tasks/main.yml"
+    when: ansible_failed_task is defined and update_mode == 'install'

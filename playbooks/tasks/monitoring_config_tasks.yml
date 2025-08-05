@@ -1,0 +1,175 @@
+---
+# Monitoring Configuration Tasks for Master Orchestration
+# Multi-vendor monitoring and telemetry configuration
+
+- name: Configure SNMP monitoring on Cisco IOS/IOS-XE
+  block:
+  - name: Configure SNMP v3 monitoring
+    cisco.ios.ios_config:
+      lines:
+      - "snmp-server group {{ monitoring_group | default('MONITOR') }} v3 priv"
+      - "snmp-server user {{ monitoring_user | default('monitor') }} {{ monitoring_group | default('MONITOR') }} v3 auth sha {{ monitoring_auth_password }} priv aes 128 {{ monitoring_priv_password }}"
+      - "snmp-server host {{ monitoring_server }} version 3 priv {{ monitoring_user | default('monitor') }}"
+      - "snmp-server enable traps"
+    when:
+    - ansible_network_os == 'ios'
+    - monitoring_server is defined
+    - monitoring_auth_password is defined
+    - monitoring_priv_password is defined
+
+  - name: Configure NetFlow monitoring
+    cisco.ios.ios_config:
+      lines:
+      - "flow record {{ netflow_record | default('NETFLOW_RECORD') }}"
+      - "match ipv4 source address"
+      - "match ipv4 destination address"
+      - "match transport source-port"
+      - "match transport destination-port"
+      - "match ipv4 protocol"
+      - "collect counter bytes"
+      - "collect counter packets"
+      - "collect timestamp sys-uptime first"
+      - "collect timestamp sys-uptime last"
+    when:
+    - ansible_network_os == 'ios'
+    - enable_netflow | default(false)
+
+  - name: Configure NetFlow exporter
+    cisco.ios.ios_config:
+      lines:
+      - "flow exporter {{ netflow_exporter | default('NETFLOW_EXPORTER') }}"
+      - "destination {{ netflow_collector_ip }}"
+      - "transport udp {{ netflow_collector_port | default(9995) }}"
+      - "template data timeout 60"
+    when:
+    - ansible_network_os == 'ios'
+    - enable_netflow | default(false)
+    - netflow_collector_ip is defined
+
+- name: Configure monitoring on Arista EOS
+  block:
+  - name: Configure SNMP on EOS
+    arista.eos.eos_config:
+      lines:
+      - "snmp-server group {{ monitoring_group | default('MONITOR') }} v3 priv"
+      - "snmp-server user {{ monitoring_user | default('monitor') }} {{ monitoring_group | default('MONITOR') }} v3 auth sha {{ monitoring_auth_password }} priv aes {{ monitoring_priv_password }}"
+      - "snmp-server host {{ monitoring_server }} version 3 priv {{ monitoring_user | default('monitor') }}"
+    when:
+    - ansible_network_os == 'eos'
+    - monitoring_server is defined
+
+  - name: Configure sFlow on EOS
+    arista.eos.eos_config:
+      lines:
+      - "sflow sample {{ sflow_sample_rate | default(1000) }}"
+      - "sflow polling-interval {{ sflow_polling_interval | default(20) }}"
+      - "sflow destination {{ sflow_collector_ip }}"
+      - "sflow run"
+    when:
+    - ansible_network_os == 'eos'
+    - enable_sflow | default(false)
+    - sflow_collector_ip is defined
+
+- name: Configure monitoring on Juniper JunOS
+  block:
+  - name: Configure SNMP on JunOS
+    junipernetworks.junos.junos_config:
+      lines:
+      - "set snmp community {{ monitoring_community | default('monitoring') }} authorization read-only"
+      - "set snmp trap-group {{ monitoring_group | default('MONITOR') }} targets {{ monitoring_server }}"
+      - "set snmp trap-group {{ monitoring_group | default('MONITOR') }} categories chassis"
+      - "set snmp trap-group {{ monitoring_group | default('MONITOR') }} categories routing"
+      - "set snmp trap-group {{ monitoring_group | default('MONITOR') }} categories configuration"
+      commit: true
+    when:
+    - ansible_network_os == 'junos'
+    - monitoring_server is defined
+
+  - name: Configure flow monitoring on JunOS
+    junipernetworks.junos.junos_config:
+      lines:
+      - "set services flow-monitoring version9 template ipv4"
+      - "set forwarding-options sampling instance FLOW_MONITORING family inet output flow-server {{ flow_collector_ip }} port {{ flow_collector_port | default(9995) }}"
+      - "set forwarding-options sampling instance FLOW_MONITORING family inet output flow-server {{ flow_collector_ip }} version9 template ipv4"
+      commit: true
+    when:
+    - ansible_network_os == 'junos'
+    - enable_flow_monitoring | default(false)
+    - flow_collector_ip is defined
+
+- name: Configure monitoring on Palo Alto PAN-OS
+  block:
+  - name: Configure SNMP monitoring
+    paloaltonetworks.panos.panos_snmp_profile:
+      name: "{{ monitoring_profile | default('monitoring') }}"
+      version: "v3"
+      authpwd: "{{ monitoring_auth_password }}"
+      privpwd: "{{ monitoring_priv_password }}"
+    when:
+    - ansible_network_os == 'panos'
+    - monitoring_auth_password is defined
+    - monitoring_priv_password is defined
+
+- name: Configure monitoring on Fortinet FortiOS
+  block:
+  - name: Configure SNMP monitoring
+    fortinet.fortios.fortios_system_snmp_community:
+      system_snmp_community:
+        name: "{{ monitoring_community | default('monitoring') }}"
+        events: "cpu-high mem-low log-full intf-ip vpn-tun-up vpn-tun-down ha-switch ha-hb-failure ips-signature ips-anomaly av-virus av-oversize av-pattern av-fragmented fm-if-change bgp-established bgp-backward-transition ha-member-up ha-member-down ent-conf-changed av-conserve av-bypass av-oversize-passed av-oversize-blocked ips-pkg-update ips-fail-open faz-disconnect wc-ap-up wc-ap-down fswctl-session-up fswctl-session-down load-balance-real-server-down per-cpu-high"
+        hosts:
+        - ip: "{{ monitoring_server }}"
+    when:
+    - ansible_network_os == 'fortios'
+    - monitoring_server is defined
+
+- name: Configure logging and alerting
+  block:
+  - name: Configure syslog - Cisco
+    cisco.ios.ios_config:
+      lines:
+      - "logging {{ syslog_server }}"
+      - "logging facility {{ syslog_facility | default('local0') }}"
+      - "logging severity {{ syslog_severity | default('informational') }}"
+      - "logging buffered {{ syslog_buffer_size | default(64000) }}"
+    when:
+    - ansible_network_os == 'ios'
+    - syslog_server is defined
+
+  - name: Configure syslog - Arista
+    arista.eos.eos_config:
+      lines:
+      - "logging host {{ syslog_server }}"
+      - "logging facility {{ syslog_facility | default('local0') }}"
+      - "logging level {{ syslog_severity | default('informational') }}"
+    when:
+    - ansible_network_os == 'eos'
+    - syslog_server is defined
+
+  - name: Configure syslog - Juniper
+    junipernetworks.junos.junos_config:
+      lines:
+      - "set system syslog host {{ syslog_server }} any {{ syslog_severity | default('info') }}"
+      - "set system syslog host {{ syslog_server }} facility-override {{ syslog_facility | default('local0') }}"
+      commit: true
+    when:
+    - ansible_network_os == 'junos'
+    - syslog_server is defined
+
+- name: Verify monitoring configuration
+  block:
+  - name: Verify SNMP configuration
+    ansible.netcommon.cli_command:
+      command: "{{ platform_snmp_verify[ansible_network_os] | default('show snmp') }}"
+    register: snmp_status
+    vars:
+      platform_snmp_verify:
+        ios: "show snmp"
+        eos: "show snmp community"
+        junos: "show snmp"
+        panos: "show system info"
+        fortios: "get system snmp community"
+
+- name: Log monitoring configuration completion
+  debug:
+    msg: "Monitoring configuration applied for {{ inventory_hostname }} ({{ ansible_network_os }})"

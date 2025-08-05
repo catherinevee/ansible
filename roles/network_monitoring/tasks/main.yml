@@ -1,0 +1,31 @@
+---
+# Network monitoring and observability configuration
+- name: Configure SNMP monitoring
+  include_tasks: configure_snmp.yml
+  when: enable_snmp_monitoring | default(true)
+  # Enable SNMP for network monitoring systems
+
+- name: Configure syslog centralization
+  include_tasks: configure_syslog.yml
+  when: enable_centralized_logging | default(true)
+  # Configure centralized logging infrastructure
+
+- name: Configure NetFlow/sFlow
+  include_tasks: configure_flow_monitoring.yml
+  when: enable_flow_monitoring | default(true)
+  # Enable network flow monitoring for traffic analysis
+
+- name: Configure LLDP/CDP discovery
+  include_tasks: configure_discovery_protocols.yml
+  when: enable_discovery_protocols | default(true)
+  # Configure network discovery protocols
+
+- name: Setup performance monitoring
+  include_tasks: configure_performance_monitoring.yml
+  when: enable_performance_monitoring | default(true)
+  # Configure performance metrics collection
+
+- name: Configure network health checks
+  include_tasks: configure_health_checks.yml
+  when: enable_health_monitoring | default(true)
+  # Setup automated health monitoring

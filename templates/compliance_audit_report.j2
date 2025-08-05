@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Network Compliance Audit Report - {{ audit_data.device_info.hostname }}</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; background-color: #f5f5f5; }
+        .container { max-width: 1200px; margin: 0 auto; background-color: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        .header { background-color: #2c3e50; color: white; padding: 20px; margin: -20px -20px 20px -20px; border-radius: 8px 8px 0 0; }
+        .section { margin: 20px 0; padding: 15px; border-left: 4px solid #3498db; background-color: #f8f9fa; }
+        .critical { border-left-color: #e74c3c; background-color: #fdf2f2; }
+        .warning { border-left-color: #f39c12; background-color: #fff8f0; }
+        .success { border-left-color: #27ae60; background-color: #f0f8f4; }
+        .score-circle { display: inline-block; width: 80px; height: 80px; border-radius: 50%; text-align: center; line-height: 80px; color: white; font-size: 18px; font-weight: bold; margin: 10px; }
+        .score-high { background-color: #27ae60; }
+        .score-medium { background-color: #f39c12; }
+        .score-low { background-color: #e74c3c; }
+        .details-table { width: 100%; border-collapse: collapse; margin: 10px 0; }
+        .details-table th, .details-table td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        .details-table th { background-color: #34495e; color: white; }
+        .status-pass { color: #27ae60; font-weight: bold; }
+        .status-fail { color: #e74c3c; font-weight: bold; }
+        .recommendations { background-color: #e8f5e8; padding: 15px; border-radius: 5px; margin: 10px 0; }
+        .timestamp { color: #7f8c8d; font-size: 0.9em; }
+        .metric-box { display: inline-block; margin: 10px; padding: 15px; background-color: #ecf0f1; border-radius: 5px; text-align: center; }
+        .footer { margin-top: 30px; padding-top: 20px; border-top: 2px solid #ecf0f1; font-size: 0.9em; color: #7f8c8d; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Network Compliance Audit Report</h1>
+            <p><strong>Device:</strong> {{ audit_data.device_info.hostname }} ({{ audit_data.device_info.ip_address }})</p>
+            <p class="timestamp">Generated: {{ audit_data.device_info.audit_timestamp }}</p>
+        </div>
+
+        <!-- Executive Summary -->
+        <div class="section">
+            <h2>Executive Summary</h2>
+            <div style="text-align: center;">
+                <div class="score-circle {{ 'score-high' if audit_data.compliance_summary.percentage|int >= 80 else ('score-medium' if audit_data.compliance_summary.percentage|int >= 60 else 'score-low') }}">
+                    {{ audit_data.compliance_summary.percentage }}%
+                </div>
+                <p><strong>Overall Compliance Score: {{ audit_data.compliance_summary.score }}/55</strong></p>
+            </div>
+            
+            <div class="metric-box">
+                <h4>Checks Performed</h4>
+                <strong>{{ audit_data.compliance_summary.total_checks }}</strong>
+            </div>
+            <div class="metric-box">
+                <h4>Passed</h4>
+                <strong style="color: #27ae60;">{{ audit_data.compliance_summary.passed_checks|length }}</strong>
+            </div>
+            <div class="metric-box">
+                <h4>Failed</h4>
+                <strong style="color: #e74c3c;">{{ audit_data.compliance_summary.failed_checks|length }}</strong>
+            </div>
+        </div>
+
+        <!-- Compliance Status -->
+        <div class="section {{ 'success' if audit_data.compliance_summary.failed_checks|length == 0 else 'warning' }}">
+            <h2>Compliance Status</h2>
+            <h3>Passed Checks:</h3>
+            {% if audit_data.compliance_summary.passed_checks|length > 0 %}
+            <ul>
+                {% for check in audit_data.compliance_summary.passed_checks %}
+                <li class="status-pass">✓ {{ check }}</li>
+                {% endfor %}
+            </ul>
+            {% else %}
+            <p>No compliance checks passed.</p>
+            {% endif %}
+
+            {% if audit_data.compliance_summary.failed_checks|length > 0 %}
+            <h3>Failed Checks:</h3>
+            <ul>
+                {% for issue in audit_data.compliance_summary.failed_checks %}
+                <li class="status-fail">✗ {{ issue }}</li>
+                {% endfor %}
+            </ul>
+            {% endif %}
+        </div>
+
+        <!-- Security Findings -->
+        <div class="section">
+            <h2>Detailed Security Findings</h2>
+            
+            <h3>Password Policy Assessment</h3>
+            <table class="details-table">
+                <tr>
+                    <th>Security Control</th>
+                    <th>Status</th>
+                    <th>Details</th>
+                </tr>
+                <tr>
+                    <td>Password Encryption</td>
+                    <td class="{{ 'status-pass' if 'service password-encryption' in (audit_data.security_findings.password_policy.stdout[0] | default('')) else 'status-fail' }}">
+                        {{ 'ENABLED' if 'service password-encryption' in (audit_data.security_findings.password_policy.stdout[0] | default('')) else 'DISABLED' }}
+                    </td>
+                    <td>{{ 'Passwords are encrypted in configuration' if 'service password-encryption' in (audit_data.security_findings.password_policy.stdout[0] | default('')) else 'Passwords stored in plain text' }}</td>
+                </tr>
+                <tr>
+                    <td>Enable Secret</td>
+                    <td class="{{ 'status-pass' if 'enable secret' in (audit_data.security_findings.password_policy.stdout[1] | default('')) else 'status-fail' }}">
+                        {{ 'CONFIGURED' if 'enable secret' in (audit_data.security_findings.password_policy.stdout[1] | default('')) else 'NOT CONFIGURED' }}
+                    </td>
+                    <td>{{ 'Strong enable secret configured' if 'enable secret' in (audit_data.security_findings.password_policy.stdout[1] | default('')) else 'Using weak enable password' }}</td>
+                </tr>
+            </table>
+
+            <h3>SSH Configuration Assessment</h3>
+            <table class="details-table">
+                <tr>
+                    <th>SSH Control</th>
+                    <th>Status</th>
+                    <th>Details</th>
+                </tr>
+                <tr>
+                    <td>SSH Version</td>
+                    <td class="{{ 'status-pass' if 'version 2' in (audit_data.security_findings.ssh_config.stdout[1] | default('')) else 'status-fail' }}">
+                        {{ 'VERSION 2' if 'version 2' in (audit_data.security_findings.ssh_config.stdout[1] | default('')) else 'INSECURE VERSION' }}
+                    </td>
+                    <td>{{ 'Secure SSH version 2 enabled' if 'version 2' in (audit_data.security_findings.ssh_config.stdout[1] | default('')) else 'SSH version 1 may be enabled' }}</td>
+                </tr>
+            </table>
+
+            <h3>SNMP Security Assessment</h3>
+            <table class="details-table">
+                <tr>
+                    <th>SNMP Control</th>
+                    <th>Status</th>
+                    <th>Details</th>
+                </tr>
+                <tr>
+                    <td>Default Communities</td>
+                    <td class="{{ 'status-pass' if not ('public' in (audit_data.security_findings.snmp_security.stdout[0] | default('')) or 'private' in (audit_data.security_findings.snmp_security.stdout[0] | default(''))) else 'status-fail' }}">
+                        {{ 'SECURE' if not ('public' in (audit_data.security_findings.snmp_security.stdout[0] | default('')) or 'private' in (audit_data.security_findings.snmp_security.stdout[0] | default(''))) else 'INSECURE' }}
+                    </td>
+                    <td>{{ 'No default SNMP communities detected' if not ('public' in (audit_data.security_findings.snmp_security.stdout[0] | default('')) or 'private' in (audit_data.security_findings.snmp_security.stdout[0] | default(''))) else 'Default SNMP communities present' }}</td>
+                </tr>
+            </table>
+        </div>
+
+        <!-- Performance Metrics -->
+        {% if audit_data.performance_metrics.resource_usage.stdout is defined %}
+        <div class="section">
+            <h2>Performance Assessment</h2>
+            
+            <h3>System Resource Utilization</h3>
+            <div class="metric-box">
+                <h4>CPU Status</h4>
+                <strong>{{ 'Monitored' if audit_data.performance_metrics.resource_usage.stdout[0] is defined else 'Not Available' }}</strong>
+            </div>
+            <div class="metric-box">
+                <h4>Memory Status</h4>
+                <strong>{{ 'Monitored' if audit_data.performance_metrics.resource_usage.stdout[1] is defined else 'Not Available' }}</strong>
+            </div>
+            <div class="metric-box">
+                <h4>System Uptime</h4>
+                <strong>{{ 'Available' if audit_data.performance_metrics.resource_usage.stdout[2] is defined else 'Not Available' }}</strong>
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- Recommendations -->
+        {% if audit_data.compliance_summary.failed_checks|length > 0 %}
+        <div class="section critical">
+            <h2>Remediation Recommendations</h2>
+            <div class="recommendations">
+                <h3>High Priority Actions:</h3>
+                <ul>
+                    {% if 'Weak password policy detected' in audit_data.compliance_summary.failed_checks %}
+                    <li><strong>Enable Password Encryption:</strong> Configure "service password-encryption" to protect stored passwords</li>
+                    <li><strong>Set Enable Secret:</strong> Replace enable password with secure enable secret</li>
+                    {% endif %}
+                    {% if 'Default SNMP communities detected' in audit_data.compliance_summary.failed_checks %}
+                    <li><strong>Secure SNMP:</strong> Remove default communities and configure custom community strings</li>
+                    {% endif %}
+                    {% if 'SSH version 1 enabled or insecure configuration' in audit_data.compliance_summary.failed_checks %}
+                    <li><strong>SSH Security:</strong> Configure "ip ssh version 2" to disable insecure SSH version 1</li>
+                    {% endif %}
+                </ul>
+                
+                <h3>Additional Recommendations:</h3>
+                <ul>
+                    <li>Implement regular compliance auditing schedule (monthly)</li>
+                    <li>Enable comprehensive logging and monitoring</li>
+                    <li>Review and update access control lists regularly</li>
+                    <li>Implement network device hardening standards</li>
+                    <li>Establish configuration backup and disaster recovery procedures</li>
+                </ul>
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- Compliance Standards Reference -->
+        <div class="section">
+            <h2>Compliance Standards Reference</h2>
+            <p>This audit evaluates compliance against the following industry standards:</p>
+            <ul>
+                <li><strong>CIS Controls:</strong> Center for Internet Security network device hardening guidelines</li>
+                <li><strong>NIST Framework:</strong> National Institute of Standards and Technology cybersecurity framework</li>
+                <li><strong>SOX Compliance:</strong> Sarbanes-Oxley Act requirements for financial data protection</li>
+                <li><strong>PCI DSS:</strong> Payment Card Industry Data Security Standard network requirements</li>
+            </ul>
+        </div>
+
+        <!-- Next Steps -->
+        <div class="section">
+            <h2>Next Steps</h2>
+            <ol>
+                <li><strong>Review Findings:</strong> Analyze all failed compliance checks with security team</li>
+                <li><strong>Prioritize Remediation:</strong> Address high-priority security issues immediately</li>
+                <li><strong>Implement Changes:</strong> Apply recommended configuration changes during maintenance window</li>
+                <li><strong>Verify Compliance:</strong> Re-run audit after implementing remediation measures</li>
+                <li><strong>Document Changes:</strong> Update network documentation and change management records</li>
+                <li><strong>Schedule Follow-up:</strong> Plan next compliance audit (recommended: quarterly)</li>
+            </ol>
+        </div>
+
+        <div class="footer">
+            <p><strong>Report Details:</strong></p>
+            <p>Device Type: {{ audit_data.device_info.device_type | upper }}</p>
+            <p>Audit Scope: {{ audit_data.device_info.audit_scope | upper }}</p>
+            <p>Generated by: Ansible Network Automation System</p>
+            <p>Report Version: 2.0</p>
+            
+            <p><em>This report contains sensitive security information. Handle according to your organization's data classification policies.</em></p>
+        </div>
+    </div>
+</body>
+</html>

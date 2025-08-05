@@ -1,0 +1,334 @@
+---
+# ====================================================================
+# JUNIPER BASIC CONFIGURATION EXAMPLES
+# ====================================================================
+# Comprehensive basic configuration examples for Juniper JunOS 
+# platforms including EX, QFX, SRX, MX, and PTX series
+# ====================================================================
+
+- name: Deploy Juniper Basic Configuration Examples
+  hosts: juniper_devices
+  gather_facts: false
+  connection: netconf
+  vars:
+    ansible_command_timeout: 60
+    ansible_connect_timeout: 30
+
+  tasks:
+  # ===========================================
+  # JUNIPER JUNOS SYSTEM CONFIGURATION
+  # ===========================================
+  - name: Configure Juniper System Basics
+    junipernetworks.junos.junos_config:
+      lines:
+      - "set system host-name {{ inventory_hostname }}"
+      - "set system domain-name {{ domain_name }}"
+      - "set system name-server {{ primary_dns }}"
+      - "set system name-server {{ secondary_dns }}"
+      - "set system time-zone {{ timezone | default('UTC') }}"
+      - "set system root-authentication encrypted-password {{ vault_juniper_root_password }}"
+      - "set system services ssh root-login allow"
+      - "set system services ssh protocol-version v2"
+      - "set system services ssh connection-limit {{ ssh_connection_limit | default('10') }}"
+      - "set system services ssh rate-limit {{ ssh_rate_limit | default('5') }}"
+      - "set system services netconf ssh"
+      - "set system services web-management http interface {{ web_mgmt_interface | default('fxp0.0') }}"
+      - "set system services web-management https system-generated-certificate"
+      - "set system services web-management https interface {{ web_mgmt_interface | default('fxp0.0') }}"
+      - "delete system services telnet"
+      - "delete system services ftp"
+      format: set
+    tags: [ 'juniper', 'system', 'basic' ]
+
+  - name: Configure Juniper Security Settings
+    junipernetworks.junos.junos_config:
+      lines:
+      - "set system login class network-admin idle-timeout {{ admin_idle_timeout | default('30') }}"
+      - "set system login class network-admin permissions all"
+      - "set system login class network-operator idle-timeout {{ operator_idle_timeout | default('15') }}"
+      - "set system login class network-operator permissions [ clear network reset trace view ]"
+      - "set system login class readonly idle-timeout {{ readonly_idle_timeout | default('10') }}"
+      - "set system login class readonly permissions [ view ]"
+      - "set system authentication-order [ password ]"
+      - "set system ports console log-out-on-disconnect"
+      - "set system ports auxiliary disable"
+      - "set system login retry-options tries-before-disconnect {{ login_tries | default('3') }}"
+      - "set system login retry-options lockout-period {{ lockout_period | default('300') }}"
+      - "set system login retry-options minimum-time {{ min_login_time | default('20') }}"
+      format: set
+    tags: [ 'juniper', 'security', 'basic' ]
+
+  - name: Configure Juniper Local Users
+    junipernetworks.junos.junos_config:
+      lines:
+      - "set system login user {{ item.username }} uid {{ item.uid | default('2000') }}"
+      - "set system login user {{ item.username }} class {{ item.class | default('network-admin') }}"
+      - "set system login user {{ item.username }} authentication encrypted-password {{ item.password }}"
+      - "set system login user {{ item.username }} authentication ssh-rsa {{ item.ssh_key }}"
+      format: set
+    loop: "{{ local_users | default([]) }}"
+    when: item.ssh_key is defined
+    tags: [ 'juniper', 'users', 'basic' ]
+
+  - name: Configure Juniper Users Without SSH Keys
+    junipernetworks.junos.junos_config:
+      lines:
+      - "set system login user {{ item.username }} uid {{ item.uid | default('2000') }}"
+      - "set system login user {{ item.username }} class {{ item.class | default('network-admin') }}"
+      - "set system login user {{ item.username }} authentication encrypted-password {{ item.password }}"
+      format: set
+    loop: "{{ local_users | default([]) }}"
+    when: item.ssh_key is not defined
+    tags: [ 'juniper', 'users', 'basic' ]
+
+  - name: Configure Juniper SSH Settings
+    junipernetworks.junos.junos_config:
+      lines:
+      - "set system services ssh root-login {{ ssh_root_login | default('deny') }}"
+      - "set system services ssh protocol-version v2"
+      - "set system services ssh max-sessions-per-connection {{ ssh_max_sessions | default('32') }}"
+      - "set system services ssh client-alive-interval {{ ssh_keepalive | default('120') }}"
+      - "set system services ssh client-alive-count-max {{ ssh_keepalive_count | default('3') }}"
+      - "set system services ssh hostkey-algorithm [ ssh-rsa ecdsa-sha2-nistp256 ssh-ed25519 ]"
+      - "set system services ssh key-exchange [ ecdh-sha2-nistp256 ecdh-sha2-nistp384 ecdh-sha2-nistp521 diffie-hellman-group14-sha256 ]"
+      - "set system services ssh macs [ hmac-sha2-256 hmac-sha2-512 ]"
+      - "set system services ssh ciphers [ aes128-ctr aes192-ctr aes256-ctr ]"
+      format: set
+    tags: [ 'juniper', 'ssh', 'security' ]
+
+  - name: Configure Juniper Management Interface
+    junipernetworks.junos.junos_config:
+      lines:
+      - "set interfaces {{ mgmt_interface | default('fxp0') }} unit 0 description 'Management Interface'"
+      - "set interfaces {{ mgmt_interface | default('fxp0') }} unit 0 family inet address {{ mgmt_ip }}/{{ mgmt_mask | default('24') }}"
+      - "set routing-options static route 0.0.0.0/0 next-hop {{ default_gateway }}"
+      - "set routing-options static route 0.0.0.0/0 retain"
+      - "set routing-options static route 0.0.0.0/0 no-readvertise"
+      format: set
+    when:
+    - mgmt_ip is defined
+    - default_gateway is defined
+    tags: [ 'juniper', 'interface', 'basic' ]
+
+  - name: Configure Juniper NTP
+    junipernetworks.junos.junos_config:
+      lines:
+      - "set system ntp server {{ item.server }}{% if item.prefer | default(false) %} prefer{% endif %}"
+      - "set system ntp source-address {{ ntp_source_ip | default(mgmt_ip) }}"
+      - "set system ntp authentication-key {{ item.key_id | default('1') }} type sha1"
+      - "set system ntp authentication-key {{ item.key_id | default('1') }} value {{ item.key | default('default_key') }}"
+      - "set system ntp trusted-key {{ item.key_id | default('1') }}"
+      - "set system ntp server {{ item.server }} key {{ item.key_id | default('1') }}"
+      format: set
+    loop: "{{ ntp_servers | default([]) }}"
+    tags: [ 'juniper', 'ntp', 'time' ]
+
+  - name: Configure Juniper SNMP
+    junipernetworks.junos.junos_config:
+      lines:
+      - "set snmp location {{ snmp_location }}"
+      - "set snmp contact {{ snmp_contact }}"
+      - "set snmp description {{ inventory_hostname }}"
+      - "set snmp community {{ snmp_ro_community }} authorization read-only"
+      - "set snmp community {{ snmp_ro_community }} client-list-name SNMP-RO"
+      - "set snmp community {{ snmp_rw_community }} authorization read-write"
+      - "set snmp community {{ snmp_rw_community }} client-list-name SNMP-RW"
+      - "set snmp trap-options source-address {{ snmp_source_ip | default(mgmt_ip) }}"
+      - "set snmp trap-group MONITORING version v2"
+      - "set snmp trap-group MONITORING categories [ chassis routing startup ]"
+      - "set snmp trap-group MONITORING targets {{ item.host }}"
+      format: set
+    loop: "{{ snmp_hosts | default([]) }}"
+    tags: [ 'juniper', 'snmp', 'monitoring' ]
+
+  - name: Configure Juniper SNMP Client Lists
+    junipernetworks.junos.junos_config:
+      lines:
+      - "set snmp client-list SNMP-RO {{ nms_network | default('10.100.1.0/24') }}"
+      - "set snmp client-list SNMP-RW {{ nms_network | default('10.100.1.0/24') }}"
+      format: set
+    tags: [ 'juniper', 'snmp', 'acl' ]
+
+  - name: Configure Juniper Logging
+    junipernetworks.junos.junos_config:
+      lines:
+      - "set system syslog archive size {{ log_archive_size | default('10m') }}"
+      - "set system syslog archive files {{ log_archive_files | default('10') }}"
+      - "set system syslog user * any emergency"
+      - "set system syslog host {{ item.server }} any {{ item.level | default('info') }}"
+      - "set system syslog host {{ item.server }} authorization info"
+      - "set system syslog host {{ item.server }} daemon info"
+      - "set system syslog host {{ item.server }} kernel info"
+      - "set system syslog host {{ item.server }} change-log info"
+      - "set system syslog host {{ item.server }} interactive-commands info"
+      - "set system syslog host {{ item.server }} structured-data"
+      - "set system syslog source-address {{ logging_source_ip | default(mgmt_ip) }}"
+      - "set system syslog time-format millisecond"
+      format: set
+    loop: "{{ syslog_servers | default([]) }}"
+    tags: [ 'juniper', 'logging', 'syslog' ]
+
+  - name: Configure Juniper Console Logging
+    junipernetworks.junos.junos_config:
+      lines:
+      - "set system syslog console any emergency"
+      - "set system syslog console authorization info"
+      - "set system syslog console change-log none"
+      - "set system syslog console conflictlog none"
+      - "set system syslog file interactive-commands interactive-commands info"
+      - "set system syslog file interactive-commands archive size {{ cmd_log_size | default('1m') }}"
+      - "set system syslog file interactive-commands archive files {{ cmd_log_files | default('5') }}"
+      - "set system syslog file messages any info"
+      - "set system syslog file messages authorization info"
+      - "set system syslog file messages archive size {{ msg_log_size | default('10m') }}"
+      - "set system syslog file messages archive files {{ msg_log_files | default('10') }}"
+      format: set
+    tags: [ 'juniper', 'logging', 'local' ]
+
+  - name: Configure Juniper Security Policies
+    junipernetworks.junos.junos_config:
+      lines:
+      - "set system login password minimum-length {{ min_password_length | default('8') }}"
+      - "set system login password minimum-changes {{ min_password_changes | default('1') }}"
+      - "set system login password change-type character-sets"
+      - "set system login password format sha512"
+      - "set system accounting events [ login change-log interactive-commands ]"
+      - "set system accounting destination radius server {{ radius_server }} secret {{ vault_radius_secret }}"
+      - "set system accounting destination radius server {{ radius_server }} timeout {{ radius_timeout | default('3') }}"
+      - "set system accounting destination radius server {{ radius_server }} retry {{ radius_retry | default('3') }}"
+      format: set
+    when:
+    - radius_server is defined
+    - vault_radius_secret is defined
+    tags: [ 'juniper', 'security', 'accounting' ]
+
+  - name: Configure Juniper Interface Security
+    junipernetworks.junos.junos_config:
+      lines:
+      - "set interfaces {{ mgmt_interface | default('fxp0') }} unit 0 family inet filter input PROTECT-RE"
+      - "set firewall family inet filter PROTECT-RE term ACCEPT-SSH from source-address {{ mgmt_network | default('10.100.0.0/16') }}"
+      - "set firewall family inet filter PROTECT-RE term ACCEPT-SSH from protocol tcp"
+      - "set firewall family inet filter PROTECT-RE term ACCEPT-SSH from destination-port 22"
+      - "set firewall family inet filter PROTECT-RE term ACCEPT-SSH then accept"
+      - "set firewall family inet filter PROTECT-RE term ACCEPT-NETCONF from source-address {{ mgmt_network | default('10.100.0.0/16') }}"
+      - "set firewall family inet filter PROTECT-RE term ACCEPT-NETCONF from protocol tcp"
+      - "set firewall family inet filter PROTECT-RE term ACCEPT-NETCONF from destination-port 830"
+      - "set firewall family inet filter PROTECT-RE term ACCEPT-NETCONF then accept"
+      - "set firewall family inet filter PROTECT-RE term ACCEPT-SNMP from source-address {{ nms_network | default('10.100.1.0/24') }}"
+      - "set firewall family inet filter PROTECT-RE term ACCEPT-SNMP from protocol udp"
+      - "set firewall family inet filter PROTECT-RE term ACCEPT-SNMP from destination-port 161"
+      - "set firewall family inet filter PROTECT-RE term ACCEPT-SNMP then accept"
+      - "set firewall family inet filter PROTECT-RE term ACCEPT-NTP from source-address {{ ntp_servers[0].server | default('pool.ntp.org') }}"
+      - "set firewall family inet filter PROTECT-RE term ACCEPT-NTP from protocol udp"
+      - "set firewall family inet filter PROTECT-RE term ACCEPT-NTP from source-port 123"
+      - "set firewall family inet filter PROTECT-RE term ACCEPT-NTP then accept"
+      - "set firewall family inet filter PROTECT-RE term ACCEPT-ESTABLISHED from protocol tcp"
+      - "set firewall family inet filter PROTECT-RE term ACCEPT-ESTABLISHED from tcp-established"
+      - "set firewall family inet filter PROTECT-RE term ACCEPT-ESTABLISHED then accept"
+      - "set firewall family inet filter PROTECT-RE term DEFAULT-DENY then log"
+      - "set firewall family inet filter PROTECT-RE term DEFAULT-DENY then discard"
+      format: set
+    tags: [ 'juniper', 'firewall', 'security' ]
+
+  - name: Configure Juniper VLAN Examples
+    junipernetworks.junos.junos_config:
+      lines:
+      - "set vlans {{ item.name }} vlan-id {{ item.id }}"
+      - "set vlans {{ item.name }} description '{{ item.description | default('VLAN ' + item.id|string) }}'"
+      - "set vlans {{ item.name }} l3-interface irb.{{ item.id }}"
+      format: set
+    loop: "{{ vlans | default([]) }}"
+    when: item.l3_interface | default(false)
+    tags: [ 'juniper', 'vlan', 'l3' ]
+
+  - name: Configure Juniper IRB Interfaces
+    junipernetworks.junos.junos_config:
+      lines:
+      - "set interfaces irb unit {{ item.id }} description 'SVI for {{ item.name }}'"
+      - "set interfaces irb unit {{ item.id }} family inet address {{ item.gateway }}/{{ item.mask | default('24') }}"
+      - "set interfaces irb unit {{ item.id }} family inet address {{ item.gateway }}/{{ item.mask | default('24') }} virtual-gateway-address {{ item.vip | default(item.gateway) }}"
+      format: set
+    loop: "{{ vlans | default([]) }}"
+    when:
+    - item.l3_interface | default(false)
+    - item.gateway is defined
+    tags: [ 'juniper', 'irb', 'gateway' ]
+
+  - name: Configure Juniper Banner
+    junipernetworks.junos.junos_config:
+      lines:
+      - "set system login message '{{ banner_motd | default('Authorized Access Only - Enterprise Network') }}'"
+      format: set
+    tags: [ 'juniper', 'banner', 'security' ]
+
+  # ===========================================
+  # COMMIT AND SAVE CONFIGURATION
+  # ===========================================
+  - name: Commit Juniper Configuration
+    junipernetworks.junos.junos_config:
+      comment: "Ansible Basic Configuration Deployment"
+      confirm_commit: true
+      check_commit: true
+    tags: [ 'juniper', 'commit' ]
+
+  # ===========================================
+  # VERIFICATION
+  # ===========================================
+  - name: Verify Juniper Configuration
+    block:
+    - name: Gather Juniper Facts
+      junipernetworks.junos.junos_facts:
+        gather_subset:
+        - "!config"
+        - "default"
+        - "hardware"
+      register: juniper_facts
+
+    - name: Get Juniper System Information
+      junipernetworks.junos.junos_command:
+        commands:
+        - "show version brief"
+        - "show system uptime"
+        - "show system users"
+        - "show ntp status"
+        - "show system alarms"
+        format: text
+      register: juniper_info
+
+    - name: Display Juniper Configuration Status
+      ansible.builtin.debug:
+        msg: |
+          ====================================
+          JUNIPER BASIC CONFIGURATION REPORT
+          ====================================
+          Device: {{ inventory_hostname }}
+          Platform: {{ ansible_network_os | upper }}
+
+          {% if juniper_facts.ansible_facts is defined %}
+          Model: {{ juniper_facts.ansible_facts.ansible_net_model | default('Unknown') }}
+          Version: {{ juniper_facts.ansible_facts.ansible_net_version | default('Unknown') }}
+          Serial: {{ juniper_facts.ansible_facts.ansible_net_serialnum | default('Unknown') }}
+          Hostname: {{ juniper_facts.ansible_facts.ansible_net_hostname | default('Unknown') }}
+          {% endif %}
+
+          === CONFIGURATION STATUS ===
+          Hostname: {{ inventory_hostname }}
+          Domain: {{ domain_name | default('Not Set') }}
+          Management IP: {{ mgmt_ip | default('Not Configured') }}
+          Default Gateway: {{ default_gateway | default('Not Configured') }}
+          NTP Servers: {{ ntp_servers | default([]) | length }}
+          Local Users: {{ local_users | default([]) | length }}
+          SNMP Hosts: {{ snmp_hosts | default([]) | length }}
+          Syslog Servers: {{ syslog_servers | default([]) | length }}
+          VLANs Configured: {{ vlans | default([]) | length }}
+
+          === SYSTEM INFORMATION ===
+          {% if juniper_info.stdout is defined %}
+          {% for output in juniper_info.stdout %}
+          {{ output }}
+          {% endfor %}
+          {% endif %}
+
+          Deployment Status: {{ 'SUCCESS' if ansible_failed_result is not defined else 'FAILED' }}
+          ====================================
+    tags: [ 'juniper', 'verify' ]

@@ -1,0 +1,567 @@
+---
+# Arista Data Center Spine-Leaf Configuration Playbook
+# Automated deployment of Arista spine-leaf architecture with BGP EVPN
+# Supports: Arista 7000/7500 spines and 7050/7280/7320 leaf switches
+
+- name: Deploy Arista Data Center Spine-Leaf Architecture
+  hosts: arista_datacenter_devices
+  gather_facts: false
+  connection: network_cli
+  vars:
+    ansible_network_os: eos
+    ansible_user: "{{ vault_arista_username }}"
+    ansible_password: "{{ vault_arista_password }}"
+    ansible_become: true
+    ansible_become_method: enable
+
+  tasks:
+  # Phase 1: Base System Configuration
+  - name: "Phase 1: Configure Base System for Data Center"
+    block:
+    - name: Enable required features
+      arista.eos.eos_config:
+        lines:
+        - "service routing protocols model multi-agent"
+        - "hostname {{ inventory_hostname }}"
+        - "spanning-tree mode mstp"
+        - "spanning-tree mst 0 priority {{ arista_dc_config.stp_priority | default(32768) }}"
+        parents: []
+      tags: [ system, base_config ]
+
+    - name: Configure management VRF
+      arista.eos.eos_config:
+        lines:
+        - "vrf instance MGMT"
+        - "interface Management1"
+        - "vrf MGMT"
+        - "ip address {{ arista_dc_mgmt.mgmt_ip }}/{{ arista_dc_mgmt.mgmt_mask }}"
+        parents: []
+      tags: [ management, vrf ]
+
+    - name: Configure loopback interfaces
+      arista.eos.eos_l3_interfaces:
+        config:
+        - name: "Loopback0"
+          ipv4:
+          - address: "{{ arista_dc_config.loopback0_ip }}/32"
+        - name: "Loopback1"
+          ipv4:
+          - address: "{{ arista_dc_config.loopback1_ip }}/32"
+      when: arista_dc_config.loopback1_ip is defined
+      tags: [ loopbacks, underlay ]
+
+  # Phase 2: Underlay Network Configuration (Spine Switches)
+  - name: "Phase 2: Configure Spine Underlay Network"
+    block:
+    - name: Configure spine point-to-point interfaces
+      arista.eos.eos_l3_interfaces:
+        config:
+        - name: "{{ item.interface }}"
+          ipv4:
+          - address: "{{ item.ip_address }}/{{ item.mask }}"
+      loop: "{{ arista_spine_config.p2p_links }}"
+      when: device_role == 'spine'
+      tags: [ spine, underlay, p2p ]
+
+    - name: Configure spine interface descriptions
+      arista.eos.eos_interfaces:
+        config:
+        - name: "{{ item.interface }}"
+          description: "{{ item.description }}"
+          enabled: true
+      loop: "{{ arista_spine_config.p2p_links }}"
+      when: device_role == 'spine'
+      tags: [ spine, interfaces ]
+
+    - name: Configure spine BGP underlay
+      arista.eos.eos_config:
+        lines:
+        - "router bgp {{ arista_dc_config.bgp_asn }}"
+        - "router-id {{ arista_dc_config.loopback0_ip }}"
+        - "no bgp default ipv4-unicast"
+        - "maximum-paths {{ arista_dc_config.bgp_max_paths | default(8) }} ecmp {{ arista_dc_config.bgp_ecmp_paths | default(8) }}"
+        - "bgp listen range {{ arista_spine_config.bgp_listen_range }} peer-group UNDERLAY_PEERS remote-as {{ arista_dc_config.leaf_asn_range }}"
+        - "neighbor UNDERLAY_PEERS peer group"
+        - "neighbor UNDERLAY_PEERS password {{ vault_bgp_password }}"
+        - "neighbor UNDERLAY_PEERS send-community"
+        - "neighbor UNDERLAY_PEERS maximum-routes {{ arista_dc_config.underlay_max_routes | default(12000) }}"
+        - "address-family ipv4"
+        - "neighbor UNDERLAY_PEERS activate"
+        parents: []
+      when: device_role == 'spine'
+      no_log: true
+      tags: [ spine, bgp, underlay ]
+
+    - name: Configure spine BGP EVPN overlay
+      arista.eos.eos_config:
+        lines:
+        - "bgp listen range {{ arista_spine_config.evpn_listen_range }} peer-group EVPN_OVERLAY_PEERS remote-as {{ arista_dc_config.leaf_asn_range }}"
+        - "neighbor EVPN_OVERLAY_PEERS peer group"
+        - "neighbor EVPN_OVERLAY_PEERS next-hop-unchanged"
+        - "neighbor EVPN_OVERLAY_PEERS update-source Loopback0"
+        - "neighbor EVPN_OVERLAY_PEERS ebgp-multihop 3"
+        - "neighbor EVPN_OVERLAY_PEERS password {{ vault_bgp_password }}"
+        - "neighbor EVPN_OVERLAY_PEERS send-community"
+        - "neighbor EVPN_OVERLAY_PEERS maximum-routes {{ arista_dc_config.evpn_max_routes | default(0) }}"
+        - "address-family evpn"
+        - "neighbor EVPN_OVERLAY_PEERS activate"
+        parents:
+        - "router bgp {{ arista_dc_config.bgp_asn }}"
+      when: device_role == 'spine'
+      no_log: true
+      tags: [ spine, bgp, evpn, overlay ]
+
+  # Phase 3: Underlay Network Configuration (Leaf Switches)
+  - name: "Phase 3: Configure Leaf Underlay Network"
+    block:
+    - name: Configure leaf point-to-point interfaces
+      arista.eos.eos_l3_interfaces:
+        config:
+        - name: "{{ item.interface }}"
+          ipv4:
+          - address: "{{ item.ip_address }}/{{ item.mask }}"
+      loop: "{{ arista_leaf_config.p2p_links }}"
+      when: device_role == 'leaf'
+      tags: [ leaf, underlay, p2p ]
+
+    - name: Configure leaf interface descriptions
+      arista.eos.eos_interfaces:
+        config:
+        - name: "{{ item.interface }}"
+          description: "{{ item.description }}"
+          enabled: true
+      loop: "{{ arista_leaf_config.p2p_links }}"
+      when: device_role == 'leaf'
+      tags: [ leaf, interfaces ]
+
+    - name: Configure leaf BGP underlay
+      arista.eos.eos_config:
+        lines:
+        - "router bgp {{ arista_leaf_config.bgp_asn }}"
+        - "router-id {{ arista_dc_config.loopback0_ip }}"
+        - "no bgp default ipv4-unicast"
+        - "maximum-paths {{ arista_dc_config.bgp_max_paths | default(8) }} ecmp {{ arista_dc_config.bgp_ecmp_paths | default(8) }}"
+        - "neighbor UNDERLAY_PEERS peer group"
+        - "neighbor UNDERLAY_PEERS remote-as {{ arista_dc_config.spine_asn }}"
+        - "neighbor UNDERLAY_PEERS password {{ vault_bgp_password }}"
+        - "neighbor UNDERLAY_PEERS send-community"
+        - "neighbor UNDERLAY_PEERS maximum-routes {{ arista_dc_config.underlay_max_routes | default(12000) }}"
+        parents: []
+      when: device_role == 'leaf'
+      no_log: true
+      tags: [ leaf, bgp, underlay ]
+
+    - name: Configure leaf BGP underlay neighbors
+      arista.eos.eos_config:
+        lines:
+        - "neighbor {{ item.neighbor_ip }} peer group UNDERLAY_PEERS"
+        - "neighbor {{ item.neighbor_ip }} description {{ item.description }}"
+        parents:
+        - "router bgp {{ arista_leaf_config.bgp_asn }}"
+      loop: "{{ arista_leaf_config.underlay_neighbors }}"
+      when: device_role == 'leaf'
+      tags: [ leaf, bgp, underlay_neighbors ]
+
+    - name: Configure leaf BGP EVPN overlay
+      arista.eos.eos_config:
+        lines:
+        - "neighbor EVPN_OVERLAY_PEERS peer group"
+        - "neighbor EVPN_OVERLAY_PEERS remote-as {{ arista_dc_config.spine_asn }}"
+        - "neighbor EVPN_OVERLAY_PEERS update-source Loopback0"
+        - "neighbor EVPN_OVERLAY_PEERS ebgp-multihop 3"
+        - "neighbor EVPN_OVERLAY_PEERS password {{ vault_bgp_password }}"
+        - "neighbor EVPN_OVERLAY_PEERS send-community"
+        - "neighbor EVPN_OVERLAY_PEERS maximum-routes {{ arista_dc_config.evpn_max_routes | default(0) }}"
+        parents:
+        - "router bgp {{ arista_leaf_config.bgp_asn }}"
+      when: device_role == 'leaf'
+      no_log: true
+      tags: [ leaf, bgp, evpn, overlay ]
+
+    - name: Configure leaf BGP EVPN neighbors
+      arista.eos.eos_config:
+        lines:
+        - "neighbor {{ item.neighbor_ip }} peer group EVPN_OVERLAY_PEERS"
+        - "neighbor {{ item.neighbor_ip }} description {{ item.description }}"
+        parents:
+        - "router bgp {{ arista_leaf_config.bgp_asn }}"
+      loop: "{{ arista_leaf_config.evpn_neighbors }}"
+      when: device_role == 'leaf'
+      tags: [ leaf, bgp, evpn_neighbors ]
+
+    - name: Activate BGP address families on leaf
+      arista.eos.eos_config:
+        lines:
+        - "address-family ipv4"
+        - "neighbor UNDERLAY_PEERS activate"
+        - "redistribute connected"
+        - "address-family evpn"
+        - "neighbor EVPN_OVERLAY_PEERS activate"
+        parents:
+        - "router bgp {{ arista_leaf_config.bgp_asn }}"
+      when: device_role == 'leaf'
+      tags: [ leaf, bgp, address_families ]
+
+  # Phase 4: MLAG Configuration (Leaf Pairs)
+  - name: "Phase 4: Configure MLAG for Leaf Pairs"
+    block:
+    - name: Configure MLAG VLAN
+      arista.eos.eos_vlans:
+        config:
+        - vlan_id: "{{ arista_mlag_config.mlag_vlan }}"
+          name: "MLAG_iBGP"
+          state: active
+      when: device_role == 'leaf' and arista_mlag_config is defined
+      tags: [ mlag, vlans ]
+
+    - name: Configure MLAG peer-link port-channel
+      arista.eos.eos_lag_interfaces:
+        config:
+        - name: "Port-Channel{{ arista_mlag_config.peer_link_po }}"
+          members:
+          - member: "{{ item.interface }}"
+            mode: active
+          mode: active
+      loop: "{{ arista_mlag_config.peer_link_interfaces }}"
+      when: device_role == 'leaf' and arista_mlag_config is defined
+      tags: [ mlag, portchannel ]
+
+    - name: Configure MLAG peer-link interface
+      arista.eos.eos_l2_interfaces:
+        config:
+        - name: "Port-Channel{{ arista_mlag_config.peer_link_po }}"
+          mode: trunk
+          trunk:
+            allowed_vlans: "{{ arista_mlag_config.allowed_vlans }}"
+      when: device_role == 'leaf' and arista_mlag_config is defined
+      tags: [ mlag, peer_link ]
+
+    - name: Configure MLAG domain
+      arista.eos.eos_config:
+        lines:
+        - "mlag configuration"
+        - "domain-id {{ arista_mlag_config.domain_id }}"
+        - "local-interface Vlan{{ arista_mlag_config.mlag_vlan }}"
+        - "peer-address {{ arista_mlag_config.peer_ip }}"
+        - "peer-link Port-Channel{{ arista_mlag_config.peer_link_po }}"
+        - "reload-delay mlag {{ arista_mlag_config.reload_delay_mlag | default(300) }}"
+        - "reload-delay non-mlag {{ arista_mlag_config.reload_delay_non_mlag | default(330) }}"
+        parents: []
+      when: device_role == 'leaf' and arista_mlag_config is defined
+      tags: [ mlag, domain ]
+
+    - name: Configure MLAG SVI
+      arista.eos.eos_l3_interfaces:
+        config:
+        - name: "Vlan{{ arista_mlag_config.mlag_vlan }}"
+          ipv4:
+          - address: "{{ arista_mlag_config.local_ip }}/{{ arista_mlag_config.mask }}"
+      when: device_role == 'leaf' and arista_mlag_config is defined
+      tags: [ mlag, svi ]
+
+  # Phase 5: VXLAN Configuration (Leaf Switches)
+  - name: "Phase 5: Configure VXLAN on Leaf Switches"
+    block:
+    - name: Create tenant VLANs
+      arista.eos.eos_vlans:
+        config:
+        - vlan_id: "{{ item.vlan_id }}"
+          name: "{{ item.name }}"
+          state: active
+      loop: "{{ arista_tenant_config.vlans }}"
+      when: device_role == 'leaf'
+      tags: [ leaf, vlans, tenant ]
+
+    - name: Configure VXLAN interface
+      arista.eos.eos_config:
+        lines:
+        - "interface Vxlan1"
+        - "vxlan source-interface Loopback1"
+        - "vxlan udp-port {{ arista_vxlan_config.udp_port | default(4789) }}"
+        - "vxlan vlan {{ item.vlan_id }} vni {{ item.vni }}"
+        parents: []
+      loop: "{{ arista_tenant_config.vlans }}"
+      when: device_role == 'leaf'
+      tags: [ leaf, vxlan ]
+
+    - name: Configure tenant VRFs
+      arista.eos.eos_vrfs:
+        config:
+        - name: "{{ item.name }}"
+          rd: "{{ arista_dc_config.loopback0_ip }}:{{ item.vni }}"
+          route_targets:
+            import: "{{ item.vni }}:{{ item.vni }}"
+            export: "{{ item.vni }}:{{ item.vni }}"
+      loop: "{{ arista_tenant_config.vrfs }}"
+      when: device_role == 'leaf'
+      tags: [ leaf, vrf, tenant ]
+
+    - name: Configure VXLAN VRF mapping
+      arista.eos.eos_config:
+        lines:
+        - "vxlan vrf {{ item.name }} vni {{ item.vni }}"
+        parents:
+        - "interface Vxlan1"
+      loop: "{{ arista_tenant_config.vrfs }}"
+      when: device_role == 'leaf'
+      tags: [ leaf, vxlan, vrf ]
+
+    - name: Configure tenant SVI interfaces
+      arista.eos.eos_l3_interfaces:
+        config:
+        - name: "Vlan{{ item.vlan_id }}"
+          ipv4:
+          - address: "{{ item.gateway_ip }}/{{ item.mask }}"
+      loop: "{{ arista_tenant_config.vlans }}"
+      when: device_role == 'leaf' and item.gateway_ip is defined
+      tags: [ leaf, svi, tenant ]
+
+    - name: Assign SVI to VRF
+      arista.eos.eos_config:
+        lines:
+        - "vrf {{ item.vrf }}"
+        parents:
+        - "interface Vlan{{ item.vlan_id }}"
+      loop: "{{ arista_tenant_config.vlans }}"
+      when: device_role == 'leaf' and item.vrf is defined
+      tags: [ leaf, svi, vrf ]
+
+  # Phase 6: BGP EVPN VNI Configuration
+  - name: "Phase 6: Configure BGP EVPN VNI Advertisement"
+    block:
+    - name: Configure EVPN VNI advertisement
+      arista.eos.eos_config:
+        lines:
+        - "vlan {{ item.vlan_id }}"
+        - "rd {{ arista_dc_config.loopback0_ip }}:{{ item.vni }}"
+        - "route-target both {{ item.vni }}:{{ item.vni }}"
+        - "redistribute learned"
+        parents:
+        - "router bgp {{ arista_leaf_config.bgp_asn }}"
+        - "vlan-aware-bundle {{ item.vrf | default('default') }}"
+      loop: "{{ arista_tenant_config.vlans }}"
+      when: device_role == 'leaf'
+      tags: [ leaf, bgp, evpn, vni ]
+
+    - name: Configure EVPN VRF advertisement
+      arista.eos.eos_config:
+        lines:
+        - "vrf {{ item.name }}"
+        - "rd {{ arista_dc_config.loopback0_ip }}:{{ item.vni }}"
+        - "route-target import evpn {{ item.vni }}:{{ item.vni }}"
+        - "route-target export evpn {{ item.vni }}:{{ item.vni }}"
+        - "redistribute connected"
+        parents:
+        - "router bgp {{ arista_leaf_config.bgp_asn }}"
+      loop: "{{ arista_tenant_config.vrfs }}"
+      when: device_role == 'leaf'
+      tags: [ leaf, bgp, evpn, vrf ]
+
+  # Phase 7: Access Port Configuration
+  - name: "Phase 7: Configure Access Ports for Servers"
+    block:
+    - name: Configure server-facing port-channels
+      arista.eos.eos_lag_interfaces:
+        config:
+        - name: "Port-Channel{{ item.po_id }}"
+          members:
+          - member: "{{ member.interface }}"
+            mode: active
+          mode: active
+      loop: "{{ arista_server_config.port_channels }}"
+      when: device_role == 'leaf' and arista_server_config.port_channels is defined
+      tags: [ leaf, server_ports, portchannel ]
+
+    - name: Configure MLAG port-channels for servers
+      arista.eos.eos_config:
+        lines:
+        - "mlag {{ item.mlag_id }}"
+        parents:
+        - "interface Port-Channel{{ item.po_id }}"
+      loop: "{{ arista_server_config.port_channels }}"
+      when: device_role == 'leaf' and arista_server_config.port_channels is defined and item.mlag_id is defined
+      tags: [ leaf, server_ports, mlag ]
+
+    - name: Configure server port access VLANs
+      arista.eos.eos_l2_interfaces:
+        config:
+        - name: "{{ item.interface }}"
+          mode: "{{ item.mode }}"
+          access:
+            vlan: "{{ item.access_vlan | default(omit) }}"
+          trunk:
+            allowed_vlans: "{{ item.trunk_vlans | default(omit) }}"
+            native_vlan: "{{ item.native_vlan | default(omit) }}"
+      loop: "{{ arista_server_config.access_ports }}"
+      when: device_role == 'leaf' and arista_server_config.access_ports is defined
+      tags: [ leaf, server_ports, access ]
+
+  # Phase 8: Quality of Service
+  - name: "Phase 8: Configure Data Center QoS"
+    block:
+    - name: Configure QoS trust settings
+      arista.eos.eos_config:
+        lines:
+        - "qos trust {{ item.trust_mode }}"
+        parents:
+        - "interface {{ item.interface }}"
+      loop: "{{ arista_qos_config.trust_interfaces }}"
+      when: device_role == 'leaf' and arista_qos_config.trust_interfaces is defined
+      tags: [ leaf, qos, trust ]
+
+    - name: Configure traffic classes
+      arista.eos.eos_config:
+        lines:
+        - "class-map {{ item.name }}"
+        - "match {{ item.match_criteria }}"
+        parents: []
+      loop: "{{ arista_qos_config.traffic_classes }}"
+      when: arista_qos_config.traffic_classes is defined
+      tags: [ qos, traffic_classes ]
+
+  # Phase 9: Monitoring and Telemetry
+  - name: "Phase 9: Configure Monitoring and Telemetry"
+    block:
+    - name: Configure LANZ (Latency Analyzer)
+      arista.eos.eos_config:
+        lines:
+        - "queue-monitor length"
+        - "queue-monitor length notifying"
+        - "no queue-monitor length tx-latency"
+        parents: []
+      when: arista_monitoring_config.lanz_enabled | default(false)
+      tags: [ monitoring, lanz ]
+
+    - name: Configure streaming telemetry
+      arista.eos.eos_config:
+        lines:
+        - "daemon TerminAttr"
+        - "exec /usr/bin/TerminAttr -cvcompression={{ arista_telemetry_config.compression | default('gzip') }} -cvaddr={{ arista_telemetry_config.cvp_servers | join(',') }} -cvauth={{ arista_telemetry_config.auth_method | default('key') }},{{ arista_telemetry_config.auth_key }} -cvvrf={{ arista_telemetry_config.vrf | default('MGMT') }} -smashexcludes={{ arista_telemetry_config.smash_excludes | default('ale,flexCounter,hardware,kni,pulse,strata') }} -ingestexclude={{ arista_telemetry_config.ingest_exclude | default('/Sysdb/cell/1/agent,/Sysdb/cell/2/agent') }} -taillogs"
+        - "no shutdown"
+        parents: []
+      when: arista_telemetry_config is defined
+      tags: [ monitoring, telemetry, cvp ]
+
+  post_tasks:
+  # Phase 10: Verification and Reporting
+  - name: "Phase 10: Data Center Deployment Verification"
+    block:
+    - name: Verify BGP underlay neighbors
+      arista.eos.eos_command:
+        commands:
+        - "show ip bgp summary"
+        - "show bgp neighbors"
+      register: bgp_underlay_status
+      tags: [ verification, bgp, underlay ]
+
+    - name: Verify BGP EVPN overlay
+      arista.eos.eos_command:
+        commands:
+        - "show bgp evpn summary"
+        - "show bgp evpn"
+      register: bgp_evpn_status
+      tags: [ verification, bgp, evpn ]
+
+    - name: Verify VXLAN status (Leaf only)
+      arista.eos.eos_command:
+        commands:
+        - "show vxlan config-sanity"
+        - "show vxlan address-table"
+        - "show vxlan vni"
+      register: vxlan_verification
+      when: device_role == 'leaf'
+      tags: [ verification, vxlan ]
+
+    - name: Verify MLAG status (Leaf only)
+      arista.eos.eos_command:
+        commands:
+        - "show mlag"
+        - "show mlag config-sanity"
+        - "show mlag interfaces"
+      register: mlag_verification
+      when: device_role == 'leaf' and arista_mlag_config is defined
+      tags: [ verification, mlag ]
+
+    - name: Generate data center deployment report
+      copy:
+        content: |
+          Arista Data Center Spine-Leaf Deployment Report
+          ==============================================
+          Device: {{ inventory_hostname }}
+          Role: {{ device_role | upper }}
+          Platform: {{ ansible_net_model | default('Arista Switch') }}
+          Software Version: {{ ansible_net_version | default('Unknown') }}
+          Deployment Time: {{ ansible_date_time.iso8601 }}
+
+          === BGP UNDERLAY STATUS ===
+          {{ bgp_underlay_status.stdout[0] | default('BGP underlay not available') }}
+
+          === BGP EVPN OVERLAY STATUS ===
+          {{ bgp_evpn_status.stdout[0] | default('BGP EVPN not available') }}
+
+          {% if device_role == 'leaf' %}
+          {% if vxlan_verification is defined %}
+          === VXLAN STATUS ===
+          VXLAN Configuration Sanity:
+          {{ vxlan_verification.stdout[0] | default('VXLAN not configured') }}
+
+          VXLAN Address Table:
+          {{ vxlan_verification.stdout[1] | default('No VXLAN addresses') }}
+
+          VXLAN VNIs:
+          {{ vxlan_verification.stdout[2] | default('No VNIs configured') }}
+          {% endif %}
+
+          {% if mlag_verification is defined %}
+          === MLAG STATUS ===
+          {{ mlag_verification.stdout[0] | default('MLAG not configured') }}
+
+          MLAG Configuration Sanity:
+          {{ mlag_verification.stdout[1] | default('MLAG sanity check not available') }}
+
+          MLAG Interfaces:
+          {{ mlag_verification.stdout[2] | default('No MLAG interfaces') }}
+          {% endif %}
+          {% endif %}
+
+          === CONFIGURATION SUMMARY ===
+          {% if device_role == 'spine' %}
+          Spine Configuration:
+          - BGP ASN: {{ arista_dc_config.bgp_asn }}
+          - Loopback0: {{ arista_dc_config.loopback0_ip }}
+          - P2P Links: {{ (arista_spine_config.p2p_links | default([])) | length }}
+          - BGP Listen Range: {{ arista_spine_config.bgp_listen_range | default('Not configured') }}
+          {% endif %}
+
+          {% if device_role == 'leaf' %}
+          Leaf Configuration:
+          - BGP ASN: {{ arista_leaf_config.bgp_asn }}
+          - Loopback0: {{ arista_dc_config.loopback0_ip }}
+          - Loopback1: {{ arista_dc_config.loopback1_ip | default('Not configured') }}
+          - P2P Links: {{ (arista_leaf_config.p2p_links | default([])) | length }}
+          - Tenant VLANs: {{ (arista_tenant_config.vlans | default([])) | length }}
+          - Tenant VRFs: {{ (arista_tenant_config.vrfs | default([])) | length }}
+          - MLAG Domain: {{ arista_mlag_config.domain_id | default('Not configured') }}
+          - Server Port-Channels: {{ (arista_server_config.port_channels | default([])) | length }}
+          {% endif %}
+
+          Features Enabled:
+          - BGP Underlay: Yes
+          - BGP EVPN Overlay: Yes
+          {% if device_role == 'leaf' %}
+          - VXLAN: {{ 'Yes' if arista_vxlan_config is defined else 'No' }}
+          - MLAG: {{ 'Yes' if arista_mlag_config is defined else 'No' }}
+          - Multi-Tenancy: {{ 'Yes' if arista_tenant_config.vrfs is defined else 'No' }}
+          {% endif %}
+          - CloudVision: {{ 'Yes' if arista_telemetry_config is defined else 'No' }}
+          - LANZ: {{ 'Yes' if arista_monitoring_config.lanz_enabled | default(false) else 'No' }}
+
+          Status: {{ 'SUCCESS' if ansible_failed_task is not defined else 'FAILED' }}
+        dest: "{{ playbook_dir }}/../reports/arista/{{ inventory_hostname }}_datacenter_{{ device_role }}_{{ ansible_date_time.epoch }}.txt"
+      delegate_to: localhost
+      tags: [ reporting ]
+
+# Example usage:
+# ansible-playbook arista_datacenter_spine_leaf.yml --limit arista_datacenter_devices
+# ansible-playbook arista_datacenter_spine_leaf.yml --limit arista_spines --tags spine,underlay
+# ansible-playbook arista_datacenter_spine_leaf.yml --limit arista_leaves --tags leaf,vxlan,mlag

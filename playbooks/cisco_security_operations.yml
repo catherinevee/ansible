@@ -1,0 +1,384 @@
+---
+# Cisco Security Operations and Threat Response Playbook
+# Advanced security monitoring, incident response, and compliance for Cisco devices
+# Supports: IOS/IOS-XE security features, threat detection, and automated response
+
+- name: Cisco Security Operations and Threat Response
+  hosts: cisco_devices
+  gather_facts: false
+  connection: network_cli
+  vars:
+    ansible_network_os: "{{ platform }}"
+    ansible_user: "{{ vault_cisco_username }}"
+    ansible_password: "{{ vault_cisco_password }}"
+    ansible_become: true
+    ansible_become_method: enable
+    ansible_become_password: "{{ vault_cisco_enable_password }}"
+
+  tasks:
+  # Phase 1: Security Monitoring Setup
+  - name: "Phase 1: Configure Advanced Security Monitoring"
+    block:
+    - name: Enable IP Source Guard on access ports
+      cisco.ios.ios_config:
+        lines:
+        - "ip verify source"
+        - "ip verify source port-security"
+        parents:
+        - "interface {{ item.interface }}"
+      loop: "{{ cisco_security_monitoring.source_guard_interfaces }}"
+      when: cisco_security_monitoring.source_guard_interfaces is defined
+      tags: [ security, source_guard ]
+
+    - name: Configure Dynamic ARP Inspection
+      cisco.ios.ios_config:
+        lines:
+        - "ip arp inspection vlan {{ cisco_security_monitoring.dai_vlans | join(',') }}"
+        - "ip arp inspection validate src-mac dst-mac ip"
+        - "ip arp inspection log-buffer entries {{ cisco_security_monitoring.dai_log_entries | default(256) }}"
+      when: cisco_security_monitoring.dai_vlans is defined
+      tags: [ security, dai, arp_inspection ]
+
+    - name: Configure DHCP Snooping
+      cisco.ios.ios_config:
+        lines:
+        - "ip dhcp snooping"
+        - "ip dhcp snooping vlan {{ cisco_security_monitoring.dhcp_snooping_vlans | join(',') }}"
+        - "ip dhcp snooping information option"
+        - "ip dhcp snooping database timeout {{ cisco_security_monitoring.dhcp_timeout | default(300) }}"
+      when: cisco_security_monitoring.dhcp_snooping_vlans is defined
+      tags: [ security, dhcp_snooping ]
+
+    - name: Configure trusted DHCP snooping interfaces
+      cisco.ios.ios_config:
+        lines:
+        - "ip dhcp snooping trust"
+        parents:
+        - "interface {{ item.interface }}"
+      loop: "{{ cisco_security_monitoring.dhcp_trusted_interfaces }}"
+      when: cisco_security_monitoring.dhcp_trusted_interfaces is defined
+      tags: [ security, dhcp_snooping ]
+
+  # Phase 2: Advanced Access Control Lists
+  - name: "Phase 2: Deploy Advanced Security ACLs"
+    block:
+    - name: Create time-based ACLs
+      cisco.ios.ios_config:
+        lines:
+        - "time-range {{ item.name }}"
+        - "periodic {{ item.days }} {{ item.start_time }} to {{ item.end_time }}"
+      loop: "{{ cisco_security_acls.time_ranges }}"
+      when: cisco_security_acls.time_ranges is defined
+      tags: [ security, time_acl ]
+
+    - name: Create advanced security ACLs with logging
+      cisco.ios.ios_config:
+        lines:
+        - "ip access-list extended {{ item.name }}"
+        - "{{ ace.sequence | default('') }} {{ ace.action }} {{ ace.protocol }} {{ ace.source }} {{ ace.destination }} {{ ace.ports | default('') }} {{ ace.options | default('') }} log"
+        parents: []
+      loop: "{{ cisco_security_acls.extended_acls }}"
+      when: cisco_security_acls.extended_acls is defined
+      tags: [ security, advanced_acl ]
+
+    - name: Create reflexive ACLs for dynamic security
+      cisco.ios.ios_config:
+        lines:
+        - "ip access-list extended {{ item.name }}"
+        - "permit {{ item.protocol }} {{ item.source }} {{ item.destination }} reflect {{ item.reflect_name }}"
+        - "evaluate {{ item.reflect_name }}"
+      loop: "{{ cisco_security_acls.reflexive_acls }}"
+      when: cisco_security_acls.reflexive_acls is defined
+      tags: [ security, reflexive_acl ]
+
+  # Phase 3: IPS and Threat Detection
+  - name: "Phase 3: Configure Intrusion Prevention System"
+    block:
+    - name: Configure IOS IPS signatures
+      cisco.ios.ios_config:
+        lines:
+        - "ip ips name {{ cisco_ips_config.policy_name }}"
+        - "ip ips config location {{ cisco_ips_config.config_location }}"
+        - "ip ips signature-category"
+        - "category {{ item.category }}"
+        - "retired {{ item.retired | default('false') }}"
+        parents: []
+      loop: "{{ cisco_ips_config.signature_categories }}"
+      when: cisco_ips_config is defined and platform in ['ios', 'iosxe']
+      tags: [ security, ips ]
+
+    - name: Apply IPS to interfaces
+      cisco.ios.ios_config:
+        lines:
+        - "ip ips {{ cisco_ips_config.policy_name }} {{ item.direction }}"
+        parents:
+        - "interface {{ item.interface }}"
+      loop: "{{ cisco_ips_config.interface_policies }}"
+      when: cisco_ips_config.interface_policies is defined
+      tags: [ security, ips, interfaces ]
+
+  # Phase 4: Zone-Based Firewall
+  - name: "Phase 4: Configure Zone-Based Firewall"
+    block:
+    - name: Create security zones
+      cisco.ios.ios_config:
+        lines:
+        - "zone security {{ item.name }}"
+        - "description {{ item.description }}"
+      loop: "{{ cisco_zbf_config.security_zones }}"
+      when: cisco_zbf_config.security_zones is defined and platform in ['ios', 'iosxe']
+      tags: [ security, zbf, zones ]
+
+    - name: Create class maps for traffic classification
+      cisco.ios.ios_config:
+        lines:
+        - "class-map type inspect match-{{ item.match_type }} {{ item.name }}"
+        - "match {{ item.match_criteria }}"
+      loop: "{{ cisco_zbf_config.class_maps }}"
+      when: cisco_zbf_config.class_maps is defined
+      tags: [ security, zbf, class_maps ]
+
+    - name: Create policy maps for zone policies
+      cisco.ios.ios_config:
+        lines:
+        - "policy-map type inspect {{ item.name }}"
+        - "class type inspect {{ class.class_name }}"
+        - "{{ class.action }}"
+        parents: []
+      loop: "{{ cisco_zbf_config.policy_maps }}"
+      when: cisco_zbf_config.policy_maps is defined
+      tags: [ security, zbf, policy_maps ]
+
+    - name: Create zone pairs and apply policies
+      cisco.ios.ios_config:
+        lines:
+        - "zone-pair security {{ item.name }} source {{ item.source_zone }} destination {{ item.destination_zone }}"
+        - "service-policy type inspect {{ item.policy_map }}"
+      loop: "{{ cisco_zbf_config.zone_pairs }}"
+      when: cisco_zbf_config.zone_pairs is defined
+      tags: [ security, zbf, zone_pairs ]
+
+    - name: Assign interfaces to security zones
+      cisco.ios.ios_config:
+        lines:
+        - "zone-member security {{ item.zone }}"
+        parents:
+        - "interface {{ item.interface }}"
+      loop: "{{ cisco_zbf_config.interface_zones }}"
+      when: cisco_zbf_config.interface_zones is defined
+      tags: [ security, zbf, interfaces ]
+
+  # Phase 5: Advanced Authentication and Authorization
+  - name: "Phase 5: Configure Advanced AAA Features"
+    block:
+    - name: Configure 802.1X authentication
+      cisco.ios.ios_config:
+        lines:
+        - "aaa authentication dot1x default group radius"
+        - "aaa authorization network default group radius"
+        - "dot1x system-auth-control"
+      when: cisco_dot1x_config.enabled | default(false)
+      tags: [ security, dot1x, authentication ]
+
+    - name: Configure 802.1X on interfaces
+      cisco.ios.ios_config:
+        lines:
+        - "switchport mode access"
+        - "authentication host-mode {{ item.host_mode | default('single-host') }}"
+        - "authentication order {{ item.auth_order | default('dot1x mab') }}"
+        - "authentication priority {{ item.auth_priority | default('dot1x mab') }}"
+        - "authentication port-control {{ item.port_control | default('auto') }}"
+        - "authentication periodic"
+        - "authentication timer reauthenticate {{ item.reauth_timer | default(3600) }}"
+        - "dot1x pae authenticator"
+        - "dot1x timeout tx-period {{ item.tx_period | default(30) }}"
+        parents:
+        - "interface {{ item.interface }}"
+      loop: "{{ cisco_dot1x_config.interfaces }}"
+      when: cisco_dot1x_config.interfaces is defined
+      tags: [ security, dot1x, interfaces ]
+
+    - name: Configure MAB (MAC Authentication Bypass)
+      cisco.ios.ios_config:
+        lines:
+        - "mab"
+        - "authentication event fail action next-method"
+        - "authentication event server dead action authorize vlan {{ item.fallback_vlan }}"
+        - "authentication event server alive action reinitialize"
+        parents:
+        - "interface {{ item.interface }}"
+      loop: "{{ cisco_dot1x_config.mab_interfaces }}"
+      when: cisco_dot1x_config.mab_interfaces is defined
+      tags: [ security, mab, authentication ]
+
+  # Phase 6: Network Access Control
+  - name: "Phase 6: Configure Network Access Control"
+    block:
+    - name: Configure dynamic VLAN assignment
+      cisco.ios.ios_config:
+        lines:
+        - "vlan access-map {{ item.name }}"
+        - "match ip address {{ item.acl_name }}"
+        - "action {{ item.action }}"
+      loop: "{{ cisco_nac_config.vlan_access_maps }}"
+      when: cisco_nac_config.vlan_access_maps is defined
+      tags: [ security, nac, vlan_maps ]
+
+    - name: Configure private VLANs for isolation
+      cisco.ios.ios_config:
+        lines:
+        - "vlan {{ item.primary_vlan }}"
+        - "private-vlan primary"
+        - "private-vlan association {{ item.secondary_vlans | join(',') }}"
+        - "vlan {{ item.isolated_vlan }}"
+        - "private-vlan isolated"
+        - "vlan {{ item.community_vlan }}"
+        - "private-vlan community"
+      loop: "{{ cisco_nac_config.private_vlans }}"
+      when: cisco_nac_config.private_vlans is defined
+      tags: [ security, nac, private_vlans ]
+
+  # Phase 7: Threat Intelligence and Logging
+  - name: "Phase 7: Configure Advanced Logging and Threat Intelligence"
+    block:
+    - name: Configure enhanced syslog for security events
+      cisco.ios.ios_config:
+        lines:
+        - "logging buffered {{ cisco_security_logging.buffer_size | default(64000) }} {{ cisco_security_logging.buffer_level | default('informational') }}"
+        - "logging console {{ cisco_security_logging.console_level | default('warnings') }}"
+        - "logging monitor {{ cisco_security_logging.monitor_level | default('informational') }}"
+        - "logging trap {{ cisco_security_logging.trap_level | default('informational') }}"
+        - "logging facility {{ cisco_security_logging.facility | default('local0') }}"
+        - "logging source-interface {{ cisco_security_logging.source_interface }}"
+      when: cisco_security_logging is defined
+      tags: [ security, logging ]
+
+    - name: Configure security-specific logging
+      cisco.ios.ios_config:
+        lines:
+        - "logging on"
+        - "service timestamps log datetime msec localtime show-timezone"
+        - "service sequence-numbers"
+        - "logging rate-limit console {{ cisco_security_logging.rate_limit | default(10) }} except errors"
+      tags: [ security, logging, timestamps ]
+
+    - name: Configure NetFlow for traffic analysis
+      cisco.ios.ios_config:
+        lines:
+        - "ip flow-export version {{ cisco_netflow_config.version | default(9) }}"
+        - "ip flow-export destination {{ item.collector_ip }} {{ item.port }}"
+        - "ip flow-export source {{ cisco_netflow_config.source_interface }}"
+        - "ip flow-export template timeout-rate {{ cisco_netflow_config.template_timeout | default(30) }}"
+        parents: []
+      loop: "{{ cisco_netflow_config.collectors }}"
+      when: cisco_netflow_config.collectors is defined
+      tags: [ security, netflow, monitoring ]
+
+    - name: Apply NetFlow to interfaces
+      cisco.ios.ios_config:
+        lines:
+        - "ip flow {{ item.direction }}"
+        parents:
+        - "interface {{ item.interface }}"
+      loop: "{{ cisco_netflow_config.interface_flows }}"
+      when: cisco_netflow_config.interface_flows is defined
+      tags: [ security, netflow, interfaces ]
+
+  # Phase 8: Automated Threat Response
+  - name: "Phase 8: Configure Automated Threat Response"
+    block:
+    - name: Create EEM scripts for automated response
+      cisco.ios.ios_config:
+        lines:
+        - "event manager applet {{ item.name }}"
+        - "event {{ item.event_type }} pattern {{ item.pattern }}"
+        - "action 1.0 cli command \"enable\""
+        - "action 2.0 cli command \"{{ item.response_command }}\""
+        - "action 3.0 syslog msg \"{{ item.syslog_message }}\""
+        parents: []
+      loop: "{{ cisco_eem_config.security_applets }}"
+      when: cisco_eem_config.security_applets is defined
+      tags: [ security, eem, automation ]
+
+  # Phase 9: Compliance and Audit
+  - name: "Phase 9: Security Compliance Checks"
+    block:
+    - name: Verify security configuration compliance
+      cisco.ios.ios_command:
+        commands:
+        - "show running-config | include {{ item }}"
+      loop:
+      - "service password-encryption"
+      - "no ip http server"
+      - "aaa new-model"
+      - "logging"
+      - "snmp-server"
+      register: compliance_check
+      tags: [ security, compliance ]
+
+    - name: Check for unauthorized access attempts
+      cisco.ios.ios_command:
+        commands:
+        - "show logging | include Authentication failure"
+        - "show logging | include Invalid"
+        - "show logging | include VIOLATION"
+      register: security_violations
+      tags: [ security, violations ]
+
+    - name: Generate security audit report
+      copy:
+        content: |
+          Cisco Security Operations Report
+          ===============================
+          Device: {{ inventory_hostname }}
+          Audit Time: {{ ansible_date_time.iso8601 }}
+
+          === COMPLIANCE STATUS ===
+          {% for result in compliance_check.results %}
+          Check: {{ result.item }}
+          Status: {{ 'PASS' if result.stdout | length > 0 else 'FAIL' }}
+          Output: {{ result.stdout | default('No output') }}
+
+          {% endfor %}
+
+          === SECURITY VIOLATIONS ===
+          {% for result in security_violations.results %}
+          {{ result.stdout | default('No violations found') }}
+
+          {% endfor %}
+
+          === SECURITY FEATURES STATUS ===
+          DHCP Snooping: {{ 'Enabled' if cisco_security_monitoring.dhcp_snooping_vlans is defined else 'Disabled' }}
+          Dynamic ARP Inspection: {{ 'Enabled' if cisco_security_monitoring.dai_vlans is defined else 'Disabled' }}
+          IP Source Guard: {{ 'Enabled' if cisco_security_monitoring.source_guard_interfaces is defined else 'Disabled' }}
+          Zone-Based Firewall: {{ 'Enabled' if cisco_zbf_config is defined else 'Disabled' }}
+          802.1X Authentication: {{ 'Enabled' if cisco_dot1x_config.enabled | default(false) else 'Disabled' }}
+          IPS: {{ 'Enabled' if cisco_ips_config is defined else 'Disabled' }}
+          NetFlow: {{ 'Enabled' if cisco_netflow_config is defined else 'Disabled' }}
+
+          Status: {{ 'SUCCESS' if ansible_failed_task is not defined else 'FAILED' }}
+        dest: "{{ playbook_dir }}/../reports/cisco/{{ inventory_hostname }}_security_audit_{{ ansible_date_time.epoch }}.txt"
+      delegate_to: localhost
+      tags: [ security, reporting ]
+
+  post_tasks:
+  - name: Send security alert if violations detected
+    mail:
+      to: "{{ cisco_security_alerts.email_recipients }}"
+      subject: "Security Alert: {{ inventory_hostname }}"
+      body: |
+        Security violations detected on {{ inventory_hostname }}:
+
+        {{ security_violations.results | map(attribute='stdout') | join('\n') }}
+
+        Please investigate immediately.
+    when:
+    - cisco_security_alerts.email_recipients is defined
+    - security_violations.results | selectattr('stdout', 'defined') | selectattr('stdout', '!=', '') | list | length > 0
+    delegate_to: localhost
+    tags: [ security, alerts ]
+
+# Example usage:
+# ansible-playbook cisco_security_operations.yml --limit cisco_devices
+# ansible-playbook cisco_security_operations.yml --tags security,monitoring
+# ansible-playbook cisco_security_operations.yml --tags compliance --check

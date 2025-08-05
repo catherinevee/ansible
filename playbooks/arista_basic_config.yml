@@ -1,0 +1,390 @@
+---
+# ====================================================================
+# ARISTA BASIC CONFIGURATION EXAMPLES
+# ====================================================================
+# Comprehensive basic configuration examples for Arista EOS platforms
+# including 7050, 7150, 7280, 7300, 7500, and 7800 series switches
+# ====================================================================
+
+- name: Deploy Arista Basic Configuration Examples
+  hosts: arista_devices
+  gather_facts: false
+  connection: network_cli
+  vars:
+    ansible_command_timeout: 60
+    ansible_connect_timeout: 30
+
+  tasks:
+  # ===========================================
+  # ARISTA EOS SYSTEM CONFIGURATION
+  # ===========================================
+  - name: Configure Arista System Basics
+    arista.eos.eos_config:
+      lines:
+      - "hostname {{ inventory_hostname }}"
+      - "ip domain-name {{ domain_name }}"
+      - "ip name-server {{ primary_dns }}"
+      - "ip name-server {{ secondary_dns }}"
+      - "clock timezone {{ timezone | default('UTC') }}"
+      - "service routing protocols model multi-agent"
+      - "spanning-tree mode {{ stp_mode | default('mstp') }}"
+      - "spanning-tree mst configuration"
+      - "  name {{ mst_name | default('REGION1') }}"
+      - "  revision {{ mst_revision | default('1') }}"
+      - "aaa authentication login default local"
+      - "aaa authorization exec default local"
+      - "no aaa root"
+      parents: []
+    tags: [ 'arista', 'system', 'basic' ]
+
+  - name: Configure Arista Management Features
+    arista.eos.eos_config:
+      lines:
+      - "management api http-commands"
+      - "  protocol https"
+      - "  no protocol http"
+      - "  no shutdown"
+      - "  vrf {{ mgmt_vrf | default('MGMT') }}"
+      - "management ssh"
+      - "  client-alive interval {{ ssh_keepalive | default('120') }}"
+      - "  client-alive count-max {{ ssh_keepalive_count | default('3') }}"
+      - "  connection per-host {{ ssh_per_host | default('10') }}"
+      - "  connection limit {{ ssh_limit | default('50') }}"
+      - "  idle-timeout {{ ssh_idle_timeout | default('30') }}"
+      - "  hostkey client strict-checking"
+      - "  no fips restrictions"
+      - "  server-port 22"
+      - "  no shutdown"
+      - "  vrf {{ mgmt_vrf | default('MGMT') }}"
+      - "management console"
+      - "  idle-timeout {{ console_timeout | default('5') }}"
+      - "management cvx"
+      - "  no shutdown"
+      - "  server host {{ cvx_server | default('127.0.0.1') }}"
+      parents: []
+    tags: [ 'arista', 'management', 'basic' ]
+
+  - name: Configure Arista User Security
+    arista.eos.eos_config:
+      lines:
+      - "aaa authentication login default local"
+      - "aaa authorization exec default local"
+      - "aaa authentication enable default local"
+      - "enable secret {{ vault_arista_enable_secret }}"
+      - "no enable password"
+      - "service password-encryption"
+      - "username {{ item.username }} privilege {{ item.privilege | default('15') }}"
+      - "username {{ item.username }} role {{ item.role | default('network-admin') }}"
+      - "username {{ item.username }} secret {{ item.password }}"
+      - "username {{ item.username }} ssh-key {{ item.ssh_key }}"
+      parents: []
+    loop: "{{ local_users | default([]) }}"
+    when: item.ssh_key is defined
+    tags: [ 'arista', 'users', 'security' ]
+
+  - name: Configure Arista Users Without SSH Keys
+    arista.eos.eos_config:
+      lines:
+      - "username {{ item.username }} privilege {{ item.privilege | default('15') }}"
+      - "username {{ item.username }} role {{ item.role | default('network-admin') }}"
+      - "username {{ item.username }} secret {{ item.password }}"
+      parents: []
+    loop: "{{ local_users | default([]) }}"
+    when: item.ssh_key is not defined
+    tags: [ 'arista', 'users', 'security' ]
+
+  - name: Configure Arista SSH Security
+    arista.eos.eos_config:
+      lines:
+      - "ip ssh version 2"
+      - "ip ssh client source-interface {{ ssh_source_interface | default('Management1') }}"
+      - "security pki key generate rsa {{ rsa_key_size | default('2048') }} default"
+      parents: []
+    tags: [ 'arista', 'ssh', 'security' ]
+
+  - name: Configure Arista Management VRF
+    arista.eos.eos_config:
+      lines:
+      - "vrf instance {{ mgmt_vrf | default('MGMT') }}"
+      - "  description Management VRF"
+      - "ip routing vrf {{ mgmt_vrf | default('MGMT') }}"
+      parents: []
+    tags: [ 'arista', 'vrf', 'management' ]
+
+  - name: Configure Arista Management Interface
+    arista.eos.eos_config:
+      lines:
+      - "interface {{ mgmt_interface | default('Management1') }}"
+      - "  description Management Interface"
+      - "  vrf {{ mgmt_vrf | default('MGMT') }}"
+      - "  ip address {{ mgmt_ip }}/{{ mgmt_mask | default('24') }}"
+      - "  no shutdown"
+      parents: []
+    when: mgmt_ip is defined
+    tags: [ 'arista', 'interface', 'management' ]
+
+  - name: Configure Arista Management Routing
+    arista.eos.eos_config:
+      lines:
+      - "ip route vrf {{ mgmt_vrf | default('MGMT') }} 0.0.0.0/0 {{ default_gateway }}"
+      parents: []
+    when: default_gateway is defined
+    tags: [ 'arista', 'routing', 'management' ]
+
+  - name: Configure Arista NTP
+    arista.eos.eos_config:
+      lines:
+      - "ntp server vrf {{ mgmt_vrf | default('MGMT') }} {{ item.server }}{% if item.prefer | default(false) %} prefer{% endif %}"
+      - "ntp source {{ ntp_source_interface | default('Management1') }}"
+      - "ntp authenticate"
+      - "ntp authentication-key {{ item.key_id | default('1') }} sha1 {{ item.key | default('default_key') }}"
+      - "ntp trusted-key {{ item.key_id | default('1') }}"
+      parents: []
+    loop: "{{ ntp_servers | default([]) }}"
+    tags: [ 'arista', 'ntp', 'time' ]
+
+  - name: Configure Arista SNMP
+    arista.eos.eos_config:
+      lines:
+      - "snmp-server community {{ snmp_ro_community }} ro {{ snmp_ro_acl | default('SNMP-RO') }}"
+      - "snmp-server community {{ snmp_rw_community }} rw {{ snmp_rw_acl | default('SNMP-RW') }}"
+      - "snmp-server location {{ snmp_location }}"
+      - "snmp-server contact {{ snmp_contact }}"
+      - "snmp-server chassis-id {{ inventory_hostname }}"
+      - "snmp-server enable traps"
+      - "snmp-server enable traps entity arista-ent-sensor-alarm"
+      - "snmp-server enable traps entity arista-ent-sensor-threshold-hi"
+      - "snmp-server enable traps entity arista-ent-sensor-threshold-lo"
+      - "snmp-server enable traps snmp authentication"
+      - "snmp-server enable traps bridge topology-change"
+      - "snmp-server enable traps lldp rem-tables-change"
+      - "snmp-server host {{ item.host }} vrf {{ mgmt_vrf | default('MGMT') }} version {{ item.version | default('2c') }} {{ item.community }}"
+      - "snmp-server vrf {{ mgmt_vrf | default('MGMT') }}"
+      - "snmp-server source-interface {{ snmp_source_interface | default('Management1') }}"
+      parents: []
+    loop: "{{ snmp_hosts | default([]) }}"
+    tags: [ 'arista', 'snmp', 'monitoring' ]
+
+  - name: Configure Arista Logging
+    arista.eos.eos_config:
+      lines:
+      - "logging buffered {{ buffer_size | default('32768') }} {{ buffer_level | default('informational') }}"
+      - "logging console {{ console_level | default('critical') }}"
+      - "logging monitor {{ monitor_level | default('informational') }}"
+      - "logging trap {{ trap_level | default('informational') }}"
+      - "logging facility {{ logging_facility | default('local7') }}"
+      - "logging source-interface {{ logging_source_interface | default('Management1') }}"
+      - "logging vrf {{ mgmt_vrf | default('MGMT') }}"
+      - "logging format timestamp traditional"
+      - "logging format hostname"
+      - "logging host {{ item.server }} {{ item.port | default('514') }} protocol {{ item.protocol | default('udp') }}"
+      parents: []
+    loop: "{{ syslog_servers | default([]) }}"
+    tags: [ 'arista', 'logging', 'syslog' ]
+
+  - name: Configure Arista Access Control Lists
+    arista.eos.eos_config:
+      lines:
+      - "ip access-list standard SNMP-RO"
+      - "  10 permit {{ nms_network | default('10.100.1.0/24') }}"
+      - "  20 deny any log"
+      - "ip access-list standard SNMP-RW"
+      - "  10 permit {{ nms_network | default('10.100.1.0/24') }}"
+      - "  20 deny any log"
+      - "ip access-list extended SSH-ACCESS"
+      - "  10 permit tcp {{ mgmt_network | default('10.100.0.0/16') }} any eq ssh"
+      - "  20 deny tcp any any eq ssh log"
+      - "control-plane"
+      - "  ip access-group SSH-ACCESS in"
+      parents: []
+    tags: [ 'arista', 'acl', 'security' ]
+
+  - name: Configure Arista System Security
+    arista.eos.eos_config:
+      lines:
+      - "ip access-list standard COPP-SYSTEM-P-ACL-SSH"
+      - "  10 permit {{ mgmt_network | default('10.100.0.0/16') }}"
+      - "ip access-list standard COPP-SYSTEM-P-ACL-SNMP"
+      - "  10 permit {{ nms_network | default('10.100.1.0/24') }}"
+      - "system control-plane"
+      - "  ip access-group COPP-SYSTEM-P-ACL-SSH in"
+      - "  protocol ssh"
+      - "    ip access-group COPP-SYSTEM-P-ACL-SSH"
+      - "  protocol snmp"
+      - "    ip access-group COPP-SYSTEM-P-ACL-SNMP"
+      - "security pki certificate generate self-signed {{ inventory_hostname }}.crt key {{ inventory_hostname }}.key parameters common-name {{ inventory_hostname }}"
+      parents: []
+    tags: [ 'arista', 'copp', 'security' ]
+
+  - name: Configure Arista VLAN Examples
+    arista.eos.eos_config:
+      lines:
+      - "vlan {{ item.id }}"
+      - "  name {{ item.name }}"
+      - "  state active"
+      parents: []
+    loop: "{{ vlans | default([]) }}"
+    tags: [ 'arista', 'vlan', 'basic' ]
+
+  - name: Configure Arista SVI Interfaces
+    arista.eos.eos_config:
+      lines:
+      - "interface Vlan{{ item.id }}"
+      - "  description {{ item.description | default('SVI for ' + item.name) }}"
+      - "  ip address {{ item.gateway }}/{{ item.mask | default('24') }}"
+      - "  ip virtual-router address {{ item.vip | default(item.gateway) }}"
+      - "  ip helper-address {{ item.dhcp_helper | default('') }}"
+      - "  no shutdown"
+      parents: []
+    loop: "{{ vlans | default([]) }}"
+    when:
+    - item.l3_interface | default(false)
+    - item.gateway is defined
+    tags: [ 'arista', 'svi', 'l3' ]
+
+  - name: Configure Arista Interface Examples
+    arista.eos.eos_config:
+      lines:
+      - "interface {{ item.name }}"
+      - "  description {{ item.description | default('Interface ' + item.name) }}"
+      - "  {% if item.mode | default('access') == 'access' %}switchport mode access{% endif %}"
+      - "  {% if item.mode | default('access') == 'access' %}switchport access vlan {{ item.vlan | default('1') }}{% endif %}"
+      - "  {% if item.mode == 'trunk' %}switchport mode trunk{% endif %}"
+      - "  {% if item.mode == 'trunk' %}switchport trunk allowed vlan {{ item.allowed_vlans | default('1-4094') }}{% endif %}"
+      - "  {% if item.mode == 'trunk' %}switchport trunk native vlan {{ item.native_vlan | default('1') }}{% endif %}"
+      - "  spanning-tree portfast{% if item.mode == 'trunk' %} trunk{% endif %}"
+      - "  spanning-tree bpduguard enable"
+      - "  no shutdown"
+      parents: []
+    loop: "{{ interfaces | default([]) }}"
+    tags: [ 'arista', 'interface', 'switchport' ]
+
+  - name: Configure Arista MLAG Example
+    arista.eos.eos_config:
+      lines:
+      - "vlan {{ mlag_vlan | default('4094') }}"
+      - "  name MLAG-PEER"
+      - "  trunk group MLAGPEER"
+      - "interface {{ mlag_peer_interface | default('Port-Channel1000') }}"
+      - "  description MLAG Peer Link"
+      - "  switchport mode trunk"
+      - "  switchport trunk group MLAGPEER"
+      - "  no shutdown"
+      - "interface Vlan{{ mlag_vlan | default('4094') }}"
+      - "  description MLAG Peer VLAN"
+      - "  ip address {{ mlag_local_ip }}/{{ mlag_mask | default('30') }}"
+      - "  no autostate"
+      - "  no shutdown"
+      - "mlag configuration"
+      - "  domain-id {{ mlag_domain | default('MLAG1') }}"
+      - "  local-interface Vlan{{ mlag_vlan | default('4094') }}"
+      - "  peer-address {{ mlag_peer_ip }}"
+      - "  peer-link {{ mlag_peer_interface | default('Port-Channel1000') }}"
+      - "  reload-delay mlag {{ mlag_reload_delay | default('300') }}"
+      - "  reload-delay non-mlag {{ non_mlag_reload_delay | default('330') }}"
+      parents: []
+    when:
+    - mlag_enabled | default(false)
+    - mlag_local_ip is defined
+    - mlag_peer_ip is defined
+    tags: [ 'arista', 'mlag', 'ha' ]
+
+  - name: Configure Arista Banner
+    arista.eos.eos_config:
+      lines:
+      - "banner motd"
+      - "{{ banner_motd | default('Authorized Access Only - Enterprise Network') }}"
+      - "EOF"
+      - "banner login"
+      - "{{ banner_login | default('Authentication Required') }}"
+      - "EOF"
+      parents: []
+    tags: [ 'arista', 'banner', 'security' ]
+
+  - name: Configure Arista Event Monitor
+    arista.eos.eos_config:
+      lines:
+      - "event-monitor"
+      - "daemon TerminAttr"
+      - "  exec /usr/bin/TerminAttr -cvaddr={{ cvp_server | default('192.168.1.12:9910') }} -cvauth=key,{{ cvp_auth_key | default('default') }} -cvvrf={{ mgmt_vrf | default('MGMT') }} -smashexcludes=ale,flexCounter,hardware,kni,pulse,strata -ingestexclude=/Sysdb/cell/1/agent,/Sysdb/cell/2/agent -taillogs"
+      - "  no shutdown"
+      parents: []
+    when:
+    - cvp_enabled | default(false)
+    - cvp_server is defined
+    tags: [ 'arista', 'cvp', 'management' ]
+
+  # ===========================================
+  # SAVE CONFIGURATION
+  # ===========================================
+  - name: Save Arista Configuration
+    arista.eos.eos_config:
+      save_when: changed
+    tags: [ 'arista', 'save' ]
+
+  # ===========================================
+  # VERIFICATION
+  # ===========================================
+  - name: Verify Arista Configuration
+    block:
+    - name: Gather Arista Facts
+      arista.eos.eos_facts:
+        gather_subset:
+        - "!config"
+        - "default"
+        - "hardware"
+      register: arista_facts
+
+    - name: Get Arista System Information
+      arista.eos.eos_command:
+        commands:
+        - "show version"
+        - "show hostname"
+        - "show users"
+        - "show ntp status"
+        - "show logging"
+        - "show interfaces Management1"
+        format: text
+      register: arista_info
+
+    - name: Display Arista Configuration Status
+      ansible.builtin.debug:
+        msg: |
+          ====================================
+          ARISTA BASIC CONFIGURATION REPORT
+          ====================================
+          Device: {{ inventory_hostname }}
+          Platform: {{ ansible_network_os | upper }}
+
+          {% if arista_facts.ansible_facts is defined %}
+          Model: {{ arista_facts.ansible_facts.ansible_net_model | default('Unknown') }}
+          Version: {{ arista_facts.ansible_facts.ansible_net_version | default('Unknown') }}
+          Serial: {{ arista_facts.ansible_facts.ansible_net_serialnum | default('Unknown') }}
+          Hostname: {{ arista_facts.ansible_facts.ansible_net_hostname | default('Unknown') }}
+          {% endif %}
+
+          === CONFIGURATION STATUS ===
+          Hostname: {{ inventory_hostname }}
+          Domain: {{ domain_name | default('Not Set') }}
+          Management IP: {{ mgmt_ip | default('Not Configured') }}
+          Management VRF: {{ mgmt_vrf | default('MGMT') }}
+          Default Gateway: {{ default_gateway | default('Not Configured') }}
+          NTP Servers: {{ ntp_servers | default([]) | length }}
+          Local Users: {{ local_users | default([]) | length }}
+          SNMP Hosts: {{ snmp_hosts | default([]) | length }}
+          Syslog Servers: {{ syslog_servers | default([]) | length }}
+          VLANs Configured: {{ vlans | default([]) | length }}
+          Interfaces Configured: {{ interfaces | default([]) | length }}
+          MLAG Enabled: {{ mlag_enabled | default(false) }}
+          CVP Enabled: {{ cvp_enabled | default(false) }}
+
+          === SYSTEM INFORMATION ===
+          {% if arista_info.stdout is defined %}
+          {% for output in arista_info.stdout %}
+          {{ output }}
+          {% endfor %}
+          {% endif %}
+
+          Deployment Status: {{ 'SUCCESS' if ansible_failed_result is not defined else 'FAILED' }}
+          ====================================
+    tags: [ 'arista', 'verify' ]

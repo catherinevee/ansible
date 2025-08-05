@@ -1,0 +1,684 @@
+---
+# Juniper SRX Advanced Security Operations Playbook
+# Supports: SRX300, SRX320, SRX340, SRX345, SRX380, SRX550M, SRX1500, SRX4100, SRX4200, SRX5400, SRX5600, SRX5800
+# Features: Advanced security policies, IPS, UTM, VPN, NAT, Application Security
+
+- name: Deploy Juniper SRX Advanced Security Configuration
+  hosts: juniper_srx
+  gather_facts: false
+  connection: netconf
+  vars:
+    ansible_network_os: junos
+    ansible_user: "{{ vault_juniper_username }}"
+    ansible_password: "{{ vault_juniper_password }}"
+    timeout: 300
+
+  tasks:
+  # Phase 1: SRX System and License Configuration
+  - name: "Phase 1: Configure SRX System and Security Features"
+    block:
+    - name: Configure SRX system settings
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set system host-name {{ juniper_srx_config.hostname }}"
+        - "set system domain-name {{ juniper_srx_config.domain_name }}"
+        - "set system time-zone {{ juniper_srx_config.timezone }}"
+        - "set system root-authentication encrypted-password {{ vault_juniper_root_password }}"
+        comment: "SRX system configuration"
+      no_log: true
+      tags: [ system, srx ]
+
+    - name: Configure SRX services and licenses
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set system services ssh root-login allow"
+        - "set system services ssh protocol-version v2"
+        - "set system services netconf ssh"
+        - "set system services web-management http interface {{ juniper_srx_config.mgmt_interface }}"
+        - "set system services web-management https system-generated-certificate"
+        - "set system services web-management https interface {{ juniper_srx_config.mgmt_interface }}"
+        comment: "SRX services configuration"
+      tags: [ system, services, srx ]
+
+    - name: Configure security license keys
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set system license keys key {{ item.license_key }}"
+        comment: "Security license configuration"
+      loop: "{{ juniper_srx_config.license_keys }}"
+      when: juniper_srx_config.license_keys is defined
+      no_log: true
+      tags: [ license, security ]
+
+  # Phase 2: Security Zones and Interface Configuration
+  - name: "Phase 2: Configure Security Zones and Interfaces"
+    block:
+    - name: Configure security zones
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set security zones security-zone {{ item.zone_name }} description '{{ item.description }}'"
+        - "set security zones security-zone {{ item.zone_name }} tcp-rst"
+        - "set security zones security-zone {{ item.zone_name }} host-inbound-traffic system-services {{ item.allowed_services | join(' ') }}"
+        - "set security zones security-zone {{ item.zone_name }} host-inbound-traffic protocols {{ item.allowed_protocols | join(' ') }}"
+        comment: "Security zone configuration"
+      loop: "{{ juniper_srx_config.security_zones }}"
+      when: juniper_srx_config.security_zones is defined
+      tags: [ zones, security ]
+
+    - name: Configure zone interface assignments
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set security zones security-zone {{ item.zone_name }} interfaces {{ item.interface }} host-inbound-traffic system-services {{ item.interface_services | default(['ping', 'ssh']) | join(' ') }}"
+        comment: "Zone interface assignment"
+      loop: "{{ juniper_srx_config.zone_interfaces }}"
+      when: juniper_srx_config.zone_interfaces is defined
+      tags: [ zones, interfaces ]
+
+    - name: Configure interface security settings
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set interfaces {{ item.interface }} unit {{ item.unit | default(0) }} family inet address {{ item.ip_address }}/{{ item.prefix_length }}"
+        - "set interfaces {{ item.interface }} description '{{ item.description }}'"
+        comment: "Security interface configuration"
+      loop: "{{ juniper_srx_config.security_interfaces }}"
+      when: juniper_srx_config.security_interfaces is defined
+      tags: [ interfaces, security ]
+
+  # Phase 3: Advanced Security Policies
+  - name: "Phase 3: Configure Advanced Security Policies"
+    block:
+    - name: Configure global security policies
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set security policies global policy {{ item.policy_name }} match source-address {{ item.match.source_address }}"
+        - "set security policies global policy {{ item.policy_name }} match destination-address {{ item.match.destination_address }}"
+        - "set security policies global policy {{ item.policy_name }} match application {{ item.match.application }}"
+        - "set security policies global policy {{ item.policy_name }} then {{ 'permit' if item.then.permit else 'deny' }}"
+        - "set security policies global policy {{ item.policy_name }} then log session-init session-close"
+        comment: "Global security policy configuration"
+      loop: "{{ juniper_srx_config.global_policies }}"
+      when: juniper_srx_config.global_policies is defined
+      tags: [ policies, global, security ]
+
+    - name: Configure zone-based security policies
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set security policies from-zone {{ item.from_zone }} to-zone {{ item.to_zone }} policy {{ item.policy_name }} match source-address {{ item.match.source_address }}"
+        - "set security policies from-zone {{ item.from_zone }} to-zone {{ item.to_zone }} policy {{ item.policy_name }} match destination-address {{ item.match.destination_address }}"
+        - "set security policies from-zone {{ item.from_zone }} to-zone {{ item.to_zone }} policy {{ item.policy_name }} match application {{ item.match.application }}"
+        - "set security policies from-zone {{ item.from_zone }} to-zone {{ item.to_zone }} policy {{ item.policy_name }} then {{ 'permit' if item.then.permit else 'deny' }}"
+        - "set security policies from-zone {{ item.from_zone }} to-zone {{ item.to_zone }} policy {{ item.policy_name }} then log session-init session-close"
+        - "set security policies from-zone {{ item.from_zone }} to-zone {{ item.to_zone }} policy {{ item.policy_name }} then count"
+        comment: "Zone-based security policy configuration"
+      loop: "{{ juniper_srx_config.zone_policies }}"
+      when: juniper_srx_config.zone_policies is defined
+      tags: [ policies, zones, security ]
+
+    - name: Configure application-based policies
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set security policies from-zone {{ item.from_zone }} to-zone {{ item.to_zone }} policy {{ item.policy_name }} match source-address {{ item.match.source_address }}"
+        - "set security policies from-zone {{ item.from_zone }} to-zone {{ item.to_zone }} policy {{ item.policy_name }} match destination-address {{ item.match.destination_address }}"
+        - "set security policies from-zone {{ item.from_zone }} to-zone {{ item.to_zone }} policy {{ item.policy_name }} match application {{ item.match.application }}"
+        - "set security policies from-zone {{ item.from_zone }} to-zone {{ item.to_zone }} policy {{ item.policy_name }} then permit application-services {{ item.then.application_services | join(' ') }}"
+        comment: "Application-based security policy"
+      loop: "{{ juniper_srx_config.application_policies }}"
+      when: juniper_srx_config.application_policies is defined
+      tags: [ policies, applications, security ]
+
+  # Phase 4: Address Books and Custom Applications
+  - name: "Phase 4: Configure Address Books and Applications"
+    block:
+    - name: Configure global address book entries
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set security address-book global address {{ item.name }} {{ item.ip_address }}/{{ item.prefix_length }}"
+        - "set security address-book global address {{ item.name }} description '{{ item.description }}'"
+        comment: "Global address book configuration"
+      loop: "{{ juniper_srx_config.global_addresses }}"
+      when: juniper_srx_config.global_addresses is defined
+      tags: [ address_book, global ]
+
+    - name: Configure zone-specific address books
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set security zones security-zone {{ item.zone_name }} address-book address {{ item.address_name }} {{ item.ip_address }}/{{ item.prefix_length }}"
+        - "set security zones security-zone {{ item.zone_name }} address-book address {{ item.address_name }} description '{{ item.description }}'"
+        comment: "Zone address book configuration"
+      loop: "{{ juniper_srx_config.zone_addresses }}"
+      when: juniper_srx_config.zone_addresses is defined
+      tags: [ address_book, zones ]
+
+    - name: Configure address sets
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set security address-book global address-set {{ item.set_name }} address {{ address }}"
+        comment: "Address set configuration"
+      loop: "{{ juniper_srx_config.address_sets | subelements('addresses') }}"
+      loop_control:
+        loop_var: address
+      when: juniper_srx_config.address_sets is defined
+      tags: [ address_book, address_sets ]
+
+    - name: Configure custom applications
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set applications application {{ item.app_name }} protocol {{ item.protocol }}"
+        - "set applications application {{ item.app_name }} destination-port {{ item.destination_port }}"
+        - "set applications application {{ item.app_name }} description '{{ item.description }}'"
+        comment: "Custom application configuration"
+      loop: "{{ juniper_srx_config.custom_applications }}"
+      when: juniper_srx_config.custom_applications is defined
+      tags: [ applications, custom ]
+
+    - name: Configure application sets
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set applications application-set {{ item.0.set_name }} application {{ item.1 }}"
+        comment: "Application set configuration"
+      loop: "{{ juniper_srx_config.application_sets | subelements('applications') }}"
+      when: juniper_srx_config.application_sets is defined
+      tags: [ applications, application_sets ]
+
+  # Phase 5: Intrusion Prevention System (IPS)
+  - name: "Phase 5: Configure Intrusion Prevention System"
+    block:
+    - name: Configure IPS sensor configuration
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set security idp sensor-configuration log cache-size {{ juniper_srx_ips.log_cache_size | default(1000) }}"
+        - "set security idp sensor-configuration log suppression start-log {{ juniper_srx_ips.suppression_start_log | default(100) }}"
+        - "set security idp sensor-configuration log suppression max-logs-operate {{ juniper_srx_ips.suppression_max_logs | default(10000) }}"
+        - "set security idp sensor-configuration packet-log source-address {{ juniper_srx_ips.packet_log_source }}"
+        - "set security idp sensor-configuration packet-log host {{ item.host }} port {{ item.port }}"
+        comment: "IPS sensor configuration"
+      loop: "{{ juniper_srx_ips.packet_log_hosts }}"
+      when:
+      - juniper_srx_ips is defined
+      - juniper_srx_ips.packet_log_hosts is defined
+      tags: [ ips, sensor ]
+
+    - name: Configure IPS rule base
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set security idp idp-policy {{ item.policy_name }} rulebase-type {{ item.rulebase_type | default('application') }}"
+        comment: "IPS rule base configuration"
+      loop: "{{ juniper_srx_ips.idp_policies }}"
+      when: juniper_srx_ips.idp_policies is defined
+      tags: [ ips, rulebase ]
+
+    - name: Configure IPS custom attack objects
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set security idp custom-attack {{ item.attack_name }} recommended-action {{ item.recommended_action }}"
+        - "set security idp custom-attack {{ item.attack_name }} severity {{ item.severity }}"
+        - "set security idp custom-attack {{ item.attack_name }} attack-type-signature context {{ item.context }}"
+        - "set security idp custom-attack {{ item.attack_name }} attack-type-signature pattern {{ item.pattern }}"
+        comment: "Custom IPS attack configuration"
+      loop: "{{ juniper_srx_ips.custom_attacks }}"
+      when: juniper_srx_ips.custom_attacks is defined
+      tags: [ ips, custom_attacks ]
+
+    - name: Apply IPS policies to security policies
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set security policies from-zone {{ item.from_zone }} to-zone {{ item.to_zone }} policy {{ item.policy_name }} then permit application-services idp-policy {{ item.idp_policy }}"
+        comment: "IPS policy application"
+      loop: "{{ juniper_srx_ips.policy_applications }}"
+      when: juniper_srx_ips.policy_applications is defined
+      tags: [ ips, policy_application ]
+
+  # Phase 6: Unified Threat Management (UTM)
+  - name: "Phase 6: Configure Unified Threat Management"
+    block:
+    - name: Configure UTM custom URL categories
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set security utm custom-objects url-category {{ item.category_name }} value {{ url }}"
+        comment: "Custom URL category configuration"
+      loop: "{{ juniper_srx_utm.custom_url_categories | subelements('urls') }}"
+      loop_control:
+        loop_var: url
+      when: juniper_srx_utm.custom_url_categories is defined
+      tags: [ utm, url_filtering ]
+
+    - name: Configure web filtering profiles
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set security utm utm-policy {{ item.policy_name }} web-filtering http-profile {{ item.profile_name }}"
+        - "set security utm web-filtering juniper-enhanced server {{ item.server_config.server }}"
+        - "set security utm web-filtering juniper-enhanced server port {{ item.server_config.port }}"
+        - "set security utm web-filtering juniper-enhanced server proxy-profile {{ item.server_config.proxy_profile }}"
+        comment: "Web filtering profile configuration"
+      loop: "{{ juniper_srx_utm.web_filtering_profiles }}"
+      when: juniper_srx_utm.web_filtering_profiles is defined
+      tags: [ utm, web_filtering ]
+
+    - name: Configure anti-virus profiles
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set security utm utm-policy {{ item.policy_name }} anti-virus http-profile {{ item.av_profile }}"
+        - "set security utm utm-policy {{ item.policy_name }} anti-virus smtp-profile {{ item.smtp_profile }}"
+        - "set security utm utm-policy {{ item.policy_name }} anti-virus ftp-profile {{ item.ftp_profile }}"
+        comment: "Anti-virus profile configuration"
+      loop: "{{ juniper_srx_utm.antivirus_profiles }}"
+      when: juniper_srx_utm.antivirus_profiles is defined
+      tags: [ utm, antivirus ]
+
+    - name: Configure anti-spam profiles
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set security utm utm-policy {{ item.policy_name }} anti-spam smtp-profile {{ item.profile_name }}"
+        comment: "Anti-spam profile configuration"
+      loop: "{{ juniper_srx_utm.antispam_profiles }}"
+      when: juniper_srx_utm.antispam_profiles is defined
+      tags: [ utm, antispam ]
+
+    - name: Apply UTM policies to security policies
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set security policies from-zone {{ item.from_zone }} to-zone {{ item.to_zone }} policy {{ item.policy_name }} then permit application-services utm-policy {{ item.utm_policy }}"
+        comment: "UTM policy application"
+      loop: "{{ juniper_srx_utm.policy_applications }}"
+      when: juniper_srx_utm.policy_applications is defined
+      tags: [ utm, policy_application ]
+
+  # Phase 7: Network Address Translation (NAT)
+  - name: "Phase 7: Configure Network Address Translation"
+    block:
+    - name: Configure source NAT rule sets
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set security nat source rule-set {{ item.ruleset_name }} from zone {{ item.from_zone }}"
+        - "set security nat source rule-set {{ item.ruleset_name }} to zone {{ item.to_zone }}"
+        comment: "Source NAT rule set configuration"
+      loop: "{{ juniper_srx_nat.source_nat_rulesets }}"
+      when: juniper_srx_nat.source_nat_rulesets is defined
+      tags: [ nat, source_nat ]
+
+    - name: Configure source NAT rules
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set security nat source rule-set {{ item.ruleset_name }} rule {{ item.rule_name }} match source-address {{ item.match.source_address }}"
+        - "set security nat source rule-set {{ item.ruleset_name }} rule {{ item.rule_name }} match destination-address {{ item.match.destination_address }}"
+        - "set security nat source rule-set {{ item.ruleset_name }} rule {{ item.rule_name }} then source-nat {{ item.then.nat_type }}"
+        comment: "Source NAT rule configuration"
+      loop: "{{ juniper_srx_nat.source_nat_rules }}"
+      when: juniper_srx_nat.source_nat_rules is defined
+      tags: [ nat, source_nat_rules ]
+
+    - name: Configure destination NAT rule sets
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set security nat destination rule-set {{ item.ruleset_name }} from zone {{ item.from_zone }}"
+        comment: "Destination NAT rule set configuration"
+      loop: "{{ juniper_srx_nat.destination_nat_rulesets }}"
+      when: juniper_srx_nat.destination_nat_rulesets is defined
+      tags: [ nat, destination_nat ]
+
+    - name: Configure destination NAT rules
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set security nat destination rule-set {{ item.ruleset_name }} rule {{ item.rule_name }} match destination-address {{ item.match.destination_address }}"
+        - "set security nat destination rule-set {{ item.ruleset_name }} rule {{ item.rule_name }} match destination-port {{ item.match.destination_port }}"
+        - "set security nat destination rule-set {{ item.ruleset_name }} rule {{ item.rule_name }} then destination-nat off"
+        - "set security nat destination rule-set {{ item.ruleset_name }} rule {{ item.rule_name }} then destination-nat pool {{ item.then.nat_pool }}"
+        comment: "Destination NAT rule configuration"
+      loop: "{{ juniper_srx_nat.destination_nat_rules }}"
+      when: juniper_srx_nat.destination_nat_rules is defined
+      tags: [ nat, destination_nat_rules ]
+
+    - name: Configure NAT pools
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set security nat destination pool {{ item.pool_name }} address {{ item.pool_address }}/{{ item.prefix_length }}"
+        - "set security nat destination pool {{ item.pool_name }} port {{ item.port_range }}"
+        comment: "NAT pool configuration"
+      loop: "{{ juniper_srx_nat.nat_pools }}"
+      when: juniper_srx_nat.nat_pools is defined
+      tags: [ nat, nat_pools ]
+
+  # Phase 8: VPN Configuration (IPSec and SSL)
+  - name: "Phase 8: Configure VPN Services"
+    block:
+    - name: Configure IKE proposals
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set security ike proposal {{ item.proposal_name }} authentication-method {{ item.auth_method }}"
+        - "set security ike proposal {{ item.proposal_name }} dh-group {{ item.dh_group }}"
+        - "set security ike proposal {{ item.proposal_name }} authentication-algorithm {{ item.auth_algorithm }}"
+        - "set security ike proposal {{ item.proposal_name }} encryption-algorithm {{ item.encryption_algorithm }}"
+        - "set security ike proposal {{ item.proposal_name }} lifetime-seconds {{ item.lifetime | default(28800) }}"
+        comment: "IKE proposal configuration"
+      loop: "{{ juniper_srx_vpn.ike_proposals }}"
+      when: juniper_srx_vpn.ike_proposals is defined
+      tags: [ vpn, ike, proposals ]
+
+    - name: Configure IKE policies
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set security ike policy {{ item.policy_name }} mode {{ item.mode | default('main') }}"
+        - "set security ike policy {{ item.policy_name }} proposals {{ item.proposals | join(' ') }}"
+        - "set security ike policy {{ item.policy_name }} pre-shared-key ascii-text {{ item.psk }}"
+        comment: "IKE policy configuration"
+      loop: "{{ juniper_srx_vpn.ike_policies }}"
+      when: juniper_srx_vpn.ike_policies is defined
+      no_log: true
+      tags: [ vpn, ike, policies ]
+
+    - name: Configure IKE gateways
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set security ike gateway {{ item.gateway_name }} ike-policy {{ item.ike_policy }}"
+        - "set security ike gateway {{ item.gateway_name }} address {{ item.remote_address }}"
+        - "set security ike gateway {{ item.gateway_name }} external-interface {{ item.external_interface }}"
+        - "set security ike gateway {{ item.gateway_name }} local-identity inet {{ item.local_identity }}"
+        - "set security ike gateway {{ item.gateway_name }} remote-identity inet {{ item.remote_identity }}"
+        comment: "IKE gateway configuration"
+      loop: "{{ juniper_srx_vpn.ike_gateways }}"
+      when: juniper_srx_vpn.ike_gateways is defined
+      tags: [ vpn, ike, gateways ]
+
+    - name: Configure IPSec proposals
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set security ipsec proposal {{ item.proposal_name }} protocol {{ item.protocol | default('esp') }}"
+        - "set security ipsec proposal {{ item.proposal_name }} authentication-algorithm {{ item.auth_algorithm }}"
+        - "set security ipsec proposal {{ item.proposal_name }} encryption-algorithm {{ item.encryption_algorithm }}"
+        - "set security ipsec proposal {{ item.proposal_name }} lifetime-seconds {{ item.lifetime | default(3600) }}"
+        comment: "IPSec proposal configuration"
+      loop: "{{ juniper_srx_vpn.ipsec_proposals }}"
+      when: juniper_srx_vpn.ipsec_proposals is defined
+      tags: [ vpn, ipsec, proposals ]
+
+    - name: Configure IPSec policies
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set security ipsec policy {{ item.policy_name }} perfect-forward-secrecy keys {{ item.pfs_group | default('group14') }}"
+        - "set security ipsec policy {{ item.policy_name }} proposals {{ item.proposals | join(' ') }}"
+        comment: "IPSec policy configuration"
+      loop: "{{ juniper_srx_vpn.ipsec_policies }}"
+      when: juniper_srx_vpn.ipsec_policies is defined
+      tags: [ vpn, ipsec, policies ]
+
+    - name: Configure IPSec VPNs
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set security ipsec vpn {{ item.vpn_name }} bind-interface {{ item.tunnel_interface }}"
+        - "set security ipsec vpn {{ item.vpn_name }} ike gateway {{ item.ike_gateway }}"
+        - "set security ipsec vpn {{ item.vpn_name }} ike ipsec-policy {{ item.ipsec_policy }}"
+        - "set security ipsec vpn {{ item.vpn_name }} establish-tunnels {{ item.establish_tunnels | default('immediately') }}"
+        comment: "IPSec VPN configuration"
+      loop: "{{ juniper_srx_vpn.ipsec_vpns }}"
+      when: juniper_srx_vpn.ipsec_vpns is defined
+      tags: [ vpn, ipsec, vpns ]
+
+    - name: Configure tunnel interfaces
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set interfaces {{ item.tunnel_interface }} unit 0 family inet address {{ item.tunnel_ip }}/{{ item.tunnel_prefix }}"
+        - "set interfaces {{ item.tunnel_interface }} description '{{ item.description }}'"
+        comment: "Tunnel interface configuration"
+      loop: "{{ juniper_srx_vpn.tunnel_interfaces }}"
+      when: juniper_srx_vpn.tunnel_interfaces is defined
+      tags: [ vpn, tunnels, interfaces ]
+
+  # Phase 9: Application Layer Gateway (ALG) and Services
+  - name: "Phase 9: Configure Application Layer Gateways"
+    block:
+    - name: Configure ALG settings
+      junipernetworks.junos.junos_config:
+        lines:
+        - "{{ 'set' if item.enable else 'delete' }} security alg {{ item.alg_name }}"
+        comment: "ALG configuration"
+      loop: "{{ juniper_srx_alg.alg_settings }}"
+      when: juniper_srx_alg.alg_settings is defined
+      tags: [ alg, services ]
+
+    - name: Configure DNS ALG settings
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set security alg dns doctoring domain {{ item.domain }} mapping {{ item.mapping }}"
+        comment: "DNS ALG doctoring configuration"
+      loop: "{{ juniper_srx_alg.dns_doctoring }}"
+      when: juniper_srx_alg.dns_doctoring is defined
+      tags: [ alg, dns ]
+
+    - name: Configure FTP ALG settings
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set security alg ftp mode {{ juniper_srx_alg.ftp_mode | default('wire') }}"
+        comment: "FTP ALG configuration"
+      when: juniper_srx_alg.ftp_mode is defined
+      tags: [ alg, ftp ]
+
+  # Phase 10: Security Logging and Monitoring
+  - name: "Phase 10: Configure Security Logging and Monitoring"
+    block:
+    - name: Configure security log streams
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set security log stream {{ item.stream_name }} severity {{ item.severity }}"
+        - "set security log stream {{ item.stream_name }} format {{ item.format }}"
+        - "set security log stream {{ item.stream_name }} host {{ item.host }} port {{ item.port }}"
+        comment: "Security log stream configuration"
+      loop: "{{ juniper_srx_logging.log_streams }}"
+      when: juniper_srx_logging.log_streams is defined
+      tags: [ logging, monitoring ]
+
+    - name: Configure security event options
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set security log mode stream"
+        - "set security log report"
+        - "set security log source-address {{ juniper_srx_logging.source_address }}"
+        comment: "Security event options"
+      when: juniper_srx_logging.source_address is defined
+      tags: [ logging, events ]
+
+    - name: Configure SNMP security monitoring
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set snmp community {{ vault_snmp_community_ro }} authorization read-only"
+        - "set snmp community {{ vault_snmp_community_ro }} clients {{ item }}"
+        - "set snmp trap-options source-address {{ juniper_srx_logging.source_address }}"
+        comment: "SNMP security monitoring"
+      loop: "{{ juniper_srx_logging.snmp_clients }}"
+      when:
+      - juniper_srx_logging.snmp_clients is defined
+      - juniper_srx_logging.source_address is defined
+      no_log: true
+      tags: [ snmp, monitoring ]
+
+  post_tasks:
+  # Phase 11: SRX Security Verification and Reporting
+  - name: "Phase 11: Post-Deployment SRX Security Verification"
+    block:
+    - name: Commit SRX configuration with confirm
+      junipernetworks.junos.junos_config:
+        comment: "SRX security configuration deployment - {{ ansible_date_time.iso8601 }}"
+        confirm: 10
+      tags: [ commit, verification ]
+
+    - name: Gather SRX security facts
+      junipernetworks.junos.junos_facts:
+        gather_subset:
+        - all
+      register: srx_facts
+      tags: [ verification, facts ]
+
+    - name: Verify security zones status
+      junipernetworks.junos.junos_command:
+        commands:
+        - "show security zones"
+        - "show security zones detail"
+        display: text
+      register: zones_status
+      tags: [ verification, zones ]
+
+    - name: Verify security policies status
+      junipernetworks.junos.junos_command:
+        commands:
+        - "show security policies"
+        - "show security policy-statistics"
+        display: text
+      register: policies_status
+      tags: [ verification, policies ]
+
+    - name: Verify NAT status
+      junipernetworks.junos.junos_command:
+        commands:
+        - "show security nat source summary"
+        - "show security nat destination summary"
+        - "show security nat source pool all"
+        display: text
+      register: nat_status
+      ignore_errors: true
+      tags: [ verification, nat ]
+
+    - name: Verify VPN status
+      junipernetworks.junos.junos_command:
+        commands:
+        - "show security ike security-associations"
+        - "show security ipsec security-associations"
+        - "show security ike policy"
+        display: text
+      register: vpn_status
+      ignore_errors: true
+      tags: [ verification, vpn ]
+
+    - name: Verify IPS status
+      junipernetworks.junos.junos_command:
+        commands:
+        - "show security idp status"
+        - "show security idp counters"
+        - "show security idp memory"
+        display: text
+      register: ips_status
+      ignore_errors: true
+      when: juniper_srx_ips is defined
+      tags: [ verification, ips ]
+
+    - name: Verify UTM status
+      junipernetworks.junos.junos_command:
+        commands:
+        - "show security utm anti-virus status"
+        - "show security utm web-filtering status"
+        - "show security utm anti-spam status"
+        display: text
+      register: utm_status
+      ignore_errors: true
+      when: juniper_srx_utm is defined
+      tags: [ verification, utm ]
+
+    - name: Generate SRX security deployment report
+      copy:
+        content: |
+          Juniper SRX Advanced Security Deployment Report
+          ==============================================
+          Device: {{ inventory_hostname }}
+          Platform: {{ srx_facts.ansible_facts.ansible_net_model | default('Juniper SRX') }}
+          Software Version: {{ srx_facts.ansible_facts.ansible_net_version | default('Unknown') }}
+          Serial Number: {{ srx_facts.ansible_facts.ansible_net_serialnum | default('Unknown') }}
+          Deployment Time: {{ ansible_date_time.iso8601 }}
+
+          === DEVICE INFORMATION ===
+          Hostname: {{ srx_facts.ansible_facts.ansible_net_hostname | default('Unknown') }}
+          Model: {{ srx_facts.ansible_facts.ansible_net_model | default('Unknown') }}
+          Version: {{ srx_facts.ansible_facts.ansible_net_version | default('Unknown') }}
+          Memory: {{ srx_facts.ansible_facts.ansible_net_memtotal_mb | default('Unknown') }} MB
+
+          === SECURITY ZONES STATUS ===
+          {{ zones_status.stdout[0] | default('Security zones not available') }}
+
+          Zone Details:
+          {{ zones_status.stdout[1] | default('Zone details not available') }}
+
+          === SECURITY POLICIES STATUS ===
+          Security Policies:
+          {{ policies_status.stdout[0] | default('Security policies not available') }}
+
+          Policy Statistics:
+          {{ policies_status.stdout[1] | default('Policy statistics not available') }}
+
+          {% if nat_status is defined and nat_status.stdout is defined %}
+          === NAT STATUS ===
+          Source NAT Summary:
+          {{ nat_status.stdout[0] | default('Source NAT not configured') }}
+
+          Destination NAT Summary:
+          {{ nat_status.stdout[1] | default('Destination NAT not configured') }}
+
+          NAT Pools:
+          {{ nat_status.stdout[2] | default('NAT pools not configured') }}
+          {% endif %}
+
+          {% if vpn_status is defined and vpn_status.stdout is defined %}
+          === VPN STATUS ===
+          IKE Security Associations:
+          {{ vpn_status.stdout[0] | default('IKE SAs not available') }}
+
+          IPSec Security Associations:
+          {{ vpn_status.stdout[1] | default('IPSec SAs not available') }}
+
+          IKE Policies:
+          {{ vpn_status.stdout[2] | default('IKE policies not available') }}
+          {% endif %}
+
+          {% if ips_status is defined and ips_status.stdout is defined %}
+          === IPS STATUS ===
+          IPS Status:
+          {{ ips_status.stdout[0] | default('IPS not configured') }}
+
+          IPS Counters:
+          {{ ips_status.stdout[1] | default('IPS counters not available') }}
+
+          IPS Memory:
+          {{ ips_status.stdout[2] | default('IPS memory not available') }}
+          {% endif %}
+
+          {% if utm_status is defined and utm_status.stdout is defined %}
+          === UTM STATUS ===
+          Anti-Virus Status:
+          {{ utm_status.stdout[0] | default('Anti-virus not configured') }}
+
+          Web Filtering Status:
+          {{ utm_status.stdout[1] | default('Web filtering not configured') }}
+
+          Anti-Spam Status:
+          {{ utm_status.stdout[2] | default('Anti-spam not configured') }}
+          {% endif %}
+
+          === CONFIGURATION SUMMARY ===
+          Security Zones: {{ (juniper_srx_config.security_zones | default([])) | length }}
+          Zone Policies: {{ (juniper_srx_config.zone_policies | default([])) | length }}
+          Global Policies: {{ (juniper_srx_config.global_policies | default([])) | length }}
+          Application Policies: {{ (juniper_srx_config.application_policies | default([])) | length }}
+          Global Addresses: {{ (juniper_srx_config.global_addresses | default([])) | length }}
+          Zone Addresses: {{ (juniper_srx_config.zone_addresses | default([])) | length }}
+          Custom Applications: {{ (juniper_srx_config.custom_applications | default([])) | length }}
+          Source NAT Rules: {{ (juniper_srx_nat.source_nat_rules | default([])) | length }}
+          Destination NAT Rules: {{ (juniper_srx_nat.destination_nat_rules | default([])) | length }}
+          IPSec VPNs: {{ (juniper_srx_vpn.ipsec_vpns | default([])) | length }}
+          IKE Gateways: {{ (juniper_srx_vpn.ike_gateways | default([])) | length }}
+
+          Features Configured:
+          - Advanced Security Policies: {{ 'Yes' if juniper_srx_config.zone_policies is defined else 'No' }}
+          - Network Address Translation: {{ 'Yes' if juniper_srx_nat is defined else 'No' }}
+          - IPSec VPN: {{ 'Yes' if juniper_srx_vpn is defined else 'No' }}
+          - Intrusion Prevention: {{ 'Yes' if juniper_srx_ips is defined else 'No' }}
+          - Unified Threat Management: {{ 'Yes' if juniper_srx_utm is defined else 'No' }}
+          - Application Layer Gateways: {{ 'Yes' if juniper_srx_alg is defined else 'No' }}
+          - Security Logging: {{ 'Yes' if juniper_srx_logging is defined else 'No' }}
+          - Custom Applications: {{ 'Yes' if juniper_srx_config.custom_applications is defined else 'No' }}
+          - Address Books: {{ 'Yes' if juniper_srx_config.global_addresses is defined else 'No' }}
+
+          Status: {{ 'SUCCESS' if ansible_failed_task is not defined else 'FAILED' }}
+        dest: "{{ playbook_dir }}/../reports/juniper/{{ inventory_hostname }}_srx_security_deployment_{{ ansible_date_time.epoch }}.txt"
+      delegate_to: localhost
+      tags: [ reporting ]
+
+# Example usage:
+# ansible-playbook juniper_srx_security_operations.yml --limit juniper_srx
+# ansible-playbook juniper_srx_security_operations.yml --tags policies,nat,vpn
+# ansible-playbook juniper_srx_security_operations.yml --tags utm,ips --check

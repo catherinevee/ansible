@@ -1,0 +1,487 @@
+---
+# Cisco Networks Specific Configuration Playbook
+# Comprehensive Cisco IOS/IOS-XE/NX-OS deployment using enterprise group_vars configuration
+# Supports: Catalyst switches, ISR/ASR routers, Nexus data center switches
+
+- name: Deploy Cisco Enterprise Network Configuration
+  hosts: cisco_devices
+  gather_facts: false
+  connection: network_cli
+  vars:
+    ansible_network_os: "{{ platform }}"
+    ansible_user: "{{ vault_cisco_username }}"
+    ansible_password: "{{ vault_cisco_password }}"
+    ansible_become: true
+    ansible_become_method: enable
+    ansible_become_password: "{{ vault_cisco_enable_password }}"
+
+  tasks:
+  # Phase 1: Basic System Configuration
+  - name: "Phase 1: Configure Basic System Settings"
+    block:
+    - name: Set hostname and domain
+      cisco.ios.ios_system:
+        hostname: "{{ cisco_system_config.hostname }}"
+        domain_name: "{{ cisco_system_config.domain_name }}"
+        domain_search: "{{ cisco_system_config.domain_search }}"
+        name_servers: "{{ cisco_system_config.name_servers }}"
+      when: platform in ['ios', 'iosxe']
+      tags: [ system, basic ]
+
+    - name: Configure NTP servers
+      cisco.ios.ios_ntp:
+        server: "{{ item.server }}"
+        key_id: "{{ item.key_id | default(omit) }}"
+        prefer: "{{ item.prefer | default(false) }}"
+        state: present
+      loop: "{{ cisco_ntp_config.ntp_servers }}"
+      when: platform in ['ios', 'iosxe']
+      tags: [ ntp, time ]
+
+    - name: Configure timezone and clock
+      cisco.ios.ios_config:
+        lines:
+        - "clock timezone {{ cisco_system_config.timezone.name }} {{ cisco_system_config.timezone.offset }}"
+        - "clock summer-time {{ cisco_system_config.timezone.dst_name }} recurring"
+        - "service timestamps debug datetime msec localtime show-timezone"
+        - "service timestamps log datetime msec localtime show-timezone"
+      when: platform in ['ios', 'iosxe']
+      tags: [ time, logging ]
+
+  # Phase 2: Interface Configuration
+  - name: "Phase 2: Configure Network Interfaces"
+    block:
+    - name: Configure Layer 3 interfaces (Routers/L3 Switches)
+      cisco.ios.ios_l3_interfaces:
+        config:
+        - name: "{{ item.name }}"
+          ipv4:
+          - address: "{{ item.ipv4_address }}/{{ item.ipv4_mask }}"
+          ipv6: "{{ item.ipv6_config | default(omit) }}"
+      loop: "{{ cisco_interface_config.l3_interfaces }}"
+      when: platform in ['ios', 'iosxe'] and cisco_interface_config.l3_interfaces is defined
+      tags: [ interfaces, l3 ]
+
+    - name: Configure Layer 2 interfaces (Switches)
+      cisco.ios.ios_l2_interfaces:
+        config:
+        - name: "{{ item.name }}"
+          access:
+            vlan: "{{ item.access_vlan | default(omit) }}"
+          trunk:
+            allowed_vlans: "{{ item.trunk_vlans | default(omit) }}"
+            native_vlan: "{{ item.native_vlan | default(omit) }}"
+          mode: "{{ item.mode }}"
+      loop: "{{ cisco_interface_config.l2_interfaces }}"
+      when: platform in ['ios', 'iosxe'] and cisco_interface_config.l2_interfaces is defined
+      tags: [ interfaces, l2, switching ]
+
+    - name: Configure interface descriptions and administrative settings
+      cisco.ios.ios_interfaces:
+        config:
+        - name: "{{ item.name }}"
+          description: "{{ item.description }}"
+          enabled: "{{ item.enabled | default(true) }}"
+          speed: "{{ item.speed | default(omit) }}"
+          duplex: "{{ item.duplex | default(omit) }}"
+          mtu: "{{ item.mtu | default(omit) }}"
+      loop: "{{ cisco_interface_config.l3_interfaces + cisco_interface_config.l2_interfaces }}"
+      when: platform in ['ios', 'iosxe']
+      tags: [ interfaces ]
+
+  # Phase 3: VLAN Configuration
+  - name: "Phase 3: Configure VLANs"
+    block:
+    - name: Create VLANs on switches
+      cisco.ios.ios_vlans:
+        config:
+        - vlan_id: "{{ item.vlan_id }}"
+          name: "{{ item.name }}"
+          state: "{{ item.state | default('active') }}"
+      loop: "{{ cisco_vlan_config.vlans }}"
+      when: platform in ['ios', 'iosxe'] and cisco_vlan_config is defined
+      tags: [ vlans, switching ]
+
+    - name: Configure SVI interfaces for inter-VLAN routing
+      cisco.ios.ios_l3_interfaces:
+        config:
+        - name: "Vlan{{ item.vlan_id }}"
+          ipv4:
+          - address: "{{ item.svi_ip }}/{{ item.svi_mask }}"
+      loop: "{{ cisco_vlan_config.vlans }}"
+      when: platform in ['ios', 'iosxe'] and cisco_vlan_config is defined and item.svi_ip is defined
+      tags: [ vlans, svi, routing ]
+
+  # Phase 4: Routing Configuration
+  - name: "Phase 4: Configure Routing Protocols"
+    block:
+    - name: Configure OSPF routing
+      cisco.ios.ios_ospfv2:
+        config:
+          processes:
+          - process_id: "{{ cisco_routing_config.ospf.process_id }}"
+            router_id: "{{ cisco_routing_config.ospf.router_id }}"
+            areas:
+            - area_id: "{{ item.area_id }}"
+              networks:
+              - address: "{{ item.network }}"
+                wildcard_bits: "{{ item.wildcard }}"
+            passive_interfaces: "{{ cisco_routing_config.ospf.passive_interfaces | default([]) }}"
+      loop: "{{ cisco_routing_config.ospf.areas }}"
+      when: platform in ['ios', 'iosxe'] and cisco_routing_config.ospf is defined
+      tags: [ routing, ospf ]
+
+    - name: Configure EIGRP routing
+      cisco.ios.ios_config:
+        lines:
+        - "router eigrp {{ cisco_routing_config.eigrp.as_number }}"
+        - "network {{ item.network }} {{ item.wildcard }}"
+        - "no auto-summary"
+        - "eigrp router-id {{ cisco_routing_config.eigrp.router_id }}"
+        parents: []
+      loop: "{{ cisco_routing_config.eigrp.networks }}"
+      when: platform in ['ios', 'iosxe'] and cisco_routing_config.eigrp is defined
+      tags: [ routing, eigrp ]
+
+    - name: Configure static routes
+      cisco.ios.ios_static_routes:
+        config:
+        - address_families:
+          - afi: ipv4
+            routes:
+            - dest: "{{ item.destination }}/{{ item.mask }}"
+              next_hops:
+              - forward_router_address: "{{ item.next_hop }}"
+                admin_distance: "{{ item.admin_distance | default(1) }}"
+                description: "{{ item.description | default(omit) }}"
+      loop: "{{ cisco_routing_config.static_routes }}"
+      when: platform in ['ios', 'iosxe'] and cisco_routing_config.static_routes is defined
+      tags: [ routing, static ]
+
+  # Phase 5: Security Configuration
+  - name: "Phase 5: Configure Security Features"
+    block:
+    - name: Configure Access Control Lists
+      cisco.ios.ios_acls:
+        config:
+        - afi: ipv4
+          acls:
+          - name: "{{ item.name }}"
+            acl_type: "{{ item.type }}"
+            aces:
+            - sequence: "{{ ace.sequence }}"
+              grant: "{{ ace.action }}"
+              protocol: "{{ ace.protocol }}"
+              source:
+                address: "{{ ace.source_ip | default('any') }}"
+                wildcard_bits: "{{ ace.source_wildcard | default(omit) }}"
+              destination:
+                address: "{{ ace.dest_ip | default('any') }}"
+                wildcard_bits: "{{ ace.dest_wildcard | default(omit) }}"
+              port_protocol:
+                eq: "{{ ace.dest_port | default(omit) }}"
+              log: "{{ ace.log | default(false) }}"
+              remark: "{{ ace.remark | default(omit) }}"
+            loop: "{{ item.aces }}"
+            loop_control:
+              loop_var: ace
+      loop: "{{ cisco_security_config.access_lists }}"
+      when: platform in ['ios', 'iosxe'] and cisco_security_config.access_lists is defined
+      tags: [ security, acl ]
+
+    - name: Apply ACLs to interfaces
+      cisco.ios.ios_config:
+        lines:
+        - "ip access-group {{ item.acl_name }} {{ item.direction }}"
+        parents:
+        - "interface {{ item.interface }}"
+      loop: "{{ cisco_security_config.interface_acls }}"
+      when: platform in ['ios', 'iosxe'] and cisco_security_config.interface_acls is defined
+      tags: [ security, acl, interfaces ]
+
+    - name: Configure port security on access ports
+      cisco.ios.ios_config:
+        lines:
+        - "switchport mode access"
+        - "switchport port-security"
+        - "switchport port-security maximum {{ item.max_mac_addresses }}"
+        - "switchport port-security mac-address sticky"
+        - "switchport port-security violation {{ item.violation_action }}"
+        parents:
+        - "interface {{ item.interface }}"
+      loop: "{{ cisco_security_config.port_security }}"
+      when: platform in ['ios', 'iosxe'] and cisco_security_config.port_security is defined
+      tags: [ security, port_security, switching ]
+
+  # Phase 6: QoS Configuration
+  - name: "Phase 6: Configure Quality of Service"
+    block:
+    - name: Create QoS class maps
+      cisco.ios.ios_config:
+        lines:
+        - "class-map match-{{ item.match_type }} {{ item.name }}"
+        - "{{ item.match_criteria }}"
+      loop: "{{ cisco_qos_config.class_maps }}"
+      when: platform in ['ios', 'iosxe'] and cisco_qos_config.class_maps is defined
+      tags: [ qos, class_maps ]
+
+    - name: Create QoS policy maps
+      cisco.ios.ios_config:
+        lines:
+        - "policy-map {{ item.name }}"
+        - "class {{ class.class_name }}"
+        - "{{ class.action }}"
+        parents: []
+      loop: "{{ cisco_qos_config.policy_maps }}"
+      when: platform in ['ios', 'iosxe'] and cisco_qos_config.policy_maps is defined
+      tags: [ qos, policy_maps ]
+
+    - name: Apply QoS service policies to interfaces
+      cisco.ios.ios_config:
+        lines:
+        - "service-policy {{ item.direction }} {{ item.policy_name }}"
+        parents:
+        - "interface {{ item.interface }}"
+      loop: "{{ cisco_qos_config.service_policies }}"
+      when: platform in ['ios', 'iosxe'] and cisco_qos_config.service_policies is defined
+      tags: [ qos, service_policy ]
+
+  # Phase 7: Spanning Tree Configuration
+  - name: "Phase 7: Configure Spanning Tree Protocol"
+    block:
+    - name: Configure global STP settings
+      cisco.ios.ios_config:
+        lines:
+        - "spanning-tree mode {{ cisco_stp_config.mode }}"
+        - "spanning-tree extend system-id"
+        - "spanning-tree vlan {{ cisco_stp_config.vlan_range }} priority {{ cisco_stp_config.priority }}"
+      when: platform in ['ios', 'iosxe'] and cisco_stp_config is defined
+      tags: [ stp, spanning_tree ]
+
+    - name: Configure STP on interfaces
+      cisco.ios.ios_config:
+        lines:
+        - "spanning-tree portfast"
+        - "spanning-tree bpduguard enable"
+        parents:
+        - "interface {{ item.interface }}"
+      loop: "{{ cisco_stp_config.portfast_interfaces }}"
+      when: platform in ['ios', 'iosxe'] and cisco_stp_config.portfast_interfaces is defined
+      tags: [ stp, portfast, interfaces ]
+
+  # Phase 8: SNMP and Monitoring Configuration
+  - name: "Phase 8: Configure SNMP and Monitoring"
+    block:
+    - name: Configure SNMP settings
+      cisco.ios.ios_config:
+        lines:
+        - "snmp-server community {{ vault_snmp_community_ro }} RO {{ cisco_snmp_config.ro_acl | default('') }}"
+        - "snmp-server community {{ vault_snmp_community_rw }} RW {{ cisco_snmp_config.rw_acl | default('') }}"
+        - "snmp-server location {{ cisco_snmp_config.location }}"
+        - "snmp-server contact {{ cisco_snmp_config.contact }}"
+        - "snmp-server enable traps"
+      when: platform in ['ios', 'iosxe'] and cisco_snmp_config is defined
+      no_log: true
+      tags: [ snmp, monitoring ]
+
+    - name: Configure SNMP trap destinations
+      cisco.ios.ios_config:
+        lines:
+        - "snmp-server host {{ item.host }} version {{ item.version }} {{ item.community }} {{ item.trap_types | join(' ') }}"
+      loop: "{{ cisco_snmp_config.trap_destinations }}"
+      when: platform in ['ios', 'iosxe'] and cisco_snmp_config.trap_destinations is defined
+      tags: [ snmp, traps ]
+
+    - name: Configure syslog
+      cisco.ios.ios_logging:
+        dest: host
+        name: "{{ item.server }}"
+        facility: "{{ item.facility }}"
+        level: "{{ item.level }}"
+        state: present
+      loop: "{{ cisco_logging_config.syslog_servers }}"
+      when: platform in ['ios', 'iosxe'] and cisco_logging_config.syslog_servers is defined
+      tags: [ logging, syslog ]
+
+  # Phase 9: AAA and User Management
+  - name: "Phase 9: Configure AAA and User Management"
+    block:
+    - name: Configure AAA settings
+      cisco.ios.ios_config:
+        lines:
+        - "aaa new-model"
+        - "aaa authentication login default group {{ cisco_aaa_config.authentication.login_group }} local"
+        - "aaa authorization exec default group {{ cisco_aaa_config.authorization.exec_group }} local"
+        - "aaa accounting exec default start-stop group {{ cisco_aaa_config.accounting.exec_group }}"
+      when: platform in ['ios', 'iosxe'] and cisco_aaa_config is defined
+      tags: [ aaa, authentication ]
+
+    - name: Configure TACACS+ servers
+      cisco.ios.ios_config:
+        lines:
+        - "tacacs server {{ item.name }}"
+        - "address ipv4 {{ item.address }}"
+        - "key {{ item.key }}"
+        - "timeout {{ item.timeout | default(10) }}"
+        parents: []
+      loop: "{{ cisco_aaa_config.tacacs_servers }}"
+      when: platform in ['ios', 'iosxe'] and cisco_aaa_config.tacacs_servers is defined
+      no_log: true
+      tags: [ aaa, tacacs ]
+
+    - name: Configure local user accounts
+      cisco.ios.ios_user:
+        name: "{{ item.username }}"
+        password: "{{ item.password }}"
+        privilege: "{{ item.privilege_level }}"
+        view: "{{ item.view | default(omit) }}"
+        state: present
+      loop: "{{ cisco_user_accounts.local_users }}"
+      when: platform in ['ios', 'iosxe'] and cisco_user_accounts.local_users is defined
+      no_log: true
+      tags: [ users, local_auth ]
+
+  # Phase 10: Device Hardening
+  - name: "Phase 10: Security Hardening"
+    block:
+    - name: Disable unused services
+      cisco.ios.ios_config:
+        lines:
+        - "no ip http server"
+        - "no ip http secure-server"
+        - "no service finger"
+        - "no service tcp-small-servers"
+        - "no service udp-small-servers"
+        - "no service pad"
+        - "no cdp run"
+        - "no lldp run"
+        - "service password-encryption"
+      when: platform in ['ios', 'iosxe'] and cisco_hardening_config.disable_services
+      tags: [ hardening, security ]
+
+    - name: Configure security banners
+      cisco.ios.ios_banner:
+        banner: "{{ item.type }}"
+        text: "{{ item.text }}"
+        state: present
+      loop: "{{ cisco_hardening_config.banners }}"
+      when: platform in ['ios', 'iosxe'] and cisco_hardening_config.banners is defined
+      tags: [ hardening, banners ]
+
+    - name: Configure console and VTY line security
+      cisco.ios.ios_config:
+        lines:
+        - "exec-timeout {{ item.exec_timeout }}"
+        - "login authentication {{ item.auth_method }}"
+        - "transport input {{ item.transport_input }}"
+        - "logging synchronous"
+        parents:
+        - "line {{ item.line_type }}"
+      loop: "{{ cisco_hardening_config.line_security }}"
+      when: platform in ['ios', 'iosxe'] and cisco_hardening_config.line_security is defined
+      tags: [ hardening, line_security ]
+
+  # Phase 11: Save Configuration
+  - name: "Phase 11: Save Configuration"
+    block:
+    - name: Save running configuration to startup
+      cisco.ios.ios_config:
+        save_when: always
+      tags: [ save, backup ]
+
+    - name: Backup configuration to TFTP server
+      cisco.ios.ios_command:
+        commands:
+        - "copy running-config tftp://{{ cisco_backup_config.tftp_server }}/{{ inventory_hostname }}_{{ ansible_date_time.epoch }}.cfg"
+      when: cisco_backup_config.tftp_server is defined
+      tags: [ backup, tftp ]
+
+  post_tasks:
+  # Phase 12: Validation and Reporting
+  - name: "Phase 12: Post-Configuration Validation"
+    block:
+    - name: Gather device facts
+      cisco.ios.ios_facts:
+        gather_subset:
+        - all
+      register: device_facts
+      tags: [ validation, facts ]
+
+    - name: Check interface status
+      cisco.ios.ios_command:
+        commands:
+        - "show ip interface brief"
+        - "show interfaces status"
+      register: interface_status
+      tags: [ validation, interfaces ]
+
+    - name: Check routing table
+      cisco.ios.ios_command:
+        commands:
+        - "show ip route summary"
+        - "show ip protocols"
+      register: routing_status
+      when: platform in ['ios', 'iosxe']
+      tags: [ validation, routing ]
+
+    - name: Check VLAN status
+      cisco.ios.ios_command:
+        commands:
+        - "show vlan brief"
+        - "show spanning-tree summary"
+      register: vlan_status
+      tags: [ validation, vlans ]
+
+    - name: Generate Cisco deployment report
+      copy:
+        content: |
+          Cisco Network Device Deployment Report
+          ====================================
+          Device: {{ inventory_hostname }}
+          Platform: {{ device_facts.ansible_facts.ansible_net_model | default('Unknown') }}
+          Software Version: {{ device_facts.ansible_facts.ansible_net_version | default('Unknown') }}
+          Serial Number: {{ device_facts.ansible_facts.ansible_net_serialnum | default('Unknown') }}
+          Deployment Time: {{ ansible_date_time.iso8601 }}
+
+          === DEVICE INFORMATION ===
+          Hostname: {{ device_facts.ansible_facts.ansible_net_hostname | default('Unknown') }}
+          Memory: {{ device_facts.ansible_facts.ansible_net_memtotal_mb | default('Unknown') }} MB
+          Filesystems: {{ device_facts.ansible_facts.ansible_net_filesystems | default('Unknown') }}
+
+          === INTERFACE STATUS ===
+          {{ interface_status.stdout[0] | default('Not available') }}
+
+          === INTERFACE DETAILS ===
+          {{ interface_status.stdout[1] | default('Not available') }}
+
+          {% if routing_status is defined %}
+          === ROUTING SUMMARY ===
+          {{ routing_status.stdout[0] | default('Not available') }}
+
+          === ROUTING PROTOCOLS ===
+          {{ routing_status.stdout[1] | default('Not available') }}
+          {% endif %}
+
+          === VLAN STATUS ===
+          {{ vlan_status.stdout[0] | default('Not available') }}
+
+          === SPANNING TREE STATUS ===
+          {{ vlan_status.stdout[1] | default('Not available') }}
+
+          === CONFIGURATION SUMMARY ===
+          Total Interfaces Configured: {{ (cisco_interface_config.l3_interfaces | default([])) | length + (cisco_interface_config.l2_interfaces | default([])) | length }}
+          VLANs Configured: {{ (cisco_vlan_config.vlans | default([])) | length }}
+          ACLs Configured: {{ (cisco_security_config.access_lists | default([])) | length }}
+          Static Routes: {{ (cisco_routing_config.static_routes | default([])) | length }}
+          Local Users: {{ (cisco_user_accounts.local_users | default([])) | length }}
+
+          Status: {{ 'SUCCESS' if ansible_failed_task is not defined else 'FAILED' }}
+        dest: "{{ playbook_dir }}/../reports/cisco/{{ inventory_hostname }}_cisco_deployment_{{ ansible_date_time.epoch }}.txt"
+      delegate_to: localhost
+      tags: [ reporting ]
+
+# Example usage:
+# ansible-playbook cisco_enterprise_config.yml --limit cisco_devices
+# ansible-playbook cisco_enterprise_config.yml --tags interfaces,vlans
+# ansible-playbook cisco_enterprise_config.yml --tags security --check
+# ansible-playbook cisco_enterprise_config.yml --limit "cisco_routers:cisco_switches" --tags routing,switching

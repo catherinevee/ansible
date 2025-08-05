@@ -1,0 +1,498 @@
+---
+# Multi-vendor configuration variables
+# Common settings for Cisco, Juniper, Arista, Fortinet, and Palo Alto devices
+# Handles vendor-specific format differences for time zones and DNS
+
+# Global system settings
+domain_name: "enterprise.local"
+primary_dns: "10.100.1.10"
+secondary_dns: "10.100.1.11"
+
+# Time zone configuration - vendor-specific formats
+timezone: "UTC"
+timezone_offset: "0"
+timezone_minutes: "0"
+fortinet_timezone: "04" # GMT+0 format for FortiOS
+palo_timezone: "US/Pacific"
+
+# Management access parameters
+mgmt_vrf: "management"
+exec_timeout: "10 0"
+ssh_timeout: "60"
+ssh_retries: "3"
+ssh_port: "22"
+https_port: "443"
+rsa_key_size: "2048"
+
+# ====================================
+# AUTHENTICATION AND USERS
+# ====================================
+# Local User Accounts
+local_users:
+- username: "admin"
+  password: "{{ vault_admin_password }}"
+  password_hash: "{{ vault_admin_password_hash }}"
+  privilege: "15"
+  role: "network-admin"
+  class: "super-user"
+  profile: "super_admin"
+  trusted_host: "10.100.0.0 255.255.0.0"
+
+- username: "netops"
+  password: "{{ vault_netops_password }}"
+  password_hash: "{{ vault_netops_password_hash }}"
+  privilege: "15"
+  role: "network-operator"
+  class: "operator"
+  profile: "prof_admin"
+  trusted_host: "10.100.0.0 255.255.0.0"
+
+- username: "readonly"
+  password: "{{ vault_readonly_password }}"
+  password_hash: "{{ vault_readonly_password_hash }}"
+  privilege: "1"
+  role: "read-only"
+  class: "read-only"
+  profile: "read_only"
+  trusted_host: "10.100.0.0 255.255.0.0"
+
+- username: "backup"
+  password: "{{ vault_backup_password }}"
+  password_hash: "{{ vault_backup_password_hash }}"
+  privilege: "15"
+  role: "network-admin"
+  class: "super-user"
+  profile: "super_admin"
+  trusted_host: "10.100.1.0 255.255.255.0"
+
+# Root Password for Juniper
+root_password_hash: "{{ vault_juniper_root_hash }}"
+
+# Admin Timeout Settings
+admin_timeout: "60"
+ssh_auth_timeout: "30"
+
+# ====================================
+# NTP CONFIGURATION
+# ====================================
+ntp_servers:
+- server: "10.100.1.10"
+  key_id: "1"
+  key: "{{ vault_ntp_key_1 }}"
+  prefer: true
+  group: "primary"
+
+- server: "10.100.1.11"
+  key_id: "2"
+  key: "{{ vault_ntp_key_2 }}"
+  prefer: false
+  group: "secondary"
+
+- server: "0.pool.ntp.org"
+  key_id: "3"
+  key: "{{ vault_ntp_key_3 }}"
+  prefer: false
+  group: "external"
+
+- server: "1.pool.ntp.org"
+  key_id: "4"
+  key: "{{ vault_ntp_key_4 }}"
+  prefer: false
+  group: "external"
+
+# NTP Source Interface
+ntp_source_interface: "Loopback0"
+
+# ====================================
+# SNMP CONFIGURATION
+# ====================================
+# SNMP Communities
+snmp_ro_community: "{{ vault_snmp_ro_community }}"
+snmp_rw_community: "{{ vault_snmp_rw_community }}"
+
+# SNMP System Information
+snmp_location: "Enterprise Data Center - Rack 42"
+snmp_contact: "Network Operations Team <netops@enterprise.local>"
+
+# SNMP Management Hosts
+snmp_hosts:
+- host: "10.100.1.100"
+  community: "{{ vault_snmp_ro_community }}"
+  version: "2c"
+  group: "nms-primary"
+
+- host: "10.100.1.101"
+  community: "{{ vault_snmp_ro_community }}"
+  version: "2c"
+  group: "nms-secondary"
+
+- host: "10.100.1.150"
+  community: "{{ vault_snmp_rw_community }}"
+  version: "2c"
+  group: "automation"
+
+# ====================================
+# LOGGING CONFIGURATION
+# ====================================
+# Syslog Servers
+syslog_servers:
+- server: "10.100.1.200"
+  level: "informational"
+  facility: "local7"
+  group: "primary"
+
+- server: "10.100.1.201"
+  level: "informational"
+  facility: "local7"
+  group: "secondary"
+
+# Logging Settings
+logging_facility: "local7"
+logging_source: "Loopback0"
+buffer_size: "32768"
+buffer_level: "informational"
+console_level: "critical"
+file_log_level: "notice"
+log_file_size: "1m"
+log_file_count: "10"
+
+# ====================================
+# VENDOR-SPECIFIC DEVICE MAPPINGS
+# ====================================
+# Management Interface Mappings
+mgmt_interface_mapping:
+  cisco_ios: "GigabitEthernet0/0"
+  cisco_nxos: "mgmt0"
+  juniper: "fxp0"
+  arista: "Management1"
+  fortinet: "port1"
+  paloalto: "ethernet1/1"
+
+# Default Gateway per Site
+site_gateways:
+  datacenter_01: "10.100.1.1"
+  datacenter_02: "10.100.2.1"
+  branch_01: "192.168.1.1"
+  branch_02: "192.168.2.1"
+  remote_01: "172.16.1.1"
+
+# ====================================
+# CISCO-SPECIFIC CONFIGURATIONS
+# ====================================
+cisco_basic_config:
+  # IOS/IOS-XE Settings
+  ios:
+    enable_secret: "{{ vault_cisco_enable_secret }}"
+    banner_motd: "Authorized Access Only - Enterprise Network"
+    ip_classless: true
+    ip_subnet_zero: true
+    no_ip_source_route: true
+
+  # NX-OS Settings
+  nxos:
+    feature_ssh: true
+    feature_scp_server: true
+    feature_telnet: false
+    boot_kickstart: "bootflash:///n9000-dk9.7.3.0.D1.1.bin"
+    boot_system: "bootflash:///n9000-dk9.7.3.0.D1.1.bin"
+
+# ====================================
+# JUNIPER-SPECIFIC CONFIGURATIONS
+# ====================================
+juniper_basic_config:
+  # System Services
+  services:
+    ssh:
+      protocol_version: "v2"
+      rate_limit: "10"
+      connection_limit: "10"
+    netconf:
+      ssh: true
+      rfc_compliant: true
+    web_management:
+      http:
+        port: "80"
+      https:
+        port: "443"
+
+  # Login Classes
+  login_classes:
+  - name: "operator"
+    permissions: [ "view", "view-configuration" ]
+    login_alarms: true
+
+  - name: "read-only"
+    permissions: [ "view" ]
+    login_alarms: false
+
+# ====================================
+# ARISTA-SPECIFIC CONFIGURATIONS
+# ====================================
+arista_basic_config:
+  # Management Settings
+  management:
+    api_http_commands:
+      protocol: "https"
+      port: "443"
+      shutdown: false
+    cvx:
+      shutdown: true
+
+  # Boot Settings
+  boot:
+    system: "flash:EOS-4.28.3M.swi"
+
+  # Agent Settings
+  daemon_terminattr:
+    disable_aaa: false
+    exec: "/usr/bin/TerminAttr"
+    smashexcludes: "ale,flexCounter,hardware"
+
+# ====================================
+# FORTINET-SPECIFIC CONFIGURATIONS
+# ====================================
+fortinet_basic_config:
+  # System Global Settings
+  system_global:
+    admin_concurrent: "enable"
+    admin_console_timeout: "300"
+    admin_hsts_max_age: "15552000"
+    admin_https_pki_required: "disable"
+    admin_https_redirect: "enable"
+    admin_login_max: "100"
+    admin_maintainer: "enable"
+    admin_reset_button: "enable"
+    admin_restrict_local: "disable"
+    admin_scp: "enable"
+    admin_server_cert: "Fortinet_Factory"
+    admin_sport: "443"
+    admin_ssh_grace_time: "120"
+    admin_ssh_password: "enable"
+    admin_ssh_port: "22"
+    admin_telnet: "disable"
+    admin_telnet_port: "23"
+
+  # Interface Settings
+  interface_defaults:
+    allowaccess: "ping https ssh http fgfm"
+    type: "physical"
+    mode: "static"
+
+# ====================================
+# PALO ALTO-SPECIFIC CONFIGURATIONS
+# ====================================
+paloalto_basic_config:
+  # Device Configuration
+  deviceconfig:
+    system:
+      update_server: "updates.paloaltonetworks.com"
+      timezone: "US/Pacific"
+      hostname: "{{ inventory_hostname }}"
+      domain: "{{ domain_name }}"
+
+  # Management Settings
+  management_profile:
+    ping: "yes"
+    telnet: "no"
+    ssh: "yes"
+    https: "yes"
+    http: "no"
+    snmp: "yes"
+    response_pages: "yes"
+    userid_service: "no"
+    userid_syslog_listener_ssl: "no"
+    userid_syslog_listener_udp: "no"
+
+# ====================================
+# INTERFACE TEMPLATES
+# ====================================
+# Standard Interface Configurations
+interface_templates:
+  # Access Port Template
+  access_port:
+    cisco_ios:
+    - "switchport mode access"
+    - "switchport access vlan {{ access_vlan | default('10') }}"
+    - "spanning-tree portfast"
+    - "spanning-tree bpduguard enable"
+
+    cisco_nxos:
+    - "switchport mode access"
+    - "switchport access vlan {{ access_vlan | default('10') }}"
+    - "spanning-tree port type edge"
+    - "spanning-tree bpduguard enable"
+
+    juniper:
+    - "set interfaces {{ interface_name }} unit 0 family ethernet-switching interface-mode access"
+    - "set interfaces {{ interface_name }} unit 0 family ethernet-switching vlan members {{ access_vlan | default('default') }}"
+
+    arista:
+    - "switchport mode access"
+    - "switchport access vlan {{ access_vlan | default('10') }}"
+    - "spanning-tree portfast"
+    - "spanning-tree bpduguard enable"
+
+  # Trunk Port Template
+  trunk_port:
+    cisco_ios:
+    - "switchport trunk encapsulation dot1q"
+    - "switchport mode trunk"
+    - "switchport trunk allowed vlan {{ trunk_vlans | default('1,10,20,30') }}"
+
+    cisco_nxos:
+    - "switchport mode trunk"
+    - "switchport trunk allowed vlan {{ trunk_vlans | default('1,10,20,30') }}"
+
+    juniper:
+    - "set interfaces {{ interface_name }} unit 0 family ethernet-switching interface-mode trunk"
+    - "set interfaces {{ interface_name }} unit 0 family ethernet-switching vlan members {{ trunk_vlans | default('all') }}"
+
+    arista:
+    - "switchport mode trunk"
+    - "switchport trunk allowed vlan {{ trunk_vlans | default('1,10,20,30') }}"
+
+# ====================================
+# COMMON VLANS
+# ====================================
+common_vlans:
+- id: 1
+  name: "default"
+  description: "Default VLAN"
+
+- id: 10
+  name: "users"
+  description: "User Access VLAN"
+  ip_address: "10.10.10.1/24"
+
+- id: 20
+  name: "voice"
+  description: "Voice VLAN"
+  ip_address: "10.10.20.1/24"
+
+- id: 30
+  name: "guest"
+  description: "Guest Access VLAN"
+  ip_address: "10.10.30.1/24"
+
+- id: 100
+  name: "servers"
+  description: "Server VLAN"
+  ip_address: "10.10.100.1/24"
+
+- id: 200
+  name: "storage"
+  description: "Storage VLAN"
+  ip_address: "10.10.200.1/24"
+
+# Core VLANs for L3 interfaces
+core_vlans:
+- id: 10
+  ip_address: "10.10.10.1/24"
+
+- id: 20
+  ip_address: "10.10.20.1/24"
+
+- id: 100
+  ip_address: "10.10.100.1/24"
+
+# ====================================
+# MONITORING AND HEALTH CHECKS
+# ====================================
+# Health Check Commands per Vendor
+health_check_commands:
+  cisco_ios:
+  - "show version"
+  - "show running-config"
+  - "show ip interface brief"
+  - "show vlan brief"
+  - "show spanning-tree summary"
+
+  cisco_nxos:
+  - "show version"
+  - "show running-config"
+  - "show interface brief"
+  - "show vlan brief"
+  - "show spanning-tree summary"
+
+  juniper:
+  - "show version"
+  - "show configuration"
+  - "show interfaces terse"
+  - "show vlans"
+  - "show spanning-tree bridge"
+
+  arista:
+  - "show version"
+  - "show running-config"
+  - "show interfaces status"
+  - "show vlan"
+  - "show spanning-tree summary"
+
+# Backup Commands
+backup_commands:
+  cisco_ios:
+  - "show running-config"
+  - "show startup-config"
+
+  cisco_nxos:
+  - "show running-config"
+  - "show startup-config"
+
+  juniper:
+  - "show configuration | display set"
+
+  arista:
+  - "show running-config"
+  - "show startup-config"
+
+# ====================================
+# SECURITY BASELINE SETTINGS
+# ====================================
+security_baseline:
+  # Password Policies
+  password_policy:
+    min_length: 8
+    complexity: true
+    history: 5
+    lifetime: 90
+    warning: 14
+
+  # Access Control
+  access_control:
+    privilege_levels: true
+    role_based_cli: true
+    login_block_for: 300
+    login_quiet_period: 300
+    login_delay: 1
+
+  # Security Features
+  security_features:
+    ip_source_guard: true
+    dhcp_snooping: true
+    arp_inspection: true
+    port_security: true
+    storm_control: true
+
+# ====================================
+# BACKUP AND MAINTENANCE
+# ====================================
+# Backup Configuration
+backup_config:
+  schedule: "daily"
+  retention_days: 30
+  backup_server: "10.100.1.250"
+  backup_protocol: "scp"
+  backup_user: "backup"
+  backup_path: "/backups/network-configs"
+
+# Maintenance Windows
+maintenance_windows:
+  primary:
+    day: "Sunday"
+    start_time: "02:00"
+    duration: "4 hours"
+
+  emergency:
+    day: "Any"
+    start_time: "Immediate"
+    duration: "As needed"

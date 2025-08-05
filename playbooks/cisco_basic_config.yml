@@ -1,0 +1,404 @@
+---
+# Cisco device baseline configuration
+# Supports IOS, IOS-XE, NX-OS, and IOS-XR platforms
+# Includes security hardening and operational best practices
+
+- name: Deploy Cisco Basic Configuration Examples
+  hosts: cisco_devices
+  gather_facts: false
+  connection: network_cli
+  vars:
+    ansible_command_timeout: 60
+    ansible_connect_timeout: 30
+
+  tasks:
+  # IOS/IOS-XE system baseline - handles both classic and XE platforms
+  - name: Configure Cisco IOS System Basics
+    cisco.ios.ios_config:
+      lines:
+      - "hostname {{ inventory_hostname }}"
+      - "enable secret {{ vault_cisco_enable_secret }}"
+      - "service timestamps debug datetime msec localtime show-timezone"
+      - "service timestamps log datetime msec localtime show-timezone"
+      - "service password-encryption"
+      - "service sequence-numbers"
+      - "no service pad"
+      - "no service config"
+      - "no service tcp-small-servers"
+      - "no service udp-small-servers"
+      - "no ip http server"
+      - "no ip http secure-server"
+      - "ip classless"
+      - "ip subnet-zero"
+      - "no ip source-route"
+      - "no ip gratuitous-arps"
+      - "ip tcp synwait-time 10"
+      - "ip domain-name {{ domain_name }}"
+      - "ip name-server {{ primary_dns }}"
+      - "ip name-server {{ secondary_dns }}"
+      parents: []
+    when: ansible_network_os == "ios"
+    tags: [ 'ios', 'system', 'basic' ]
+
+  - name: Configure Cisco IOS Security Features
+    cisco.ios.ios_config:
+      lines:
+      - "security authentication failure rate {{ auth_failure_rate | default('10') }} log"
+      - "security passwords min-length {{ min_password_length | default('8') }}"
+      - "login block-for {{ login_block_time | default('300') }} attempts {{ login_attempts | default('3') }} within {{ login_within | default('60') }}"
+      - "login quiet-mode access-class {{ quiet_mode_acl | default('MANAGEMENT') }}"
+      - "login delay {{ login_delay | default('1') }}"
+      - "login on-failure log"
+      - "login on-success log"
+      parents: []
+    when: ansible_network_os == "ios"
+    tags: [ 'ios', 'security', 'basic' ]
+
+  - name: Configure Cisco IOS Local Users
+    cisco.ios.ios_config:
+      lines:
+      - "username {{ item.username }} privilege {{ item.privilege | default('15') }} algorithm-type scrypt secret {{ item.password }}"
+      parents: []
+    loop: "{{ local_users | default([]) }}"
+    when: ansible_network_os == "ios"
+    tags: [ 'ios', 'users', 'basic' ]
+
+  - name: Configure Cisco IOS Console and VTY Lines
+    cisco.ios.ios_config:
+      lines:
+      - "line console 0"
+      - " exec-timeout {{ console_timeout | default('5 0') }}"
+      - " privilege level 15"
+      - " logging synchronous"
+      - " login local"
+      - "line vty 0 4"
+      - " access-class {{ vty_acl | default('VTY-ACCESS') }} in"
+      - " exec-timeout {{ vty_timeout | default('10 0') }}"
+      - " privilege level 15"
+      - " transport input ssh"
+      - " transport output ssh"
+      - " login local"
+      - "line vty 5 15"
+      - " access-class {{ vty_acl | default('VTY-ACCESS') }} in"
+      - " exec-timeout {{ vty_timeout | default('10 0') }}"
+      - " privilege level 15"
+      - " transport input ssh"
+      - " transport output ssh"
+      - " login local"
+      parents: []
+    when: ansible_network_os == "ios"
+    tags: [ 'ios', 'access', 'basic' ]
+
+  - name: Configure Cisco IOS SSH Settings
+    cisco.ios.ios_config:
+      lines:
+      - "ip ssh version 2"
+      - "ip ssh time-out {{ ssh_timeout | default('60') }}"
+      - "ip ssh authentication-retries {{ ssh_retries | default('3') }}"
+      - "ip ssh source-interface {{ ssh_source_interface | default('Loopback0') }}"
+      - "crypto key generate rsa general-keys modulus {{ rsa_key_size | default('2048') }}"
+      parents: []
+    when: ansible_network_os == "ios"
+    tags: [ 'ios', 'ssh', 'basic' ]
+
+  - name: Configure Cisco IOS Management Interface
+    cisco.ios.ios_interfaces:
+      config:
+      - name: "{{ mgmt_interface | default('GigabitEthernet0/0') }}"
+        description: "Management Interface"
+        enabled: true
+      state: merged
+    when:
+    - ansible_network_os == "ios"
+    - mgmt_interface is defined
+    tags: [ 'ios', 'interface', 'basic' ]
+
+  - name: Configure Cisco IOS Management IP Address
+    cisco.ios.ios_l3_interfaces:
+      config:
+      - name: "{{ mgmt_interface | default('GigabitEthernet0/0') }}"
+        ipv4:
+        - address: "{{ mgmt_ip }}/{{ mgmt_mask | default('24') }}"
+      state: merged
+    when:
+    - ansible_network_os == "ios"
+    - mgmt_ip is defined
+    tags: [ 'ios', 'ip', 'basic' ]
+
+  # ===========================================
+  # CISCO NX-OS BASIC CONFIGURATION
+  # ===========================================
+  - name: Configure Cisco NX-OS System Basics
+    cisco.nxos.nxos_config:
+      lines:
+      - "hostname {{ inventory_hostname }}"
+      - "feature ssh"
+      - "feature scp-server"
+      - "feature ntp"
+      - "no feature telnet"
+      - "ip domain-name {{ domain_name }}"
+      - "ip name-server {{ primary_dns }} {{ secondary_dns }}"
+      - "clock timezone {{ timezone | default('UTC') }} {{ timezone_offset | default('0') }} {{ timezone_minutes | default('0') }}"
+      - "logging timestamp microseconds"
+      - "logging level local7 6"
+      - "logging source-interface {{ logging_source | default('mgmt0') }}"
+      parents: []
+    when: ansible_network_os == "nxos"
+    tags: [ 'nxos', 'system', 'basic' ]
+
+  - name: Configure Cisco NX-OS Users
+    cisco.nxos.nxos_user:
+      name: "{{ item.username }}"
+      configured_password: "{{ item.password }}"
+      role: "{{ item.role | default('network-admin') }}"
+      state: present
+    loop: "{{ local_users | default([]) }}"
+    when: ansible_network_os == "nxos"
+    tags: [ 'nxos', 'users', 'basic' ]
+
+  - name: Configure Cisco NX-OS SSH Settings
+    cisco.nxos.nxos_config:
+      lines:
+      - "ssh key rsa {{ rsa_key_size | default('2048') }}"
+      - "ssh login-attempts {{ ssh_login_attempts | default('3') }}"
+      - "ssh timeout {{ ssh_timeout | default('60') }}"
+      - "ssh source-interface {{ ssh_source_interface | default('mgmt0') }}"
+      parents: []
+    when: ansible_network_os == "nxos"
+    tags: [ 'nxos', 'ssh', 'basic' ]
+
+  - name: Configure Cisco NX-OS Management Interface
+    cisco.nxos.nxos_interfaces:
+      config:
+      - name: "mgmt0"
+        description: "Management Interface"
+        enabled: true
+      state: merged
+    when: ansible_network_os == "nxos"
+    tags: [ 'nxos', 'interface', 'basic' ]
+
+  - name: Configure Cisco NX-OS Management VRF
+    cisco.nxos.nxos_config:
+      lines:
+      - "vrf context management"
+      - " ip route 0.0.0.0/0 {{ default_gateway }}"
+      parents: []
+    when:
+    - ansible_network_os == "nxos"
+    - default_gateway is defined
+    tags: [ 'nxos', 'vrf', 'basic' ]
+
+  # ===========================================
+  # CISCO IOS-XR BASIC CONFIGURATION
+  # ===========================================
+  - name: Configure Cisco IOS-XR System Basics
+    cisco.iosxr.iosxr_config:
+      lines:
+      - "hostname {{ inventory_hostname }}"
+      - "domain name {{ domain_name }}"
+      - "domain name-server {{ primary_dns }}"
+      - "domain name-server {{ secondary_dns }}"
+      - "clock timezone {{ timezone | default('UTC') }} {{ timezone_offset | default('0') }} {{ timezone_minutes | default('0') }}"
+      - "service timestamps log datetime msec"
+      - "service timestamps debug datetime msec"
+      - "logging console informational"
+      - "logging buffered {{ buffer_size | default('2097152') }}"
+      - "logging {{ item.server }}"
+      parents: []
+    loop: "{{ syslog_servers | default([]) }}"
+    when: ansible_network_os == "iosxr"
+    tags: [ 'iosxr', 'system', 'basic' ]
+
+  - name: Configure Cisco IOS-XR Local Users
+    cisco.iosxr.iosxr_config:
+      lines:
+      - "username {{ item.username }}"
+      - " group {{ item.group | default('root-lr') }}"
+      - " password {{ item.password }}"
+      parents: []
+    loop: "{{ local_users | default([]) }}"
+    when: ansible_network_os == "iosxr"
+    tags: [ 'iosxr', 'users', 'basic' ]
+
+  - name: Configure Cisco IOS-XR SSH Settings
+    cisco.iosxr.iosxr_config:
+      lines:
+      - "ssh server v2"
+      - "ssh server netconf vrf default"
+      - "ssh timeout {{ ssh_timeout | default('60') }}"
+      - "ssh server rate-limit {{ ssh_rate_limit | default('60') }}"
+      parents: []
+    when: ansible_network_os == "iosxr"
+    tags: [ 'iosxr', 'ssh', 'basic' ]
+
+  # ===========================================
+  # COMMON CISCO CONFIGURATIONS
+  # ===========================================
+  - name: Configure NTP Servers - Cisco
+    cisco.ios.ios_config:
+      lines:
+      - "ntp server {{ item.server }}{% if item.prefer | default(false) %} prefer{% endif %}"
+      - "ntp source {{ ntp_source_interface | default('Loopback0') }}"
+      - "ntp authenticate"
+      - "ntp authentication-key {{ item.key_id | default('1') }} sha1 {{ item.key | default('default_key') }}"
+      - "ntp trusted-key {{ item.key_id | default('1') }}"
+      parents: []
+    loop: "{{ ntp_servers | default([]) }}"
+    when: ansible_network_os in ["ios", "iosxr"]
+    tags: [ 'cisco', 'ntp', 'time' ]
+
+  - name: Configure NTP Servers - NX-OS
+    cisco.nxos.nxos_config:
+      lines:
+      - "ntp server {{ item.server }}{% if item.prefer | default(false) %} prefer{% endif %}"
+      - "ntp source {{ ntp_source_interface | default('mgmt0') }}"
+      - "ntp authenticate"
+      - "ntp authentication-key {{ item.key_id | default('1') }} sha1 {{ item.key | default('default_key') }}"
+      - "ntp trusted-key {{ item.key_id | default('1') }}"
+      parents: []
+    loop: "{{ ntp_servers | default([]) }}"
+    when: ansible_network_os == "nxos"
+    tags: [ 'cisco', 'ntp', 'time' ]
+
+  - name: Configure SNMP - Cisco
+    cisco.ios.ios_config:
+      lines:
+      - "snmp-server community {{ snmp_ro_community }} RO {{ snmp_ro_acl | default('SNMP-RO') }}"
+      - "snmp-server community {{ snmp_rw_community }} RW {{ snmp_rw_acl | default('SNMP-RW') }}"
+      - "snmp-server location {{ snmp_location }}"
+      - "snmp-server contact {{ snmp_contact }}"
+      - "snmp-server chassis-id {{ inventory_hostname }}"
+      - "snmp-server enable traps"
+      - "snmp-server enable traps snmp authentication linkdown linkup coldstart warmstart"
+      - "snmp-server enable traps entity"
+      - "snmp-server enable traps cpu threshold"
+      - "snmp-server enable traps memory bufferpeak"
+      - "snmp-server host {{ item.host }} version {{ item.version | default('2c') }} {{ item.community }}"
+      parents: []
+    loop: "{{ snmp_hosts | default([]) }}"
+    when: ansible_network_os in ["ios", "iosxr"]
+    tags: [ 'cisco', 'snmp', 'monitoring' ]
+
+  - name: Configure Logging - Cisco
+    cisco.ios.ios_config:
+      lines:
+      - "logging buffered {{ buffer_size | default('32768') }} {{ buffer_level | default('informational') }}"
+      - "logging console {{ console_level | default('critical') }}"
+      - "logging monitor {{ monitor_level | default('informational') }}"
+      - "logging trap {{ trap_level | default('informational') }}"
+      - "logging facility {{ logging_facility | default('local7') }}"
+      - "logging source-interface {{ logging_source | default('Loopback0') }}"
+      - "logging {{ item.server }}"
+      parents: []
+    loop: "{{ syslog_servers | default([]) }}"
+    when: ansible_network_os in ["ios", "iosxr"]
+    tags: [ 'cisco', 'logging', 'syslog' ]
+
+  - name: Configure Access Control Lists
+    cisco.ios.ios_config:
+      lines:
+      - "ip access-list extended VTY-ACCESS"
+      - " remark Management Network Access"
+      - " permit tcp {{ mgmt_network | default('10.100.0.0') }} {{ mgmt_wildcard | default('0.0.255.255') }} any eq 22"
+      - " permit tcp {{ mgmt_network | default('10.100.0.0') }} {{ mgmt_wildcard | default('0.0.255.255') }} any eq 23"
+      - " deny tcp any any eq 22 log"
+      - " deny tcp any any eq 23 log"
+      - "ip access-list extended SNMP-RO"
+      - " remark SNMP Read-Only Access"
+      - " permit udp {{ nms_network | default('10.100.1.0') }} {{ nms_wildcard | default('0.0.0.255') }} any eq 161"
+      - " deny udp any any eq 161 log"
+      - "ip access-list extended SNMP-RW"
+      - " remark SNMP Read-Write Access"
+      - " permit udp {{ nms_network | default('10.100.1.0') }} {{ nms_wildcard | default('0.0.0.255') }} any eq 161"
+      - " deny udp any any eq 161 log"
+      parents: []
+    when: ansible_network_os in ["ios", "iosxr"]
+    tags: [ 'cisco', 'acl', 'security' ]
+
+  - name: Configure Banner Messages
+    cisco.ios.ios_config:
+      lines:
+      - "banner motd ^"
+      - "{{ banner_motd | default('Authorized Access Only - Enterprise Network') }}"
+      - "^"
+      - "banner login ^"
+      - "{{ banner_login | default('Authentication Required') }}"
+      - "^"
+      parents: []
+    when: ansible_network_os in ["ios", "iosxr"]
+    tags: [ 'cisco', 'banner', 'security' ]
+
+  # ===========================================
+  # SAVE CONFIGURATION
+  # ===========================================
+  - name: Save Cisco Configuration
+    cisco.ios.ios_config:
+      save_when: changed
+    when: ansible_network_os in ["ios", "iosxr"]
+    tags: [ 'cisco', 'save' ]
+
+  - name: Save Cisco NX-OS Configuration
+    cisco.nxos.nxos_config:
+      save_when: changed
+    when: ansible_network_os == "nxos"
+    tags: [ 'cisco', 'save' ]
+
+  # ===========================================
+  # VERIFICATION
+  # ===========================================
+  - name: Verify Cisco Configuration
+    block:
+    - name: Gather Cisco Facts
+      cisco.ios.ios_facts:
+        gather_subset:
+        - "!config"
+        - "default"
+        - "hardware"
+      register: cisco_facts
+      when: ansible_network_os in ["ios", "iosxr"]
+
+    - name: Gather Cisco NX-OS Facts
+      cisco.nxos.nxos_facts:
+        gather_subset:
+        - "!config"
+        - "default"
+        - "hardware"
+      register: nxos_facts
+      when: ansible_network_os == "nxos"
+
+    - name: Display Cisco Configuration Status
+      ansible.builtin.debug:
+        msg: |
+          ====================================
+          CISCO BASIC CONFIGURATION REPORT
+          ====================================
+          Device: {{ inventory_hostname }}
+          Platform: {{ ansible_network_os | upper }}
+
+          {% if cisco_facts is defined and cisco_facts.ansible_facts is defined %}
+          Model: {{ cisco_facts.ansible_facts.ansible_net_model | default('Unknown') }}
+          Version: {{ cisco_facts.ansible_facts.ansible_net_version | default('Unknown') }}
+          Serial: {{ cisco_facts.ansible_facts.ansible_net_serialnum | default('Unknown') }}
+          Uptime: {{ cisco_facts.ansible_facts.ansible_net_uptime | default('Unknown') }}
+          {% endif %}
+
+          {% if nxos_facts is defined and nxos_facts.ansible_facts is defined %}
+          Model: {{ nxos_facts.ansible_facts.ansible_net_model | default('Unknown') }}
+          Version: {{ nxos_facts.ansible_facts.ansible_net_version | default('Unknown') }}
+          Serial: {{ nxos_facts.ansible_facts.ansible_net_serialnum | default('Unknown') }}
+          Hostname: {{ nxos_facts.ansible_facts.ansible_net_hostname | default('Unknown') }}
+          {% endif %}
+
+          === CONFIGURATION STATUS ===
+          Hostname: {{ inventory_hostname }}
+          Domain: {{ domain_name | default('Not Set') }}
+          Management IP: {{ mgmt_ip | default('Not Configured') }}
+          Default Gateway: {{ default_gateway | default('Not Configured') }}
+          NTP Servers: {{ ntp_servers | default([]) | length }}
+          Local Users: {{ local_users | default([]) | length }}
+          SNMP Hosts: {{ snmp_hosts | default([]) | length }}
+          Syslog Servers: {{ syslog_servers | default([]) | length }}
+
+          Deployment Status: {{ 'SUCCESS' if ansible_failed_result is not defined else 'FAILED' }}
+          ====================================
+    tags: [ 'cisco', 'verify' ]

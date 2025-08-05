@@ -1,0 +1,271 @@
+---
+# Firmware Update Tasks for Master Orchestration
+# Multi-vendor firmware and software update procedures
+
+- name: Pre-update validation and backup
+  block:
+  - name: Create pre-update configuration backup
+    ansible.netcommon.cli_command:
+      command: "{{ platform_backup_command[ansible_network_os] | default('show running-config') }}"
+    register: pre_update_config
+    vars:
+      platform_backup_command:
+        ios: "show running-config"
+        eos: "show running-config"
+        junos: "show configuration | display set"
+        panos: "show config running"
+        fortios: "show full-configuration"
+
+  - name: Save pre-update backup
+    copy:
+      content: "{{ pre_update_config.stdout }}"
+      dest: "{{ playbook_dir }}/../backups/{{ inventory_hostname }}_pre_firmware_{{ ansible_date_time.epoch }}.cfg"
+    delegate_to: localhost
+
+  - name: Check current firmware version
+    ansible.netcommon.cli_command:
+      command: "{{ platform_version_command[ansible_network_os] | default('show version') }}"
+    register: current_version
+    vars:
+      platform_version_command:
+        ios: "show version"
+        eos: "show version"
+        junos: "show version"
+        panos: "show system info"
+        fortios: "get system status"
+
+- name: Cisco IOS/IOS-XE firmware update
+  block:
+  - name: Check available disk space
+    cisco.ios.ios_command:
+      commands:
+      - "dir {{ firmware_location | default('bootflash:') }}"
+    register: disk_space
+    when: ansible_network_os == 'ios'
+
+  - name: Copy firmware image to device
+    cisco.ios.ios_command:
+      commands:
+      - "copy {{ firmware_server }}/{{ firmware_image }} {{ firmware_location | default('bootflash:') }}"
+      wait_for:
+      - result[0] contains "OK"
+      timeout: 1800
+    when:
+    - ansible_network_os == 'ios'
+    - firmware_server is defined
+    - firmware_image is defined
+
+  - name: Verify firmware image integrity
+    cisco.ios.ios_command:
+      commands:
+      - "verify /md5 {{ firmware_location | default('bootflash:') }}{{ firmware_image }}"
+    register: md5_verification
+    when:
+    - ansible_network_os == 'ios'
+    - firmware_md5 is defined
+
+  - name: Update boot system configuration
+    cisco.ios.ios_config:
+      lines:
+      - "boot system {{ firmware_location | default('bootflash:') }}{{ firmware_image }}"
+      save_when: modified
+    when:
+    - ansible_network_os == 'ios'
+    - firmware_image is defined
+
+- name: Arista EOS firmware update
+  block:
+  - name: Copy firmware image - EOS
+    arista.eos.eos_command:
+      commands:
+      - "copy {{ firmware_server }}/{{ firmware_image }} flash:"
+      wait_for:
+      - result[0] contains "Copy completed successfully"
+      timeout: 1800
+    when:
+    - ansible_network_os == 'eos'
+    - firmware_server is defined
+    - firmware_image is defined
+
+  - name: Install firmware image - EOS
+    arista.eos.eos_config:
+      lines:
+      - "boot system flash:/{{ firmware_image }}"
+      save_when: modified
+    when:
+    - ansible_network_os == 'eos'
+    - firmware_image is defined
+
+- name: Juniper JunOS firmware update
+  block:
+  - name: Download firmware package - JunOS
+    junipernetworks.junos.junos_command:
+      commands:
+      - "file copy {{ firmware_server }}/{{ firmware_package }} /var/tmp/"
+      wait_for:
+      - result[0] contains "copied successfully"
+      timeout: 1800
+    when:
+    - ansible_network_os == 'junos'
+    - firmware_server is defined
+    - firmware_package is defined
+
+  - name: Install firmware package - JunOS
+    junipernetworks.junos.junos_package:
+      name: "/var/tmp/{{ firmware_package }}"
+      state: present
+      reboot: false
+      validate: true
+    when:
+    - ansible_network_os == 'junos'
+    - firmware_package is defined
+
+- name: Palo Alto PAN-OS firmware update
+  block:
+  - name: Download firmware - PAN-OS
+    paloaltonetworks.panos.panos_software:
+      version: "{{ target_panos_version }}"
+      download: true
+      install: false
+    when:
+    - ansible_network_os == 'panos'
+    - target_panos_version is defined
+
+  - name: Install firmware - PAN-OS
+    paloaltonetworks.panos.panos_software:
+      version: "{{ target_panos_version }}"
+      download: false
+      install: true
+      restart: false
+    when:
+    - ansible_network_os == 'panos'
+    - target_panos_version is defined
+
+- name: Fortinet FortiOS firmware update
+  block:
+  - name: Upload firmware image - FortiOS
+    fortinet.fortios.fortios_system_firmware:
+      system_firmware:
+        file_content: "{{ firmware_content | b64encode }}"
+        filename: "{{ firmware_image }}"
+    when:
+    - ansible_network_os == 'fortios'
+    - firmware_content is defined
+    - firmware_image is defined
+
+- name: Pre-reboot validation
+  block:
+  - name: Save configuration before reboot
+    ansible.netcommon.cli_command:
+      command: "{{ platform_save_command[ansible_network_os] | default('write memory') }}"
+    vars:
+      platform_save_command:
+        ios: "write memory"
+        eos: "write memory"
+        junos: "commit"
+        panos: "commit"
+        fortios: "execute backup config flash"
+
+  - name: Verify configuration is saved
+    ansible.netcommon.cli_command:
+      command: "{{ platform_verify_save[ansible_network_os] | default('show startup-config | include version') }}"
+    register: config_saved
+    vars:
+      platform_verify_save:
+        ios: "show startup-config | include version"
+        eos: "show startup-config | include boot system"
+        junos: "show system commit"
+        panos: "show config saved"
+        fortios: "get system status"
+
+- name: Schedule device reboot
+  block:
+  - name: Create reboot notification
+    copy:
+      content: |
+        Firmware Update Reboot Notice
+        ============================
+        Device: {{ inventory_hostname }}
+        Current Version: {{ current_version.stdout_lines[0] | default('Unknown') }}
+        Target Version: {{ firmware_image | default(target_panos_version) | default(firmware_package) | default('Unknown') }}
+        Scheduled Reboot: {{ ansible_date_time.iso8601 }}
+
+        This device will be rebooted to complete firmware update.
+        Expected downtime: {{ expected_downtime | default('5-10 minutes') }}
+
+        Pre-update backup saved to:
+        {{ playbook_dir }}/../backups/{{ inventory_hostname }}_pre_firmware_{{ ansible_date_time.epoch }}.cfg
+      dest: "{{ playbook_dir }}/../reports/firmware/{{ inventory_hostname }}_reboot_notice_{{ ansible_date_time.epoch }}.txt"
+    delegate_to: localhost
+
+  - name: Reboot device for firmware activation
+    ansible.netcommon.cli_command:
+      command: "{{ platform_reboot_command[ansible_network_os] | default('reload') }}"
+      prompt:
+      - "confirm"
+      - "yes/no"
+      - "[yes]"
+      answer:
+      - "y"
+      - "yes"
+      - "yes"
+    vars:
+      platform_reboot_command:
+        ios: "reload"
+        eos: "reload now"
+        junos: "request system reboot"
+        panos: "request restart system"
+        fortios: "execute reboot"
+    when: execute_reboot | default(false)
+
+- name: Post-reboot validation (delayed execution)
+  block:
+  - name: Wait for device to come back online
+    wait_for:
+      host: "{{ ansible_host }}"
+      port: 22
+      delay: 120 # Wait 2 minutes before checking
+      timeout: 600 # Wait up to 10 minutes total
+    delegate_to: localhost
+    when: execute_reboot | default(false)
+
+  - name: Verify new firmware version
+    ansible.netcommon.cli_command:
+      command: "{{ platform_version_command[ansible_network_os] | default('show version') }}"
+    register: post_update_version
+    when: execute_reboot | default(false)
+
+  - name: Compare firmware versions
+    debug:
+      msg: |
+        Firmware Update Status for {{ inventory_hostname }}:
+        Previous Version: {{ current_version.stdout_lines[0] | default('Unknown') }}
+        Current Version: {{ post_update_version.stdout_lines[0] | default('Unknown') }}
+    when: execute_reboot | default(false)
+
+  - name: Create post-update report
+    copy:
+      content: |
+        Firmware Update Report: {{ inventory_hostname }}
+        =============================================
+        Update Timestamp: {{ ansible_date_time.iso8601 }}
+        Platform: {{ ansible_network_os | upper }}
+
+        Previous Version:
+        {{ current_version.stdout | default('Not available') }}
+
+        Current Version:
+        {{ post_update_version.stdout | default('Not available') }}
+
+        Update Status: {{ 'SUCCESS' if post_update_version is defined else 'PENDING REBOOT' }}
+
+        {% if not execute_reboot | default(false) %}
+        NOTE: Device reboot required to complete firmware update.
+        Run with execute_reboot=true to automatically reboot device.
+        {% endif %}
+      dest: "{{ playbook_dir }}/../reports/firmware/{{ inventory_hostname }}_firmware_update_{{ ansible_date_time.epoch }}.txt"
+    delegate_to: localhost
+
+- name: Log firmware update completion
+  debug:
+    msg: "Firmware update {{ 'completed' if execute_reboot | default(false) else 'staged (reboot required)' }} for {{ inventory_hostname }} ({{ ansible_network_os }})"

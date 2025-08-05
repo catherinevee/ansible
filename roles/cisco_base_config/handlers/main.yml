@@ -1,0 +1,19 @@
+---
+# Handlers for Cisco base configuration
+- name: save_configuration
+  cisco.ios.ios_config:
+    save_when: always
+  # Ensures all configuration changes are saved to startup-config
+
+- name: reload_device
+  cisco.ios.ios_command:
+    commands:
+    - reload in 1
+    wait_for:
+    - result[0] contains "Reload scheduled"
+  # Scheduled device reload (use with caution)
+
+- name: copy_running_to_startup
+  cisco.ios.ios_config:
+    save_when: changed
+  # Alternative save method when needed

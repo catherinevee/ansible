@@ -1,0 +1,399 @@
+---
+# Arista CloudVision Portal Integration Playbook
+# Automated configuration and monitoring integration with CloudVision Portal
+# Supports: CVP-managed Arista devices with telemetry, compliance, and change control
+
+- name: Arista CloudVision Portal Integration and Management
+  hosts: arista_devices
+  gather_facts: false
+  connection: network_cli
+  vars:
+    ansible_network_os: eos
+    ansible_user: "{{ vault_arista_username }}"
+    ansible_password: "{{ vault_arista_password }}"
+    ansible_become: true
+    ansible_become_method: enable
+
+  tasks:
+  # Phase 1: CloudVision Agent Configuration
+  - name: "Phase 1: Configure CloudVision TerminAttr Agent"
+    block:
+    - name: Install and configure TerminAttr daemon
+      arista.eos.eos_config:
+        lines:
+        - "daemon TerminAttr"
+        - "exec /usr/bin/TerminAttr -cvcompression={{ arista_cvp_config.compression | default('gzip') }} -cvaddr={{ arista_cvp_config.cvp_servers | join(',') }} -cvauth={{ arista_cvp_config.auth_method }},{{ arista_cvp_config.auth_key }} -cvvrf={{ arista_cvp_config.vrf | default('MGMT') }} -cvgnmi -disableaaa -smashexcludes={{ arista_cvp_config.smash_excludes | default('ale,flexCounter,hardware,kni,pulse,strata') }} -ingestexclude={{ arista_cvp_config.ingest_exclude | default('/Sysdb/cell/1/agent,/Sysdb/cell/2/agent') }} -taillogs{{ ' -cvproto=' + arista_cvp_config.protocol if arista_cvp_config.protocol is defined else '' }}"
+        - "no shutdown"
+        parents: []
+      when: arista_cvp_config is defined
+      tags: [ cvp, terminattr ]
+
+    - name: Configure CVP streaming telemetry
+      arista.eos.eos_config:
+        lines:
+        - "management cvx"
+        - "no shutdown"
+        - "server host {{ item.host }}"
+        - "source-interface {{ arista_cvp_config.source_interface | default('Management1') }}"
+        - "vrf {{ arista_cvp_config.vrf | default('MGMT') }}"
+        parents: []
+      loop: "{{ arista_cvp_config.cvp_servers }}"
+      when: arista_cvp_config.cvp_servers is defined
+      tags: [ cvp, streaming ]
+
+  # Phase 2: Telemetry and Analytics Configuration
+  - name: "Phase 2: Configure Advanced Telemetry"
+    block:
+    - name: Enable gNMI streaming telemetry
+      arista.eos.eos_config:
+        lines:
+        - "management api gnmi"
+        - "transport grpc default"
+        - "provider eos-native"
+        - "notification timestamp send-time"
+        parents: []
+      when: arista_telemetry_config.gnmi_enabled | default(false)
+      tags: [ telemetry, gnmi ]
+
+    - name: Configure OpenConfig telemetry paths
+      arista.eos.eos_config:
+        lines:
+        - "management api models"
+        - "provider {{ item.provider }}"
+        - "path {{ item.path }}"
+        parents: []
+      loop: "{{ arista_telemetry_config.openconfig_paths }}"
+      when: arista_telemetry_config.openconfig_paths is defined
+      tags: [ telemetry, openconfig ]
+
+    - name: Configure LANZ for latency monitoring
+      arista.eos.eos_config:
+        lines:
+        - "queue-monitor length"
+        - "queue-monitor length notifying"
+        - "queue-monitor length tx-latency"
+        - "queue-monitor length cpu {{ arista_telemetry_config.lanz_cpu_threshold | default(80) }}"
+        - "queue-monitor streaming"
+        parents: []
+      when: arista_telemetry_config.lanz_enabled | default(false)
+      tags: [ telemetry, lanz ]
+
+  # Phase 3: Configuration Compliance and Validation
+  - name: "Phase 3: Configure Compliance and Validation"
+    block:
+    - name: Configure configuration session management
+      arista.eos.eos_config:
+        lines:
+        - "management cvx"
+        - "service openconfig"
+        - "service terminattr"
+        parents: []
+      tags: [ cvp, compliance ]
+
+    - name: Set up configuration rollback capabilities
+      arista.eos.eos_config:
+        lines:
+        - "boot config-failure recovery"
+        - "boot config-failure recovery timeout {{ arista_cvp_config.rollback_timeout | default(60) }}"
+        parents: []
+      when: arista_cvp_config.rollback_enabled | default(true)
+      tags: [ cvp, rollback ]
+
+    - name: Configure configuration archiving
+      arista.eos.eos_config:
+        lines:
+        - "event-handler CVP_CONFIG_PUSH_{{ item.name }}"
+        - "trigger on-startup-config"
+        - "action bash curl -X POST '{{ arista_cvp_config.webhook_url }}/config-change' -d 'device={{ inventory_hostname }}&event={{ item.name }}'"
+        parents: []
+      loop:
+      - { name: "STARTUP" }
+      - { name: "RUNNING" }
+      when: arista_cvp_config.webhook_url is defined
+      tags: [ cvp, webhooks ]
+
+  # Phase 4: Change Control Integration
+  - name: "Phase 4: Configure Change Control Integration"
+    block:
+    - name: Configure maintenance mode detection
+      arista.eos.eos_config:
+        lines:
+        - "event-handler MAINTENANCE_MODE"
+        - "trigger on-maintenance"
+        - "action bash echo 'Maintenance mode activated on {{ inventory_hostname }}' | logger -p local0.info"
+        parents: []
+      tags: [ cvp, maintenance ]
+
+    - name: Configure configuration validation hooks
+      arista.eos.eos_config:
+        lines:
+        - "event-handler CONFIG_VALIDATION"
+        - "trigger on-startup-config"
+        - "action bash /mnt/flash/scripts/validate_config.sh"
+        - "delay {{ arista_cvp_config.validation_delay | default(30) }}"
+        parents: []
+      when: arista_cvp_config.config_validation | default(false)
+      tags: [ cvp, validation ]
+
+  # Phase 5: Network Health Monitoring
+  - name: "Phase 5: Configure Network Health Monitoring"
+    block:
+    - name: Configure interface health monitoring
+      arista.eos.eos_config:
+        lines:
+        - "event-handler INTERFACE_{{ item.interface | replace('/', '_') | replace('.', '_') }}_DOWN"
+        - "trigger on-intf {{ item.interface }} operstatus"
+        - "action bash curl -X POST '{{ arista_cvp_config.alert_webhook }}' -d 'device={{ inventory_hostname }}&interface={{ item.interface }}&status=down'"
+        parents: []
+      loop: "{{ arista_monitoring_config.critical_interfaces }}"
+      when: arista_monitoring_config.critical_interfaces is defined and arista_cvp_config.alert_webhook is defined
+      tags: [ monitoring, interfaces ]
+
+    - name: Configure BGP neighbor monitoring
+      arista.eos.eos_config:
+        lines:
+        - "event-handler BGP_NEIGHBOR_{{ item.neighbor_ip | replace('.', '_') }}_DOWN"
+        - "trigger on-bgp-peer {{ item.neighbor_ip }} state"
+        - "action bash curl -X POST '{{ arista_cvp_config.alert_webhook }}' -d 'device={{ inventory_hostname }}&bgp_peer={{ item.neighbor_ip }}&state=down'"
+        parents: []
+      loop: "{{ arista_bgp_config.neighbors }}"
+      when: arista_bgp_config.neighbors is defined and arista_cvp_config.alert_webhook is defined
+      tags: [ monitoring, bgp ]
+
+    - name: Configure MLAG health monitoring
+      arista.eos.eos_config:
+        lines:
+        - "event-handler MLAG_HEALTH_CHECK"
+        - "trigger on-mlag-state"
+        - "action bash /mnt/flash/scripts/mlag_health_check.sh"
+        - "delay {{ arista_cvp_config.mlag_check_delay | default(60) }}"
+        parents: []
+      when: arista_mlag_config is defined and arista_cvp_config.mlag_monitoring | default(false)
+      tags: [ monitoring, mlag ]
+
+  # Phase 6: Performance and Capacity Monitoring
+  - name: "Phase 6: Configure Performance Monitoring"
+    block:
+    - name: Configure CPU and memory monitoring
+      arista.eos.eos_config:
+        lines:
+        - "event-handler HIGH_CPU_USAGE"
+        - "trigger on-logging"
+        - "regex CPU.*above.*{{ arista_cvp_config.cpu_threshold | default(80) }}"
+        - "action bash curl -X POST '{{ arista_cvp_config.alert_webhook }}' -d 'device={{ inventory_hostname }}&alert=high_cpu&threshold={{ arista_cvp_config.cpu_threshold | default(80) }}'"
+        parents: []
+      when: arista_cvp_config.alert_webhook is defined
+      tags: [ monitoring, performance, cpu ]
+
+    - name: Configure bandwidth utilization monitoring
+      arista.eos.eos_config:
+        lines:
+        - "load-interval {{ item.interval | default(30) }}"
+        parents:
+        - "interface {{ item.interface }}"
+      loop: "{{ arista_monitoring_config.bandwidth_interfaces }}"
+      when: arista_monitoring_config.bandwidth_interfaces is defined
+      tags: [ monitoring, bandwidth ]
+
+    - name: Configure MAC address table monitoring
+      arista.eos.eos_config:
+        lines:
+        - "mac address-table aging-time {{ arista_cvp_config.mac_aging_time | default(300) }}"
+        - "event-handler MAC_TABLE_LIMIT"
+        - "trigger on-logging"
+        - "regex MAC.*table.*full"
+        - "action bash curl -X POST '{{ arista_cvp_config.alert_webhook }}' -d 'device={{ inventory_hostname }}&alert=mac_table_full'"
+        parents: []
+      when: arista_cvp_config.alert_webhook is defined
+      tags: [ monitoring, mac_table ]
+
+  # Phase 7: Security and Compliance Monitoring
+  - name: "Phase 7: Configure Security Monitoring"
+    block:
+    - name: Configure authentication failure monitoring
+      arista.eos.eos_config:
+        lines:
+        - "event-handler AUTH_FAILURE"
+        - "trigger on-logging"
+        - "regex Authentication.*failed"
+        - "action bash curl -X POST '{{ arista_cvp_config.security_webhook }}' -d 'device={{ inventory_hostname }}&alert=auth_failure&timestamp=$(date)'"
+        parents: []
+      when: arista_cvp_config.security_webhook is defined
+      tags: [ security, monitoring, auth ]
+
+    - name: Configure configuration change detection
+      arista.eos.eos_config:
+        lines:
+        - "event-handler UNAUTHORIZED_CONFIG_CHANGE"
+        - "trigger on-startup-config"
+        - "action bash /mnt/flash/scripts/config_change_audit.sh"
+        parents: []
+      when: arista_cvp_config.config_audit | default(false)
+      tags: [ security, config_audit ]
+
+    - name: Configure TACACS+ monitoring
+      arista.eos.eos_config:
+        lines:
+        - "event-handler TACACS_SERVER_DOWN"
+        - "trigger on-logging"
+        - "regex TACACS.*server.*not.*responding"
+        - "action bash curl -X POST '{{ arista_cvp_config.alert_webhook }}' -d 'device={{ inventory_hostname }}&alert=tacacs_server_down'"
+        parents: []
+      when: arista_aaa_config.tacacs_servers is defined and arista_cvp_config.alert_webhook is defined
+      tags: [ security, tacacs ]
+
+  # Phase 8: Automated Remediation
+  - name: "Phase 8: Configure Automated Remediation"
+    block:
+    - name: Configure interface flap remediation
+      arista.eos.eos_config:
+        lines:
+        - "event-handler INTERFACE_FLAP_{{ item.interface | replace('/', '_') | replace('.', '_') }}"
+        - "trigger on-intf {{ item.interface }} operstatus"
+        - "action bash sleep {{ item.flap_delay | default(30) }} && configure terminal && interface {{ item.interface }} && shutdown && sleep 5 && no shutdown"
+        parents: []
+      loop: "{{ arista_cvp_config.flap_remediation_interfaces }}"
+      when: arista_cvp_config.flap_remediation_interfaces is defined
+      tags: [ remediation, interfaces ]
+
+    - name: Configure BGP session reset automation
+      arista.eos.eos_config:
+        lines:
+        - "event-handler BGP_SESSION_RESET_{{ item.neighbor_ip | replace('.', '_') }}"
+        - "trigger on-bgp-peer {{ item.neighbor_ip }} state"
+        - "action bash sleep {{ item.reset_delay | default(60) }} && configure terminal && router bgp {{ arista_bgp_config.as_number }} && neighbor {{ item.neighbor_ip }} shutdown && sleep 10 && no neighbor {{ item.neighbor_ip }} shutdown"
+        parents: []
+      loop: "{{ arista_cvp_config.bgp_auto_reset }}"
+      when: arista_cvp_config.bgp_auto_reset is defined
+      tags: [ remediation, bgp ]
+
+  post_tasks:
+  # Phase 9: CVP Integration Verification
+  - name: "Phase 9: CloudVision Integration Verification"
+    block:
+    - name: Verify TerminAttr daemon status
+      arista.eos.eos_command:
+        commands:
+        - "show daemon TerminAttr"
+        - "show management cvx"
+      register: terminattr_status
+      tags: [ verification, terminattr ]
+
+    - name: Verify telemetry streaming status
+      arista.eos.eos_command:
+        commands:
+        - "show management api gnmi"
+        - "show management api models"
+      register: telemetry_status
+      ignore_errors: true
+      tags: [ verification, telemetry ]
+
+    - name: Verify event handlers
+      arista.eos.eos_command:
+        commands:
+        - "show event-handler"
+        - "show event-handler summary"
+      register: event_handler_status
+      tags: [ verification, event_handlers ]
+
+    - name: Check CVP connectivity
+      arista.eos.eos_command:
+        commands:
+        - "bash timeout 5 telnet {{ item.split(':')[0] }} {{ item.split(':')[1] if ':' in item else '9910' }}"
+      loop: "{{ arista_cvp_config.cvp_servers }}"
+      register: cvp_connectivity
+      ignore_errors: true
+      when: arista_cvp_config.cvp_servers is defined
+      tags: [ verification, connectivity ]
+
+    - name: Generate CloudVision integration report
+      copy:
+        content: |
+          Arista CloudVision Portal Integration Report
+          ===========================================
+          Device: {{ inventory_hostname }}
+          Platform: {{ ansible_net_model | default('Arista Switch') }}
+          Software Version: {{ ansible_net_version | default('Unknown') }}
+          Integration Time: {{ ansible_date_time.iso8601 }}
+
+          === TERMINATTR DAEMON STATUS ===
+          {{ terminattr_status.stdout[0] | default('TerminAttr status not available') }}
+
+          === CVX MANAGEMENT STATUS ===
+          {{ terminattr_status.stdout[1] | default('CVX management not available') }}
+
+          {% if telemetry_status.stdout is defined %}
+          === TELEMETRY STATUS ===
+          gNMI API Status:
+          {{ telemetry_status.stdout[0] | default('gNMI not configured') }}
+
+          OpenConfig Models:
+          {{ telemetry_status.stdout[1] | default('No OpenConfig models') }}
+          {% endif %}
+
+          === EVENT HANDLERS ===
+          {{ event_handler_status.stdout[0] | default('No event handlers configured') }}
+
+          Event Handler Summary:
+          {{ event_handler_status.stdout[1] | default('No event handler summary') }}
+
+          {% if cvp_connectivity.results is defined %}
+          === CVP CONNECTIVITY ===
+          {% for result in cvp_connectivity.results %}
+          CVP Server {{ result.item }}: {{ 'REACHABLE' if result.rc == 0 else 'UNREACHABLE' }}
+          {% endfor %}
+          {% endif %}
+
+          === CONFIGURATION SUMMARY ===
+          CloudVision Servers: {{ (arista_cvp_config.cvp_servers | default([])) | join(', ') }}
+          VRF: {{ arista_cvp_config.vrf | default('MGMT') }}
+          Compression: {{ arista_cvp_config.compression | default('gzip') }}
+          Authentication: {{ arista_cvp_config.auth_method | default('Not specified') }}
+
+          Monitoring Features:
+          - Interface Health: {{ 'Enabled' if arista_monitoring_config.critical_interfaces is defined else 'Disabled' }}
+          - BGP Monitoring: {{ 'Enabled' if arista_bgp_config.neighbors is defined else 'Disabled' }}
+          - MLAG Monitoring: {{ 'Enabled' if arista_cvp_config.mlag_monitoring | default(false) else 'Disabled' }}
+          - Performance Monitoring: {{ 'Enabled' if arista_cvp_config.alert_webhook is defined else 'Disabled' }}
+          - Security Monitoring: {{ 'Enabled' if arista_cvp_config.security_webhook is defined else 'Disabled' }}
+
+          Telemetry Features:
+          - gNMI Streaming: {{ 'Enabled' if arista_telemetry_config.gnmi_enabled | default(false) else 'Disabled' }}
+          - LANZ: {{ 'Enabled' if arista_telemetry_config.lanz_enabled | default(false) else 'Disabled' }}
+          - OpenConfig Paths: {{ (arista_telemetry_config.openconfig_paths | default([])) | length }}
+
+          Automation Features:
+          - Config Rollback: {{ 'Enabled' if arista_cvp_config.rollback_enabled | default(true) else 'Disabled' }}
+          - Config Validation: {{ 'Enabled' if arista_cvp_config.config_validation | default(false) else 'Disabled' }}
+          - Interface Flap Remediation: {{ (arista_cvp_config.flap_remediation_interfaces | default([])) | length }} interfaces
+          - BGP Auto-Reset: {{ (arista_cvp_config.bgp_auto_reset | default([])) | length }} neighbors
+
+          Status: {{ 'SUCCESS' if ansible_failed_task is not defined else 'FAILED' }}
+        dest: "{{ playbook_dir }}/../reports/arista/{{ inventory_hostname }}_cvp_integration_{{ ansible_date_time.epoch }}.txt"
+      delegate_to: localhost
+      tags: [ reporting ]
+
+    - name: Send CVP integration status to webhook
+      uri:
+        url: "{{ arista_cvp_config.status_webhook }}"
+        method: POST
+        body_format: json
+        body:
+          device: "{{ inventory_hostname }}"
+          status: "{{ 'SUCCESS' if ansible_failed_task is not defined else 'FAILED' }}"
+          timestamp: "{{ ansible_date_time.iso8601 }}"
+          terminattr_status: "{{ 'Running' if 'running' in terminattr_status.stdout[0] | lower else 'Not Running' }}"
+          cvp_servers: "{{ arista_cvp_config.cvp_servers | default([]) }}"
+          integration_features:
+            monitoring: "{{ arista_monitoring_config is defined }}"
+            telemetry: "{{ arista_telemetry_config is defined }}"
+            automation: "{{ arista_cvp_config.flap_remediation_interfaces is defined or arista_cvp_config.bgp_auto_reset is defined }}"
+      when: arista_cvp_config.status_webhook is defined
+      delegate_to: localhost
+      ignore_errors: true
+      tags: [ reporting, webhook ]
+
+# Example usage:
+# ansible-playbook arista_cvp_integration.yml --limit arista_devices
+# ansible-playbook arista_cvp_integration.yml --tags cvp,terminattr
+# ansible-playbook arista_cvp_integration.yml --tags monitoring,telemetry --check

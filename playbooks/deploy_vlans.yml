@@ -1,0 +1,377 @@
+---
+# Comprehensive Cisco EVPN, eBGP, and VXLAN Data Center Deployment
+- name: Deploy Advanced Cisco Data Center Infrastructure
+  hosts: cisco_switches
+  gather_facts: false
+  connection: network_cli
+  vars:
+    vlans_to_deploy: "{{ common_vlans }}"
+
+  tasks:
+  # ===========================================
+  # PHASE 1: BASIC VLAN CONFIGURATION
+  # ===========================================
+  - name: Ensure VLANs are present on Cisco switches
+    cisco.ios.ios_vlans:
+      config:
+      - vlan_id: "{{ item.id }}"
+        name: "{{ item.name }}"
+        state: active
+      state: merged
+    loop: "{{ vlans_to_deploy }}"
+    register: vlan_results
+    tags: [ 'vlans', 'basic' ]
+
+  - name: Configure VLAN interfaces on core switches
+    cisco.ios.ios_l3_interfaces:
+      config:
+      - name: "Vlan{{ item.id }}"
+        ipv4:
+        - address: "{{ item.ip_address }}"
+      state: merged
+    loop: "{{ core_vlans | default([]) }}"
+    when:
+    - device_role == "core_switch"
+    - item.ip_address is defined
+    tags: [ 'vlans', 'l3-interfaces' ]
+
+  # ===========================================
+  # PHASE 2: VXLAN CONFIGURATION
+  # ===========================================
+  - name: Configure VXLAN Global Settings
+    cisco.ios.ios_config:
+      lines:
+      - "feature nv overlay"
+      - "feature vn-segment-vlan-based"
+      - "nv overlay evpn"
+      parents: []
+    when: device_role in ['spine', 'leaf', 'border_leaf']
+    tags: [ 'vxlan', 'global' ]
+
+  - name: Configure NVE Interface for VXLAN
+    cisco.ios.ios_config:
+      lines:
+      - "source-interface {{ nve_source_interface | default('Loopback1') }}"
+      - "host-reachability protocol bgp"
+      - "member vni {{ item.vni }} associate-vrf"
+      parents: "interface nve1"
+    loop: "{{ vxlan_vnids | default([]) }}"
+    when: device_role in ['leaf', 'border_leaf']
+    tags: [ 'vxlan', 'nve' ]
+
+  - name: Configure VXLAN EVPN Instance
+    cisco.ios.ios_config:
+      lines:
+      - "vni {{ item.vni }}"
+      - " rd {{ ansible_host }}:{{ item.vni }}"
+      - " route-target import {{ evpn_route_target }}:{{ item.vni }}"
+      - " route-target export {{ evpn_route_target }}:{{ item.vni }}"
+      parents: "evpn"
+    loop: "{{ vxlan_vnids | default([]) }}"
+    when: device_role in ['leaf', 'border_leaf']
+    tags: [ 'vxlan', 'evpn' ]
+
+  # ===========================================
+  # PHASE 3: eBGP UNDERLAY CONFIGURATION
+  # ===========================================
+  - name: Configure BGP for VXLAN Underlay
+    cisco.ios.ios_config:
+      lines:
+      - "router-id {{ bgp_router_id | default(ansible_host) }}"
+      - "timers bgp {{ bgp_keepalive | default('3') }} {{ bgp_holdtime | default('9') }}"
+      - "distance bgp {{ ebgp_admin_distance | default('20') }} {{ ibgp_admin_distance | default('200') }} {{ local_admin_distance | default('200') }}"
+      - "maximum-paths {{ bgp_max_paths | default('64') }}"
+      - "maximum-paths ibgp {{ ibgp_max_paths | default('64') }}"
+      - "bestpath as-path multipath-relax"
+      - "bestpath compare-routerid"
+      parents: "router bgp {{ bgp_asn }}"
+    when: device_role in ['spine', 'leaf', 'border_leaf']
+    tags: [ 'ebgp', 'underlay' ]
+
+  - name: Configure eBGP Neighbors for Underlay
+    cisco.ios.ios_config:
+      lines:
+      - "neighbor {{ item.neighbor_ip }} remote-as {{ item.remote_asn }}"
+      - "neighbor {{ item.neighbor_ip }} description {{ item.description }}"
+      - "neighbor {{ item.neighbor_ip }} timers {{ bgp_keepalive | default('3') }} {{ bgp_holdtime | default('9') }}"
+      - "neighbor {{ item.neighbor_ip }} maximum-routes {{ bgp_max_routes | default('12000') }}"
+      - "neighbor {{ item.neighbor_ip }} fall-over bfd"
+      - "address-family ipv4 unicast"
+      - " neighbor {{ item.neighbor_ip }} activate"
+      - " neighbor {{ item.neighbor_ip }} send-community both"
+      - " neighbor {{ item.neighbor_ip }} next-hop-self"
+      parents: "router bgp {{ bgp_asn }}"
+    loop: "{{ ebgp_underlay_neighbors | default([]) }}"
+    when: device_role in ['spine', 'leaf', 'border_leaf']
+    tags: [ 'ebgp', 'neighbors' ]
+
+  # ===========================================
+  # PHASE 4: EVPN BGP OVERLAY CONFIGURATION
+  # ===========================================
+  - name: Configure EVPN Address Family
+    cisco.ios.ios_config:
+      lines:
+      - "address-family l2vpn evpn"
+      - " neighbor {{ evpn_rr_ip }} activate"
+      - " neighbor {{ evpn_rr_ip }} send-community both"
+      - " neighbor {{ evpn_rr_ip }} route-reflector-client"
+      parents: "router bgp {{ bgp_asn }}"
+    loop: "{{ evpn_route_reflectors | default([]) }}"
+    when: device_role == 'spine'
+    tags: [ 'evpn', 'route-reflector' ]
+
+  - name: Configure EVPN Neighbors for Leaf Switches
+    cisco.ios.ios_config:
+      lines:
+      - "neighbor {{ item.rr_ip }} remote-as {{ item.rr_asn }}"
+      - "neighbor {{ item.rr_ip }} description EVPN-RR-{{ item.rr_id }}"
+      - "neighbor {{ item.rr_ip }} update-source {{ evpn_update_source | default('Loopback0') }}"
+      - "neighbor {{ item.rr_ip }} ebgp-multihop {{ evpn_multihop_ttl | default('5') }}"
+      - "address-family l2vpn evpn"
+      - " neighbor {{ item.rr_ip }} activate"
+      - " neighbor {{ item.rr_ip }} send-community both"
+      parents: "router bgp {{ bgp_asn }}"
+    loop: "{{ evpn_route_reflectors | default([]) }}"
+    when: device_role in ['leaf', 'border_leaf']
+    tags: [ 'evpn', 'leaf-neighbors' ]
+
+  # ===========================================
+  # PHASE 5: VXLAN VLAN-VNI MAPPING
+  # ===========================================
+  - name: Configure VLAN to VNI Mapping
+    cisco.ios.ios_config:
+      lines:
+      - "member vni {{ item.vni }}"
+      parents: "vlan {{ item.vlan_id }}"
+    loop: "{{ vxlan_vlan_vni_mappings | default([]) }}"
+    when: device_role in ['leaf', 'border_leaf']
+    tags: [ 'vxlan', 'vlan-vni' ]
+
+  - name: Configure Layer 2 VNI for EVPN
+    cisco.ios.ios_config:
+      lines:
+      - "member vni {{ item.vni }}"
+      - " suppress-arp"
+      - " replication-type static"
+      - " mcast-group {{ item.multicast_group | default('239.1.1.' + item.vni|string) }}"
+      parents: "interface nve1"
+    loop: "{{ vxlan_l2_vnis | default([]) }}"
+    when: device_role in ['leaf', 'border_leaf']
+    tags: [ 'vxlan', 'l2-vni' ]
+
+  # ===========================================
+  # PHASE 6: ADVANCED EVPN FEATURES
+  # ===========================================
+  - name: Configure EVPN Multihoming for Dual-Homed Servers
+    cisco.ios.ios_config:
+      lines:
+      - "evpn"
+      - " ethernet-segment {{ item.esi_id }}"
+      - "  identifier type 0 {{ item.esi_value }}"
+      - "  redundancy single-active"
+      - "  df-election-wait-time {{ item.df_wait_time | default('3') }}"
+      parents: "interface {{ item.interface }}"
+    loop: "{{ evpn_ethernet_segments | default([]) }}"
+    when: device_role in ['leaf', 'border_leaf'] and evpn_multihoming_enabled | default(false)
+    tags: [ 'evpn', 'multihoming' ]
+
+  - name: Configure EVPN Instance for Layer 3 VNI
+    cisco.ios.ios_config:
+      lines:
+      - "evpn"
+      - " vni {{ item.l3_vni }}"
+      - "  rd {{ ansible_host }}:{{ item.l3_vni }}"
+      - "  route-target import {{ evpn_route_target }}:{{ item.l3_vni }}"
+      - "  route-target export {{ evpn_route_target }}:{{ item.l3_vni }}"
+      parents: []
+    loop: "{{ evpn_l3_vnis | default([]) }}"
+    when: device_role in ['leaf', 'border_leaf']
+    tags: [ 'evpn', 'l3-vni' ]
+
+  # ===========================================
+  # PHASE 7: BFD CONFIGURATION FOR FAST CONVERGENCE
+  # ===========================================
+  - name: Enable BFD Globally
+    cisco.ios.ios_config:
+      lines:
+      - "bfd interval {{ bfd_interval | default('250') }} min_rx {{ bfd_min_rx | default('250') }} multiplier {{ bfd_multiplier | default('3') }}"
+      parents: []
+    when: device_role in ['spine', 'leaf', 'border_leaf']
+    tags: [ 'bfd', 'global' ]
+
+  - name: Configure BFD for BGP Sessions
+    cisco.ios.ios_config:
+      lines:
+      - "bfd"
+      parents: "interface {{ item.interface }}"
+    loop: "{{ bfd_enabled_interfaces | default([]) }}"
+    when: device_role in ['spine', 'leaf', 'border_leaf']
+    tags: [ 'bfd', 'interfaces' ]
+
+  # ===========================================
+  # PHASE 8: ROUTE POLICIES AND FILTERING
+  # ===========================================
+  - name: Configure BGP Route-Maps for EVPN
+    cisco.ios.ios_config:
+      lines:
+      - "route-map {{ item.name }} {{ item.action }} {{ item.sequence }}"
+      - " match {{ item.match_criteria }}"
+      - " set {{ item.set_action }}"
+      parents: []
+    loop: "{{ evpn_route_maps | default([]) }}"
+    when: device_role in ['spine', 'leaf', 'border_leaf']
+    tags: [ 'route-policies', 'evpn' ]
+
+  - name: Configure AS-Path Access Lists
+    cisco.ios.ios_config:
+      lines:
+      - "ip as-path access-list {{ item.list_number }} {{ item.action }} {{ item.regex }}"
+      parents: []
+    loop: "{{ bgp_as_path_lists | default([]) }}"
+    when: device_role in ['spine', 'leaf', 'border_leaf']
+    tags: [ 'route-policies', 'as-path' ]
+
+  # ===========================================
+  # PHASE 9: QOS AND TRAFFIC ENGINEERING
+  # ===========================================
+  - name: Configure QoS for VXLAN Traffic
+    cisco.ios.ios_config:
+      lines:
+      - "qos pre-classify"
+      - "bandwidth {{ item.bandwidth | default('1000000') }}"
+      - "priority {{ item.priority | default('100000') }}"
+      - "queue-limit {{ item.queue_limit | default('2000') }}"
+      parents: "policy-map {{ item.policy_name }}"
+    loop: "{{ vxlan_qos_policies | default([]) }}"
+    when: device_role in ['leaf', 'border_leaf']
+    tags: [ 'qos', 'vxlan' ]
+
+  - name: Apply QoS Policies to VXLAN Interfaces
+    cisco.ios.ios_config:
+      lines:
+      - "service-policy output {{ item.policy_name }}"
+      parents: "interface {{ item.interface }}"
+    loop: "{{ vxlan_qos_interfaces | default([]) }}"
+    when: device_role in ['leaf', 'border_leaf']
+    tags: [ 'qos', 'interface' ]
+
+  # ===========================================
+  # PHASE 10: MONITORING AND VERIFICATION
+  # ===========================================
+  - name: Configure EVPN and VXLAN Monitoring
+    cisco.ios.ios_config:
+      lines:
+      - "snmp-server enable traps bgp"
+      - "snmp-server enable traps nve"
+      - "snmp-server enable traps l2vpn evpn"
+      - "event manager applet EVPN_NEIGHBOR_DOWN"
+      - " event syslog pattern \"BGP.*EVPN.*neighbor.*Down\""
+      - " action 1.0 syslog msg \"EVPN neighbor failure detected\""
+      - " action 2.0 snmp-trap strdata \"EVPN neighbor down\""
+      parents: []
+    when: device_role in ['spine', 'leaf', 'border_leaf']
+    tags: [ 'monitoring', 'evpn' ]
+
+  # ===========================================
+  # PHASE 11: SAVE CONFIGURATION
+  # ===========================================
+  - name: Save configuration changes
+    cisco.ios.ios_config:
+      save_when: changed
+    tags: [ 'save' ]
+
+  # ===========================================
+  # PHASE 12: VERIFICATION AND STATUS
+  # ===========================================
+  - name: Verify VXLAN Configuration
+    cisco.ios.ios_command:
+      commands:
+      - "show nve interface nve1"
+      - "show nve vni"
+      - "show nve peers"
+      - "show interface nve1"
+    register: vxlan_status
+    when: device_role in ['leaf', 'border_leaf']
+    tags: [ 'verify', 'vxlan' ]
+
+  - name: Verify BGP EVPN Configuration
+    cisco.ios.ios_command:
+      commands:
+      - "show bgp l2vpn evpn summary"
+      - "show bgp l2vpn evpn"
+      - "show bgp neighbors"
+      - "show bgp ipv4 unicast summary"
+    register: bgp_evpn_status
+    when: device_role in ['spine', 'leaf', 'border_leaf']
+    tags: [ 'verify', 'bgp-evpn' ]
+
+  - name: Verify EVPN Instance Status
+    cisco.ios.ios_command:
+      commands:
+      - "show evpn instance"
+      - "show evpn ethernet-segment"
+      - "show evpn mac address-table"
+      - "show evpn arp-cache"
+    register: evpn_instance_status
+    when: device_role in ['leaf', 'border_leaf']
+    tags: [ 'verify', 'evpn-instance' ]
+
+  - name: Display Comprehensive Deployment Results
+    ansible.builtin.debug:
+      msg: |
+        ====================================
+        CISCO EVPN/VXLAN DEPLOYMENT REPORT
+        ====================================
+        Device: {{ inventory_hostname }}
+        Role: {{ device_role }}
+        BGP ASN: {{ bgp_asn | default('Not Configured') }}
+
+        === BASIC VLAN STATUS ===
+        VLANs configured: {{ vlan_results.results | selectattr('changed', 'equalto', true) | list | length }}
+        Total VLANs processed: {{ vlans_to_deploy | length }}
+
+        {% if vxlan_status is defined and vxlan_status.stdout is defined %}
+        === VXLAN STATUS ===
+        NVE Interface Status:
+        {{ vxlan_status.stdout[0] | default('VXLAN not configured') }}
+
+        VNI Information:
+        {{ vxlan_status.stdout[1] | default('No VNIs configured') }}
+
+        VXLAN Peers:
+        {{ vxlan_status.stdout[2] | default('No VXLAN peers discovered') }}
+
+        NVE Interface Details:
+        {{ vxlan_status.stdout[3] | default('NVE interface not configured') }}
+        {% endif %}
+
+        {% if bgp_evpn_status is defined and bgp_evpn_status.stdout is defined %}
+        === BGP EVPN STATUS ===
+        BGP L2VPN EVPN Summary:
+        {{ bgp_evpn_status.stdout[0] | default('BGP EVPN not configured') }}
+
+        EVPN Routes:
+        {{ bgp_evpn_status.stdout[1] | default('No EVPN routes') }}
+
+        BGP Neighbors:
+        {{ bgp_evpn_status.stdout[2] | default('No BGP neighbors') }}
+
+        IPv4 Unicast Summary:
+        {{ bgp_evpn_status.stdout[3] | default('BGP IPv4 not configured') }}
+        {% endif %}
+
+        {% if evpn_instance_status is defined and evpn_instance_status.stdout is defined %}
+        === EVPN INSTANCE STATUS ===
+        EVPN Instances:
+        {{ evpn_instance_status.stdout[0] | default('No EVPN instances') }}
+
+        Ethernet Segments:
+        {{ evpn_instance_status.stdout[1] | default('No Ethernet Segments') }}
+
+        EVPN MAC Table:
+        {{ evpn_instance_status.stdout[2] | default('No MAC entries') }}
+
+        EVPN ARP Cache:
+        {{ evpn_instance_status.stdout[3] | default('No ARP entries') }}
+        {% endif %}
+    tags: [ 'verify', 'report' ]

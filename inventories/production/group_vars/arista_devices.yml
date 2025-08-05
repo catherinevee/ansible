@@ -1,0 +1,174 @@
+---
+# Arista device-specific variables
+ansible_network_os: eos
+ansible_connection: httpapi
+ansible_httpapi_use_ssl: true
+ansible_httpapi_port: 443
+ansible_httpapi_validate_certs: false
+ansible_become: yes
+ansible_become_method: enable
+
+# Arista-specific authentication
+arista_api_version: 1
+arista_transport: eapi
+
+# EOS API settings
+eos_eapi_config:
+  http_port: 80
+  https_port: 443
+  local_http: false
+  local_https: true
+  ssl_profile: default
+
+# Standard interface configurations for Arista switches
+arista_standard_interfaces:
+  spine_interfaces:
+  - name: Ethernet1
+    description: "Leaf Connection"
+    mtu: 9214
+    type: routed
+  - name: Ethernet2
+    description: "Leaf Connection"
+    mtu: 9214
+    type: routed
+  leaf_interfaces:
+  - name: Ethernet1
+    description: "Spine Connection"
+    mtu: 9214
+    type: routed
+  - name: Ethernet48
+    description: "Server Connection"
+    type: switched
+    vlan: 100
+
+# Standard VLAN configurations for spine switches
+arista_spine_vlans:
+- vlan_id: 100
+  name: "Spine_Interconnect"
+  description: "Spine to Leaf Interconnect"
+- vlan_id: 200
+  name: "Leaf_Interconnect"
+  description: "Leaf Interconnect VLAN"
+
+# VLANs for datacenter deployment
+arista_datacenter_vlans:
+- id: 100
+  name: "SERVER_VLAN"
+  description: "Server VLAN"
+- id: 200
+  name: "STORAGE_VLAN"
+  description: "Storage VLAN"
+- id: 300
+  name: "DMZ_VLAN"
+  description: "DMZ VLAN"
+- id: 4093
+  name: "LEAF_PEER_L3"
+  description: "Leaf Peer L3"
+- id: 4094
+  name: "MLAG_PEER"
+  description: "MLAG Peer"
+
+# BGP configuration for spine switches
+arista_bgp_config:
+  local_asn: "{{ bgp_asn | default('65000') }}"
+  router_id: "{{ ansible_host }}"
+  maximum_paths: 4
+  ecmp_maximum_paths: 4
+  distance:
+    external: 20
+    internal: 200
+  graceful_restart: true
+
+# EVPN configuration for datacenter fabric
+arista_evpn_config:
+  rd_auto: true
+  rt_auto: true
+  vni_auto: true
+  anycast_gateway_mac: "00:1c:73:00:dc:01"
+
+# VXLAN configuration
+arista_vxlan_config:
+  source_interface: Loopback0
+  multicast_group: 239.1.1.0
+  flood_list: []
+
+# Interface configurations
+arista_interfaces:
+- name: "Ethernet1"
+  description: "Connection to Leaf-01"
+  enabled: true
+  mtu: 9214
+- name: "Ethernet2"
+  description: "Connection to Leaf-02"
+  enabled: true
+  mtu: 9214
+
+# MLAG configuration for leaf switches
+arista_mlag_config:
+  domain_id: "{{ site | default('MLAG_DOMAIN') }}"
+  local_interface: "Vlan4094"
+  peer_address: "{{ mlag_peer_ip | default('169.254.1.1') }}"
+  peer_link: "Port-Channel1000"
+  reload_delay_mlag: 300
+  reload_delay_non_mlag: 330
+
+# Quality of Service configuration
+arista_qos_config:
+  traffic_classes:
+  - class: 0
+    description: "Best Effort"
+  - class: 1
+    description: "Bronze"
+  - class: 2
+    description: "Silver"
+  - class: 3
+    description: "Gold"
+  shaping:
+    rate: "1000000"
+    burst: "1000"
+
+# Security configuration for Arista devices
+arista_security_config:
+  aaa:
+    authentication:
+      login_default: local
+    authorization:
+      exec_default: local
+  management:
+    api:
+      protocol: https
+      ssl_profile: default
+  radius:
+    servers: []
+  tacacs:
+    servers: []
+
+# NTP configuration
+arista_ntp_config:
+  servers:
+  - "0.pool.ntp.org"
+  - "1.pool.ntp.org"
+  - "{{ ntp_server_primary | default('10.0.1.10') }}"
+  timezone: "{{ site_timezone | default('UTC') }}"
+
+# SNMP configuration
+arista_snmp_config:
+  communities:
+  - name: "{{ vault_snmp_community_ro }}"
+    access: ro
+  hosts:
+  - host: "{{ monitoring_server | default('10.0.1.100') }}"
+    community: "{{ vault_snmp_community_ro }}"
+    version: 2c
+
+# Logging configuration
+arista_logging_config:
+  console: critical
+  buffered:
+    size: 32768
+    level: informational
+  hosts:
+  - host: "{{ syslog_server | default('10.0.1.101') }}"
+    protocol: udp
+    port: 514
+    facility: local7

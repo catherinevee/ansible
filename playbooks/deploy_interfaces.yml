@@ -1,0 +1,252 @@
+---
+# Advanced interface and trunk configuration across multiple vendors
+- name: Deploy Interface Configuration Across Network Infrastructure
+  hosts: cisco_switches,arista_switches
+  gather_facts: false
+  vars:
+    deployment_timestamp: "{{ ansible_date_time.iso8601 }}"
+    interface_profiles:
+      access_port:
+        description_prefix: "Access Port -"
+        mode: "access"
+        spanning_tree:
+          portfast: true
+          bpduguard: true
+      trunk_port:
+        description_prefix: "Trunk Port -"
+        mode: "trunk"
+        native_vlan: 1
+        spanning_tree:
+          portfast: false
+          bpduguard: false
+      uplink_port:
+        description_prefix: "Uplink -"
+        mode: "trunk"
+        native_vlan: 1
+        mtu: 9000
+        storm_control: true
+
+  tasks:
+  - name: Display interface deployment information
+    ansible.builtin.debug:
+      msg:
+      - "=== Interface Configuration Deployment ==="
+      - "Device: {{ inventory_hostname }}"
+      - "Timestamp: {{ deployment_timestamp }}"
+      - "Interface Profiles: {{ interface_profiles.keys() | list }}"
+      - "=========================================="
+
+# Cisco Interface Configuration
+- name: Configure Interfaces on Cisco Switches
+  hosts: cisco_switches
+  gather_facts: false
+  connection: network_cli
+
+  tasks:
+  - name: Configure physical interface properties
+    cisco.ios.ios_interfaces:
+      config:
+      - name: "{{ item.name }}"
+        description: "{{ item.description }}"
+        enabled: "{{ item.enabled | default(true) }}"
+        mtu: "{{ item.mtu | default(1500) }}"
+        duplex: "{{ item.duplex | default('auto') }}"
+        speed: "{{ item.speed | default('auto') }}"
+      state: merged
+    loop: "{{ cisco_interfaces | default([]) }}"
+    register: cisco_physical_interfaces
+    # Configure basic physical interface properties
+
+  - name: Configure Layer 2 interface settings
+    cisco.ios.ios_l2_interfaces:
+      config:
+      - name: "{{ item.name }}"
+        mode: "{{ item.mode }}"
+        access:
+          vlan: "{{ item.access_vlan | default(omit) }}"
+        trunk:
+          native_vlan: "{{ item.native_vlan | default(omit) }}"
+          allowed_vlans: "{{ item.allowed_vlans | default(omit) }}"
+      state: merged
+    loop: "{{ cisco_l2_interfaces | default([]) }}"
+    register: cisco_l2_interfaces_result
+    # Configure Layer 2 switching properties
+
+  - name: Configure Layer 3 interface settings
+    cisco.ios.ios_l3_interfaces:
+      config:
+      - name: "{{ item.name }}"
+        ipv4:
+        - address: "{{ item.ipv4_address }}"
+          secondary: "{{ item.secondary | default(false) }}"
+        ipv6:
+        - address: "{{ item.ipv6_address | default(omit) }}"
+      state: merged
+    loop: "{{ cisco_l3_interfaces | default([]) }}"
+    when: cisco_l3_interfaces is defined
+    register: cisco_l3_interfaces_result
+    # Configure Layer 3 interface IP addresses
+
+  - name: Configure port-channel interfaces
+    cisco.ios.ios_lag_interfaces:
+      config:
+      - name: "{{ item.name }}"
+        members:
+        - member: "{{ member.interface }}"
+          mode: "{{ member.mode | default('active') }}"
+          link: "{{ member.link | default(true) }}"
+        loop: "{{ item.members }}"
+      state: merged
+    loop: "{{ cisco_port_channels | default([]) }}"
+    when: cisco_port_channels is defined
+    register: cisco_lag_result
+    # Configure Link Aggregation Groups (LAG)
+
+  - name: Configure spanning tree per interface
+    cisco.ios.ios_config:
+      lines:
+      - "spanning-tree portfast"
+      - "spanning-tree bpduguard enable"
+      parents: "interface {{ item.name }}"
+    loop: "{{ cisco_interfaces | default([]) }}"
+    when:
+    - item.portfast | default(false)
+    - item.mode == "access"
+    # Configure spanning tree optimizations for access ports
+
+  - name: Configure storm control
+    cisco.ios.ios_config:
+      lines:
+      - "storm-control broadcast level {{ item.broadcast_level | default('1.00') }}"
+      - "storm-control multicast level {{ item.multicast_level | default('1.00') }}"
+      - "storm-control unicast level {{ item.unicast_level | default('1.00') }}"
+      - "storm-control action {{ item.action | default('shutdown') }}"
+      parents: "interface {{ item.name }}"
+    loop: "{{ cisco_interfaces | default([]) }}"
+    when: item.storm_control | default(false)
+    # Configure storm control to prevent broadcast storms
+
+    # Arista Interface Configuration
+- name: Configure Interfaces on Arista Switches
+  hosts: arista_switches
+  gather_facts: false
+  connection: httpapi
+
+  tasks:
+  - name: Configure physical interfaces on Arista
+    arista.eos.eos_interfaces:
+      config:
+      - name: "{{ item.name }}"
+        description: "{{ item.description }}"
+        enabled: "{{ item.enabled | default(true) }}"
+        mtu: "{{ item.mtu | default(1500) }}"
+        speed: "{{ item.speed | default(omit) }}"
+      state: merged
+    loop: "{{ arista_interfaces | default([]) }}"
+    register: arista_physical_interfaces
+    # Configure Arista physical interface properties
+
+  - name: Configure Layer 2 interfaces on Arista
+    arista.eos.eos_l2_interfaces:
+      config:
+      - name: "{{ item.name }}"
+        mode: "{{ item.mode }}"
+        access:
+          vlan: "{{ item.access_vlan | default(omit) }}"
+        trunk:
+          native_vlan: "{{ item.native_vlan | default(omit) }}"
+          allowed_vlans: "{{ item.allowed_vlans | default(omit) }}"
+      state: merged
+    loop: "{{ arista_l2_interfaces | default([]) }}"
+    register: arista_l2_result
+    # Configure Arista Layer 2 switching
+
+  - name: Configure MLAG interfaces on Arista
+    arista.eos.eos_config:
+      lines:
+      - "channel-group {{ item.channel_group }} mode active"
+      - "mlag {{ item.mlag_id }}"
+      parents: "interface {{ item.name }}"
+    loop: "{{ arista_mlag_interfaces | default([]) }}"
+    when: arista_mlag_interfaces is defined
+    # Configure Multi-Chassis Link Aggregation (MLAG)
+
+  - name: Configure Arista LLDP interface settings
+    arista.eos.eos_lldp_interfaces:
+      config:
+      - name: "{{ item.name }}"
+        transmit: "{{ item.lldp_transmit | default(true) }}"
+        receive: "{{ item.lldp_receive | default(true) }}"
+      state: merged
+    loop: "{{ arista_interfaces | default([]) }}"
+    when: item.lldp_enabled | default(true)
+    # Configure LLDP for network discovery
+
+    # Interface Validation and Monitoring
+- name: Interface Configuration Validation
+  hosts: cisco_switches,arista_switches
+  gather_facts: false
+
+  tasks:
+  - name: Gather interface facts from Cisco
+    cisco.ios.ios_interfaces:
+      state: gathered
+    register: cisco_interface_facts
+    when: ansible_network_os == "ios"
+    # Collect current interface states from Cisco
+
+  - name: Gather interface facts from Arista
+    arista.eos.eos_interfaces:
+      state: gathered
+    register: arista_interface_facts
+    when: ansible_network_os == "eos"
+    # Collect current interface states from Arista
+
+  - name: Check interface error counters on Cisco
+    cisco.ios.ios_command:
+      commands:
+      - show interfaces
+      - show interfaces summary
+      - show interfaces status
+    register: cisco_interface_status
+    when: ansible_network_os == "ios"
+    # Gather detailed interface statistics
+
+  - name: Check interface error counters on Arista
+    arista.eos.eos_command:
+      commands:
+      - show interfaces
+      - show interfaces status
+      - show interfaces counters errors
+    register: arista_interface_status
+    when: ansible_network_os == "eos"
+    # Gather Arista interface statistics
+
+  - name: Validate trunk port VLAN configurations
+    ansible.builtin.assert:
+      that:
+      - item.mode == "trunk"
+      - item.allowed_vlans is defined
+      - item.native_vlan is defined
+      fail_msg: "Trunk port {{ item.name }} missing required VLAN configuration"
+      success_msg: "Trunk port {{ item.name }} properly configured"
+    loop: "{{ cisco_l2_interfaces | default([]) + arista_l2_interfaces | default([]) }}"
+    when:
+    - item.mode == "trunk"
+    - validate_trunk_config | default(true)
+    # Validate trunk port configurations
+
+  - name: Generate interface deployment report
+    ansible.builtin.template:
+      src: "interface_deployment_report.j2"
+      dest: "{{ playbook_dir }}/../reports/interface_deployment_{{ inventory_hostname }}_{{ ansible_date_time.date }}.txt"
+      mode: '0644'
+    delegate_to: localhost
+    vars:
+      interface_deployment_data:
+        device: "{{ inventory_hostname }}"
+        timestamp: "{{ deployment_timestamp }}"
+        physical_interfaces: "{{ cisco_physical_interfaces | default(arista_physical_interfaces) | default({}) }}"
+        l2_interfaces: "{{ cisco_l2_interfaces_result | default(arista_l2_result) | default({}) }}"
+        interface_status: "{{ cisco_interface_status | default(arista_interface_status) | default({}) }}"
+    # Generate comprehensive interface report

@@ -1,0 +1,158 @@
+---
+# Configuration standards for network devices
+# Used by validation scripts to ensure compliance
+
+cisco:
+  required_services:
+  - "service password-encryption"
+  - "service timestamps debug datetime localtime"
+  - "service timestamps log datetime localtime"
+
+  security_settings:
+  - "aaa new-model"
+  - required_privilege_level: 15
+  - password_policy:
+      min_length: 8
+      complexity: true
+
+  vlans:
+    allowed_ranges:
+    - start: 10
+      end: 99
+    - start: 100
+      end: 999
+    reserved_vlans:
+    - 1 # Management
+    - 999 # Native/unused
+
+  interfaces:
+    description_required: true
+    unused_interfaces_shutdown: true
+    trunk_allowed_vlans: "specific" # Not "all"
+
+  logging:
+    syslog_required: true
+    buffered_logging: true
+    console_logging: false # Disable for production
+
+  ntp:
+    servers_required: 2
+    authentication_required: true
+
+  snmp:
+    v1_v2c_disabled: true
+    v3_required: true
+    community_strings:
+      allowed_types: [ "RO" ] # No RW communities
+
+panos:
+  required_zones:
+  - "trust"
+  - "untrust"
+  - "dmz"
+
+  security_policies:
+    logging_required: true
+    default_action: "deny"
+    log_at_session_end: true
+
+  profiles:
+    antivirus_required: true
+    anti_spyware_required: true
+    vulnerability_protection_required: true
+    url_filtering_required: true
+
+  management:
+    admin_lockout_enabled: true
+    certificate_based_auth: true
+    ssh_key_auth_preferred: true
+
+  high_availability:
+    backup_required: true
+    config_sync_enabled: true
+
+fortinet:
+  system_settings:
+    admin_lockout_enabled: true
+    strong_crypto_required: true
+    admin_port_changed: true # Not default 443
+
+  firewall_policies:
+    logging_required: true
+    utm_profiles_required: true
+    application_control_enabled: true
+
+  interfaces:
+    unused_interfaces_disabled: true
+    security_zones_defined: true
+
+  updates:
+    automatic_updates_enabled: true
+    signature_updates_enabled: true
+
+juniper:
+  system_configuration:
+    root_authentication_required: true
+    commit_synchronize_enabled: true
+    archival_configuration_enabled: true
+
+  interfaces:
+    description_required: true
+    unused_interfaces_disabled: true
+
+  security_policies:
+    default_deny_all: true
+    logging_enabled: true
+    session_timeout_configured: true
+
+  routing:
+    static_routes_documented: true
+    routing_instances_isolated: true
+
+arista:
+  system_settings:
+    aaa_authorization_required: true
+    logging_synchronous_enabled: true
+    ntp_authentication_enabled: true
+
+  spanning_tree:
+    mode: "rapid-pvst"
+    bpdu_guard_enabled: true
+    root_guard_enabled: true
+
+  interfaces:
+    error_disable_recovery: true
+    unused_ports_disabled: true
+    storm_control_enabled: true
+
+  management:
+    ssh_version_2_only: true
+    https_only: true
+    management_vrf_used: true
+
+# Global compliance requirements
+global:
+  password_policies:
+    min_length: 8
+    complexity_required: true
+    expiration_days: 90
+
+  logging:
+    centralized_logging_required: true
+    log_retention_days: 365
+    security_events_logged: true
+
+  backup:
+    configuration_backup_required: true
+    backup_frequency: "daily"
+    backup_retention_days: 30
+
+  monitoring:
+    snmp_monitoring_enabled: true
+    health_checks_enabled: true
+    performance_monitoring_enabled: true
+
+  change_management:
+    configuration_tracking_enabled: true
+    rollback_capability_required: true
+    change_approval_required: true

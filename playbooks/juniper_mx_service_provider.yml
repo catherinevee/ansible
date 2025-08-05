@@ -1,0 +1,724 @@
+---
+# Juniper MX Service Provider Routing Platform Configuration
+# Supports: MX204, MX240, MX480, MX960, MX2008, MX2010, MX2020, MX10003
+# Features: BGP/MPLS VPN, EVPN, L2VPN, L3VPN, Traffic Engineering, Service Chaining
+
+- name: Deploy Juniper MX Service Provider Configuration
+  hosts: juniper_mx
+  gather_facts: false
+  connection: netconf
+  vars:
+    ansible_network_os: junos
+    ansible_user: "{{ vault_juniper_username }}"
+    ansible_password: "{{ vault_juniper_password }}"
+    timeout: 600
+
+  tasks:
+  # Phase 1: Service Provider System Configuration
+  - name: "Phase 1: Configure Service Provider System Settings"
+    block:
+    - name: Configure system settings for service provider
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set system host-name {{ juniper_mx_config.hostname }}"
+        - "set system domain-name {{ juniper_mx_config.domain_name }}"
+        - "set system time-zone {{ juniper_mx_config.timezone }}"
+        - "set system root-authentication encrypted-password {{ vault_juniper_root_password }}"
+        - "set system login message '{{ juniper_mx_config.login_banner }}'"
+        comment: "Service provider system configuration"
+      no_log: true
+      tags: [ system, sp ]
+
+    - name: Configure chassis settings for high-performance
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set chassis aggregated-devices ethernet device-count {{ juniper_mx_config.ae_device_count | default(512) }}"
+        - "set chassis redundancy graceful-switchover"
+        - "set chassis redundancy routing-engine {{ item }}"
+        comment: "Chassis redundancy configuration"
+      loop: [ "0", "1" ]
+      when: juniper_mx_config.redundant_re | default(false)
+      tags: [ chassis, redundancy ]
+
+    - name: Configure service provider services
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set system services ssh root-login allow"
+        - "set system services ssh protocol-version v2"
+        - "set system services ssh connection-limit {{ juniper_mx_config.ssh_connection_limit | default(50) }}"
+        - "set system services netconf ssh"
+        - "set system services netconf rfc-compliant"
+        - "set system services netconf yang-modules"
+        - "set system services rest http port 8080"
+        - "set system services rest https port 8443"
+        - "set system services rest enable-explorer"
+        comment: "Service provider services configuration"
+      tags: [ system, services, sp ]
+
+  # Phase 2: Interface and Physical Layer Configuration
+  - name: "Phase 2: Configure High-Speed Interfaces and Physical Layer"
+    block:
+    - name: Configure core interfaces (100GE/400GE)
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set interfaces {{ item.interface }} description '{{ item.description }}'"
+        - "set interfaces {{ item.interface }} mtu {{ item.mtu | default(9192) }}"
+        - "set interfaces {{ item.interface }} unit {{ item.unit | default(0) }} family inet address {{ item.ipv4_address }}/{{ item.ipv4_prefix }}"
+        - "set interfaces {{ item.interface }} unit {{ item.unit | default(0) }} family inet6 address {{ item.ipv6_address }}/{{ item.ipv6_prefix }}"
+        - "set interfaces {{ item.interface }} unit {{ item.unit | default(0) }} family mpls"
+        - "set interfaces {{ item.interface }} unit {{ item.unit | default(0) }} family iso"
+        comment: "Core interface configuration"
+      loop: "{{ juniper_mx_config.core_interfaces }}"
+      when: juniper_mx_config.core_interfaces is defined
+      tags: [ interfaces, core ]
+
+    - name: Configure customer-facing interfaces
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set interfaces {{ item.interface }} description '{{ item.description }}'"
+        - "set interfaces {{ item.interface }} flexible-vlan-tagging"
+        - "set interfaces {{ item.interface }} encapsulation flexible-ethernet-services"
+        - "set interfaces {{ item.interface }} mtu {{ item.mtu | default(9192) }}"
+        comment: "Customer interface configuration"
+      loop: "{{ juniper_mx_config.customer_interfaces }}"
+      when: juniper_mx_config.customer_interfaces is defined
+      tags: [ interfaces, customer ]
+
+    - name: Configure aggregated ethernet bundles
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set interfaces {{ item.ae_interface }} description '{{ item.description }}'"
+        - "set interfaces {{ item.ae_interface }} mtu {{ item.mtu | default(9192) }}"
+        - "set interfaces {{ item.ae_interface }} aggregated-ether-options lacp {{ item.lacp_mode | default('active') }}"
+        - "set interfaces {{ item.ae_interface }} aggregated-ether-options lacp periodic {{ item.lacp_periodic | default('fast') }}"
+        - "set interfaces {{ item.ae_interface }} aggregated-ether-options minimum-links {{ item.minimum_links | default(1) }}"
+        - "set interfaces {{ item.ae_interface }} aggregated-ether-options maximum-links {{ item.maximum_links | default(8) }}"
+        comment: "Aggregated ethernet configuration"
+      loop: "{{ juniper_mx_config.ae_interfaces }}"
+      when: juniper_mx_config.ae_interfaces is defined
+      tags: [ interfaces, ae, lacp ]
+
+    - name: Configure AE member interfaces
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set interfaces {{ item.1 }} gigether-options 802.3ad {{ item.0.ae_interface }}"
+        - "set interfaces {{ item.1 }} description 'Member of {{ item.0.ae_interface }}'"
+        comment: "AE member configuration"
+      loop: "{{ juniper_mx_config.ae_interfaces | subelements('member_interfaces') }}"
+      when: juniper_mx_config.ae_interfaces is defined
+      tags: [ interfaces, ae_members ]
+
+  # Phase 3: MPLS Core and LSP Configuration
+  - name: "Phase 3: Configure MPLS Core and Traffic Engineering"
+    block:
+    - name: Configure MPLS on core interfaces
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set protocols mpls interface {{ item }}"
+        - "set protocols mpls interface {{ item }} link-protection"
+        comment: "MPLS interface configuration"
+      loop: "{{ juniper_mx_config.mpls_interfaces }}"
+      when: juniper_mx_config.mpls_interfaces is defined
+      tags: [ mpls, core ]
+
+    - name: Configure RSVP-TE for traffic engineering
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set protocols rsvp interface {{ item.interface }} link-protection"
+        - "set protocols rsvp interface {{ item.interface }} bandwidth {{ item.bandwidth }}"
+        - "set protocols rsvp interface {{ item.interface }} subscription {{ item.subscription | default(100) }}"
+        - "set protocols rsvp interface {{ item.interface }} authentication-key {{ item.auth_key }}"
+        comment: "RSVP-TE interface configuration"
+      loop: "{{ juniper_mx_config.rsvp_interfaces }}"
+      when: juniper_mx_config.rsvp_interfaces is defined
+      no_log: true
+      tags: [ rsvp, traffic_engineering ]
+
+    - name: Configure MPLS LSPs for traffic engineering
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set protocols mpls label-switched-path {{ item.lsp_name }} to {{ item.destination }}"
+        - "set protocols mpls label-switched-path {{ item.lsp_name }} bandwidth {{ item.bandwidth }}"
+        - "set protocols mpls label-switched-path {{ item.lsp_name }} priority {{ item.setup_priority | default(7) }} {{ item.hold_priority | default(0) }}"
+        - "set protocols mpls label-switched-path {{ item.lsp_name }} {{ 'adaptive' if item.adaptive | default(true) else '' }}"
+        - "set protocols mpls label-switched-path {{ item.lsp_name }} {{ 'fast-reroute' if item.fast_reroute | default(true) else '' }}"
+        - "set protocols mpls label-switched-path {{ item.lsp_name }} record"
+        comment: "MPLS LSP configuration"
+      loop: "{{ juniper_mx_config.mpls_lsps }}"
+      when: juniper_mx_config.mpls_lsps is defined
+      tags: [ mpls, lsp, traffic_engineering ]
+
+    - name: Configure MPLS path constraints
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set protocols mpls path {{ item.path_name }} {{ hop.hop_address }} {{ hop.hop_type | default('strict') }}"
+        comment: "MPLS path configuration"
+      loop: "{{ juniper_mx_config.mpls_paths | subelements('hops') }}"
+      loop_control:
+        loop_var: hop
+      when: juniper_mx_config.mpls_paths is defined
+      tags: [ mpls, paths ]
+
+    - name: Apply paths to LSPs
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set protocols mpls label-switched-path {{ item.lsp_name }} primary {{ item.primary_path }}"
+        - "set protocols mpls label-switched-path {{ item.lsp_name }} secondary {{ item.secondary_path }}"
+        comment: "LSP path assignment"
+      loop: "{{ juniper_mx_config.lsp_path_assignments }}"
+      when: juniper_mx_config.lsp_path_assignments is defined
+      tags: [ mpls, lsp_paths ]
+
+  # Phase 4: IGP Configuration (OSPF/ISIS)
+  - name: "Phase 4: Configure Interior Gateway Protocol"
+    block:
+    - name: Configure OSPF for service provider network
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set protocols ospf router-id {{ juniper_mx_config.router_id }}"
+        - "set protocols ospf reference-bandwidth {{ juniper_mx_config.ospf_reference_bandwidth | default('1000g') }}"
+        - "set protocols ospf spf-options delay {{ juniper_mx_config.ospf_spf_delay | default(200) }}"
+        - "set protocols ospf spf-options holddown {{ juniper_mx_config.ospf_spf_holddown | default(5000) }}"
+        - "set protocols ospf spf-options rapid-runs {{ juniper_mx_config.ospf_rapid_runs | default(5) }}"
+        - "set protocols ospf traffic-engineering"
+        comment: "OSPF global configuration"
+      when:
+      - juniper_mx_config.igp_protocol == 'ospf'
+      - juniper_mx_config.router_id is defined
+      tags: [ ospf, igp ]
+
+    - name: Configure OSPF areas and interfaces
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set protocols ospf area {{ item.area_id }} interface {{ item.interface }} interface-type {{ item.interface_type | default('point-to-point') }}"
+        - "set protocols ospf area {{ item.area_id }} interface {{ item.interface }} metric {{ item.metric | default(1) }}"
+        - "set protocols ospf area {{ item.area_id }} interface {{ item.interface }} bfd-liveness-detection minimum-interval {{ item.bfd_interval | default(300) }}"
+        - "set protocols ospf area {{ item.area_id }} interface {{ item.interface }} bfd-liveness-detection multiplier {{ item.bfd_multiplier | default(3) }}"
+        comment: "OSPF interface configuration"
+      loop: "{{ juniper_mx_config.ospf_interfaces }}"
+      when:
+      - juniper_mx_config.igp_protocol == 'ospf'
+      - juniper_mx_config.ospf_interfaces is defined
+      tags: [ ospf, interfaces, bfd ]
+
+    - name: Configure ISIS for service provider network
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set protocols isis reference-bandwidth {{ juniper_mx_config.isis_reference_bandwidth | default('1000g') }}"
+        - "set protocols isis level {{ juniper_mx_config.isis_level | default('2') }} authentication-key {{ juniper_mx_config.isis_auth_key }}"
+        - "set protocols isis level {{ juniper_mx_config.isis_level | default('2') }} authentication-type {{ juniper_mx_config.isis_auth_type | default('md5') }}"
+        - "set protocols isis spf-options delay {{ juniper_mx_config.isis_spf_delay | default(200) }}"
+        - "set protocols isis traffic-engineering family inet shortcuts"
+        - "set protocols isis traffic-engineering credibility-protocol-preference"
+        comment: "ISIS global configuration"
+      when:
+      - juniper_mx_config.igp_protocol == 'isis'
+      - juniper_mx_config.isis_auth_key is defined
+      no_log: true
+      tags: [ isis, igp ]
+
+    - name: Configure ISIS interfaces
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set protocols isis interface {{ item.interface }} level {{ item.level | default('2') }} metric {{ item.metric | default(10) }}"
+        - "set protocols isis interface {{ item.interface }} point-to-point"
+        - "set protocols isis interface {{ item.interface }} bfd-liveness-detection minimum-interval {{ item.bfd_interval | default(300) }}"
+        - "set protocols isis interface {{ item.interface }} bfd-liveness-detection multiplier {{ item.bfd_multiplier | default(3) }}"
+        comment: "ISIS interface configuration"
+      loop: "{{ juniper_mx_config.isis_interfaces }}"
+      when:
+      - juniper_mx_config.igp_protocol == 'isis'
+      - juniper_mx_config.isis_interfaces is defined
+      tags: [ isis, interfaces, bfd ]
+
+  # Phase 5: BGP Configuration for Service Provider
+  - name: "Phase 5: Configure BGP for Service Provider Services"
+    block:
+    - name: Configure BGP global settings
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set routing-options router-id {{ juniper_mx_config.router_id }}"
+        - "set routing-options autonomous-system {{ juniper_mx_config.local_asn }}"
+        - "set protocols bgp group {{ item.group_name }} type {{ item.group_type }}"
+        - "set protocols bgp group {{ item.group_name }} peer-as {{ item.peer_as }}"
+        - "set protocols bgp group {{ item.group_name }} local-as {{ item.local_as | default(juniper_mx_config.local_asn) }}"
+        - "set protocols bgp group {{ item.group_name }} import {{ item.import_policy }}"
+        - "set protocols bgp group {{ item.group_name }} export {{ item.export_policy }}"
+        - "set protocols bgp group {{ item.group_name }} cluster {{ item.route_reflector_cluster | default(omit) }}"
+        comment: "BGP group configuration"
+      loop: "{{ juniper_mx_config.bgp_groups }}"
+      when: juniper_mx_config.bgp_groups is defined
+      tags: [ bgp, groups ]
+
+    - name: Configure BGP MPLS VPN address families
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set protocols bgp group {{ item.group_name }} family inet-vpn unicast"
+        - "set protocols bgp group {{ item.group_name }} family inet6-vpn unicast"
+        - "set protocols bgp group {{ item.group_name }} family l2vpn signaling"
+        - "set protocols bgp group {{ item.group_name }} family evpn signaling"
+        - "set protocols bgp group {{ item.group_name }} family route-target"
+        comment: "BGP VPN address family configuration"
+      loop: "{{ juniper_mx_config.bgp_vpn_groups }}"
+      when: juniper_mx_config.bgp_vpn_groups is defined
+      tags: [ bgp, vpn, address_families ]
+
+    - name: Configure BGP neighbors
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set protocols bgp group {{ item.group_name }} neighbor {{ item.neighbor_ip }} description '{{ item.description }}'"
+        - "set protocols bgp group {{ item.group_name }} neighbor {{ item.neighbor_ip }} peer-as {{ item.peer_as }}"
+        - "set protocols bgp group {{ item.group_name }} neighbor {{ item.neighbor_ip }} local-address {{ item.local_address }}"
+        - "set protocols bgp group {{ item.group_name }} neighbor {{ item.neighbor_ip }} authentication-key {{ item.auth_key }}"
+        comment: "BGP neighbor configuration"
+      loop: "{{ juniper_mx_config.bgp_neighbors }}"
+      when:
+      - juniper_mx_config.bgp_neighbors is defined
+      - item.auth_key is defined
+      no_log: true
+      tags: [ bgp, neighbors, authentication ]
+
+  # Phase 6: L3VPN Configuration
+  - name: "Phase 6: Configure Layer 3 VPN Services"
+    block:
+    - name: Configure VRF routing instances
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set routing-instances {{ item.vrf_name }} instance-type vrf"
+        - "set routing-instances {{ item.vrf_name }} interface {{ item.interface }}"
+        - "set routing-instances {{ item.vrf_name }} route-distinguisher {{ item.rd }}"
+        - "set routing-instances {{ item.vrf_name }} vrf-target target:{{ item.rt_import }}"
+        - "set routing-instances {{ item.vrf_name }} vrf-target target:{{ item.rt_export }}"
+        - "set routing-instances {{ item.vrf_name }} vrf-table-label"
+        comment: "L3VPN VRF configuration"
+      loop: "{{ juniper_mx_config.l3vpn_vrfs }}"
+      when: juniper_mx_config.l3vpn_vrfs is defined
+      tags: [ l3vpn, vrf ]
+
+    - name: Configure customer interfaces for L3VPN
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set interfaces {{ item.interface }} unit {{ item.unit }} description '{{ item.description }}'"
+        - "set interfaces {{ item.interface }} unit {{ item.unit }} vlan-id {{ item.vlan_id }}"
+        - "set interfaces {{ item.interface }} unit {{ item.unit }} family inet address {{ item.ipv4_address }}/{{ item.ipv4_prefix }}"
+        - "set interfaces {{ item.interface }} unit {{ item.unit }} family inet6 address {{ item.ipv6_address }}/{{ item.ipv6_prefix }}"
+        comment: "L3VPN customer interface configuration"
+      loop: "{{ juniper_mx_config.l3vpn_customer_interfaces }}"
+      when: juniper_mx_config.l3vpn_customer_interfaces is defined
+      tags: [ l3vpn, customer_interfaces ]
+
+    - name: Configure BGP for L3VPN customer routing
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set routing-instances {{ item.vrf_name }} protocols bgp group {{ item.ce_group_name }} type external"
+        - "set routing-instances {{ item.vrf_name }} protocols bgp group {{ item.ce_group_name }} peer-as {{ item.ce_asn }}"
+        - "set routing-instances {{ item.vrf_name }} protocols bgp group {{ item.ce_group_name }} neighbor {{ item.ce_ip }} description '{{ item.ce_description }}'"
+        - "set routing-instances {{ item.vrf_name }} protocols bgp group {{ item.ce_group_name }} import {{ item.import_policy }}"
+        - "set routing-instances {{ item.vrf_name }} protocols bgp group {{ item.ce_group_name }} export {{ item.export_policy }}"
+        comment: "L3VPN customer BGP configuration"
+      loop: "{{ juniper_mx_config.l3vpn_ce_bgp }}"
+      when: juniper_mx_config.l3vpn_ce_bgp is defined
+      tags: [ l3vpn, ce_bgp ]
+
+    - name: Configure OSPF for L3VPN customer routing
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set routing-instances {{ item.vrf_name }} protocols ospf area {{ item.area_id }} interface {{ item.interface }}"
+        - "set routing-instances {{ item.vrf_name }} protocols ospf domain-id {{ item.domain_id }}"
+        - "set routing-instances {{ item.vrf_name }} protocols ospf domain-vpn-tag {{ item.vpn_tag }}"
+        comment: "L3VPN customer OSPF configuration"
+      loop: "{{ juniper_mx_config.l3vpn_ce_ospf }}"
+      when: juniper_mx_config.l3vpn_ce_ospf is defined
+      tags: [ l3vpn, ce_ospf ]
+
+  # Phase 7: L2VPN and EVPN Configuration
+  - name: "Phase 7: Configure Layer 2 VPN and EVPN Services"
+    block:
+    - name: Configure L2VPN routing instances
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set routing-instances {{ item.l2vpn_name }} instance-type l2vpn"
+        - "set routing-instances {{ item.l2vpn_name }} interface {{ item.interface }}"
+        - "set routing-instances {{ item.l2vpn_name }} route-distinguisher {{ item.rd }}"
+        - "set routing-instances {{ item.l2vpn_name }} vrf-target target:{{ item.rt_import }}"
+        - "set routing-instances {{ item.l2vpn_name }} vrf-target target:{{ item.rt_export }}"
+        - "set routing-instances {{ item.l2vpn_name }} protocols l2vpn encapsulation-type {{ item.encapsulation | default('ethernet') }}"
+        comment: "L2VPN routing instance configuration"
+      loop: "{{ juniper_mx_config.l2vpn_instances }}"
+      when: juniper_mx_config.l2vpn_instances is defined
+      tags: [ l2vpn, routing_instances ]
+
+    - name: Configure L2VPN customer interfaces
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set interfaces {{ item.interface }} unit {{ item.unit }} description '{{ item.description }}'"
+        - "set interfaces {{ item.interface }} unit {{ item.unit }} encapsulation vlan-ccc"
+        - "set interfaces {{ item.interface }} unit {{ item.unit }} vlan-id {{ item.vlan_id }}"
+        comment: "L2VPN customer interface configuration"
+      loop: "{{ juniper_mx_config.l2vpn_customer_interfaces }}"
+      when: juniper_mx_config.l2vpn_customer_interfaces is defined
+      tags: [ l2vpn, customer_interfaces ]
+
+    - name: Configure EVPN instances
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set routing-instances {{ item.evpn_name }} instance-type evpn"
+        - "set routing-instances {{ item.evpn_name }} vlan-id {{ item.vlan_id }}"
+        - "set routing-instances {{ item.evpn_name }} interface {{ item.interface }}"
+        - "set routing-instances {{ item.evpn_name }} route-distinguisher {{ item.rd }}"
+        - "set routing-instances {{ item.evpn_name }} vrf-target target:{{ item.rt_import }}"
+        - "set routing-instances {{ item.evpn_name }} vrf-target target:{{ item.rt_export }}"
+        - "set routing-instances {{ item.evpn_name }} protocols evpn"
+        comment: "EVPN instance configuration"
+      loop: "{{ juniper_mx_config.evpn_instances }}"
+      when: juniper_mx_config.evpn_instances is defined
+      tags: [ evpn, instances ]
+
+    - name: Configure EVPN multihoming
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set routing-instances {{ item.evpn_name }} protocols evpn ethernet-segment {{ item.esi_name }} identifier {{ item.esi_id }}"
+        - "set routing-instances {{ item.evpn_name }} protocols evpn ethernet-segment {{ item.esi_name }} df-election-type {{ item.df_election | default('preference') }}"
+        - "set routing-instances {{ item.evpn_name }} protocols evpn ethernet-segment {{ item.esi_name }} preference {{ item.df_preference | default(100) }}"
+        comment: "EVPN multihoming configuration"
+      loop: "{{ juniper_mx_config.evpn_multihoming }}"
+      when: juniper_mx_config.evpn_multihoming is defined
+      tags: [ evpn, multihoming, esi ]
+
+  # Phase 8: Service Chaining and Policy Configuration
+  - name: "Phase 8: Configure Service Chaining and Advanced Policies"
+    block:
+    - name: Configure service sets for deep packet inspection
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set services service-set {{ item.service_set_name }} nat-rules {{ item.nat_rule }}"
+        - "set services service-set {{ item.service_set_name }} next-hop-service inside-service-interface {{ item.inside_interface }}"
+        - "set services service-set {{ item.service_set_name }} next-hop-service outside-service-interface {{ item.outside_interface }}"
+        comment: "Service set configuration"
+      loop: "{{ juniper_mx_config.service_sets }}"
+      when: juniper_mx_config.service_sets is defined
+      tags: [ services, service_chaining ]
+
+    - name: Configure flow-based processing
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set security flow-tap family inet filter {{ item.filter_name }} term {{ item.term_name }} from {{ item.from_condition }}"
+        - "set security flow-tap family inet filter {{ item.filter_name }} term {{ item.term_name }} then service-accounting service-set {{ item.service_set }}"
+        comment: "Flow-based processing configuration"
+      loop: "{{ juniper_mx_config.flow_tap_filters }}"
+      when: juniper_mx_config.flow_tap_filters is defined
+      tags: [ services, flow_processing ]
+
+    - name: Configure advanced route policies for service provider
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set policy-options policy-statement {{ item.0.policy_name }} term {{ item.1.term_name }} from protocol {{ item.1.from.protocol }}"
+        - "set policy-options policy-statement {{ item.0.policy_name }} term {{ item.1.term_name }} from community {{ item.1.from.community }}"
+        - "set policy-options policy-statement {{ item.0.policy_name }} term {{ item.1.term_name }} from route-filter {{ item.1.from.route_filter }} {{ item.1.from.filter_type }}"
+        - "set policy-options policy-statement {{ item.0.policy_name }} term {{ item.1.term_name }} then {{ item.1.then.action }}"
+        - "set policy-options policy-statement {{ item.0.policy_name }} term {{ item.1.term_name }} then community {{ item.1.then.community_action }} {{ item.1.then.community_name }}"
+        - "set policy-options policy-statement {{ item.0.policy_name }} term {{ item.1.term_name }} then local-preference {{ item.1.then.local_preference | default(omit) }}"
+        comment: "Advanced route policy configuration"
+      loop: "{{ juniper_mx_config.advanced_route_policies | subelements('terms') }}"
+      when: juniper_mx_config.advanced_route_policies is defined
+      tags: [ policies, routing, advanced ]
+
+    - name: Configure BGP communities for service provider
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set policy-options community {{ item.name }} members {{ item.members | join(' ') }}"
+        comment: "BGP community configuration"
+      loop: "{{ juniper_mx_config.bgp_communities }}"
+      when: juniper_mx_config.bgp_communities is defined
+      tags: [ policies, communities, bgp ]
+
+  # Phase 9: Quality of Service for Service Provider
+  - name: "Phase 9: Configure Service Provider QoS"
+    block:
+    - name: Configure CoS forwarding classes for service provider
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set class-of-service forwarding-classes class {{ item.name }} queue-num {{ item.queue_num }}"
+        - "set class-of-service forwarding-classes class {{ item.name }} priority {{ item.priority }}"
+        comment: "SP forwarding class configuration"
+      loop: "{{ juniper_mx_config.sp_forwarding_classes }}"
+      when: juniper_mx_config.sp_forwarding_classes is defined
+      tags: [ qos, forwarding_classes, sp ]
+
+    - name: Configure advanced schedulers for service provider
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set class-of-service schedulers {{ item.name }} transmit-rate {{ item.transmit_rate }}"
+        - "set class-of-service schedulers {{ item.name }} buffer-size {{ item.buffer_size }}"
+        - "set class-of-service schedulers {{ item.name }} priority {{ item.priority }}"
+        - "set class-of-service schedulers {{ item.name }} drop-profile-map loss-priority low protocol-map {{ item.drop_profile_low }}"
+        - "set class-of-service schedulers {{ item.name }} drop-profile-map loss-priority high protocol-map {{ item.drop_profile_high }}"
+        comment: "SP scheduler configuration"
+      loop: "{{ juniper_mx_config.sp_schedulers }}"
+      when: juniper_mx_config.sp_schedulers is defined
+      tags: [ qos, schedulers, sp ]
+
+    - name: Configure hierarchical schedulers
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set class-of-service traffic-control-profiles {{ item.profile_name }} scheduler-map {{ item.scheduler_map }}"
+        - "set class-of-service traffic-control-profiles {{ item.profile_name }} guaranteed-rate {{ item.guaranteed_rate }}"
+        - "set class-of-service traffic-control-profiles {{ item.profile_name }} shaping-rate {{ item.shaping_rate }}"
+        comment: "Hierarchical scheduler configuration"
+      loop: "{{ juniper_mx_config.traffic_control_profiles }}"
+      when: juniper_mx_config.traffic_control_profiles is defined
+      tags: [ qos, hierarchical, traffic_control ]
+
+    - name: Apply QoS to service provider interfaces
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set class-of-service interfaces {{ item.interface }} scheduler-map {{ item.scheduler_map }}"
+        - "set class-of-service interfaces {{ item.interface }} unit {{ item.unit | default('*') }} classifiers dscp {{ item.dscp_classifier }}"
+        - "set class-of-service interfaces {{ item.interface }} unit {{ item.unit | default('*') }} rewrite-rules dscp {{ item.dscp_rewrite }}"
+        - "set class-of-service interfaces {{ item.interface }} hierarchical-scheduler {{ item.hierarchical_scheduler | default(omit) }}"
+        comment: "SP interface QoS application"
+      loop: "{{ juniper_mx_config.sp_interface_qos }}"
+      when: juniper_mx_config.sp_interface_qos is defined
+      tags: [ qos, interfaces, sp ]
+
+  # Phase 10: Service Provider Monitoring and Analytics
+  - name: "Phase 10: Configure SP Monitoring and Analytics"
+    block:
+    - name: Configure flow monitoring for service analytics
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set services flow-monitoring version {{ item.version | default('v9') }}"
+        - "set services flow-monitoring version{{ item.version | default('v9') }} template {{ item.template_name }} template-id {{ item.template_id }}"
+        - "set services flow-monitoring version{{ item.version | default('v9') }} template {{ item.template_name }} {{ item.field_name }} {{ item.field_length }}"
+        comment: "Flow monitoring template configuration"
+      loop: "{{ juniper_mx_config.flow_monitoring_templates | subelements('fields') }}"
+      loop_control:
+        loop_var: field
+      when: juniper_mx_config.flow_monitoring_templates is defined
+      tags: [ monitoring, flow_monitoring, analytics ]
+
+    - name: Configure inline monitoring for service assurance
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set services rpm probe {{ item.probe_name }} test {{ item.test_name }} probe-type {{ item.probe_type }}"
+        - "set services rpm probe {{ item.probe_name }} test {{ item.test_name }} target address {{ item.target_address }}"
+        - "set services rpm probe {{ item.probe_name }} test {{ item.test_name }} probe-count {{ item.probe_count | default(15) }}"
+        - "set services rpm probe {{ item.probe_name }} test {{ item.test_name }} probe-interval {{ item.probe_interval | default(1) }}"
+        - "set services rpm probe {{ item.probe_name }} test {{ item.test_name }} test-interval {{ item.test_interval | default(300) }}"
+        - "set services rpm probe {{ item.probe_name }} test {{ item.test_name }} thresholds successive-loss {{ item.loss_threshold | default(5) }}"
+        - "set services rpm probe {{ item.probe_name }} test {{ item.test_name }} thresholds total-loss {{ item.total_loss_threshold | default(10) }}"
+        comment: "Service assurance probe configuration"
+      loop: "{{ juniper_mx_config.service_assurance_probes }}"
+      when: juniper_mx_config.service_assurance_probes is defined
+      tags: [ monitoring, service_assurance, probes ]
+
+    - name: Configure SNMP for service provider monitoring
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set snmp description '{{ juniper_mx_config.snmp_description }}'"
+        - "set snmp location '{{ juniper_mx_config.snmp_location }}'"
+        - "set snmp contact '{{ juniper_mx_config.snmp_contact }}'"
+        - "set snmp community {{ vault_snmp_community_ro }} authorization read-only"
+        - "set snmp community {{ vault_snmp_community_ro }} clients {{ item }}"
+        - "set snmp trap-options source-address {{ juniper_mx_config.router_id }}"
+        comment: "SP SNMP configuration"
+      loop: "{{ juniper_mx_config.snmp_clients }}"
+      when: juniper_mx_config.snmp_clients is defined
+      no_log: true
+      tags: [ snmp, monitoring, sp ]
+
+  post_tasks:
+  # Phase 11: Service Provider Verification and Reporting
+  - name: "Phase 11: Post-Deployment MX Service Provider Verification"
+    block:
+    - name: Commit MX configuration with extended confirm
+      junipernetworks.junos.junos_config:
+        comment: "MX service provider configuration deployment - {{ ansible_date_time.iso8601 }}"
+        confirm: 20
+      tags: [ commit, verification ]
+
+    - name: Gather MX service provider facts
+      junipernetworks.junos.junos_facts:
+        gather_subset:
+        - all
+      register: mx_facts
+      tags: [ verification, facts ]
+
+    - name: Verify MPLS and LSP status
+      junipernetworks.junos.junos_command:
+        commands:
+        - "show mpls lsp"
+        - "show mpls lsp extensive"
+        - "show rsvp session"
+        - "show mpls path"
+        display: text
+      register: mpls_status
+      tags: [ verification, mpls, lsp ]
+
+    - name: Verify BGP status for service provider
+      junipernetworks.junos.junos_command:
+        commands:
+        - "show bgp summary"
+        - "show route summary"
+        - "show route table inet.3"
+        - "show route table bgp.l3vpn.0"
+        - "show route table bgp.evpn.0"
+        display: text
+      register: bgp_status
+      tags: [ verification, bgp, vpn ]
+
+    - name: Verify L3VPN services
+      junipernetworks.junos.junos_command:
+        commands:
+        - "show route table inet.0"
+        - "show l2vpn connections"
+        - "show evpn database"
+        - "show route table bgp.l2vpn.0"
+        display: text
+      register: vpn_services_status
+      ignore_errors: true
+      tags: [ verification, l3vpn, l2vpn, evpn ]
+
+    - name: Verify service assurance
+      junipernetworks.junos.junos_command:
+        commands:
+        - "show services rpm probe-results"
+        - "show services flow-monitoring"
+        - "show services accounting status"
+        display: text
+      register: service_assurance_status
+      ignore_errors: true
+      tags: [ verification, service_assurance ]
+
+    - name: Verify chassis and hardware status
+      junipernetworks.junos.junos_command:
+        commands:
+        - "show chassis hardware"
+        - "show chassis routing-engine"
+        - "show chassis fpc pic-status"
+        - "show chassis environment"
+        display: text
+      register: chassis_status
+      tags: [ verification, chassis, hardware ]
+
+    - name: Generate MX service provider deployment report
+      copy:
+        content: |
+          Juniper MX Service Provider Deployment Report
+          =============================================
+          Device: {{ inventory_hostname }}
+          Platform: {{ mx_facts.ansible_facts.ansible_net_model | default('Juniper MX') }}
+          Software Version: {{ mx_facts.ansible_facts.ansible_net_version | default('Unknown') }}
+          Serial Number: {{ mx_facts.ansible_facts.ansible_net_serialnum | default('Unknown') }}
+          Deployment Time: {{ ansible_date_time.iso8601 }}
+
+          === DEVICE INFORMATION ===
+          Hostname: {{ mx_facts.ansible_facts.ansible_net_hostname | default('Unknown') }}
+          Model: {{ mx_facts.ansible_facts.ansible_net_model | default('Unknown') }}
+          Version: {{ mx_facts.ansible_facts.ansible_net_version | default('Unknown') }}
+          Router ID: {{ juniper_mx_config.router_id }}
+          Local ASN: {{ juniper_mx_config.local_asn }}
+
+          === MPLS AND LSP STATUS ===
+          MPLS LSPs:
+          {{ mpls_status.stdout[0] | default('MPLS LSPs not available') }}
+
+          LSP Details:
+          {{ mpls_status.stdout[1] | default('LSP details not available') }}
+
+          RSVP Sessions:
+          {{ mpls_status.stdout[2] | default('RSVP sessions not available') }}
+
+          MPLS Paths:
+          {{ mpls_status.stdout[3] | default('MPLS paths not available') }}
+
+          === BGP STATUS ===
+          BGP Summary:
+          {{ bgp_status.stdout[0] | default('BGP summary not available') }}
+
+          Route Summary:
+          {{ bgp_status.stdout[1] | default('Route summary not available') }}
+
+          MPLS Routes (inet.3):
+          {{ bgp_status.stdout[2] | default('MPLS routes not available') }}
+
+          L3VPN Routes:
+          {{ bgp_status.stdout[3] | default('L3VPN routes not available') }}
+
+          EVPN Routes:
+          {{ bgp_status.stdout[4] | default('EVPN routes not available') }}
+
+          {% if vpn_services_status is defined and vpn_services_status.stdout is defined %}
+          === VPN SERVICES STATUS ===
+          Route Table (inet.0):
+          {{ vpn_services_status.stdout[0] | default('Route table not available') }}
+
+          L2VPN Connections:
+          {{ vpn_services_status.stdout[1] | default('L2VPN connections not available') }}
+
+          EVPN Database:
+          {{ vpn_services_status.stdout[2] | default('EVPN database not available') }}
+
+          L2VPN Routes:
+          {{ vpn_services_status.stdout[3] | default('L2VPN routes not available') }}
+          {% endif %}
+
+          {% if service_assurance_status is defined and service_assurance_status.stdout is defined %}
+          === SERVICE ASSURANCE STATUS ===
+          RPM Probe Results:
+          {{ service_assurance_status.stdout[0] | default('RPM probes not configured') }}
+
+          Flow Monitoring:
+          {{ service_assurance_status.stdout[1] | default('Flow monitoring not configured') }}
+
+          Service Accounting:
+          {{ service_assurance_status.stdout[2] | default('Service accounting not configured') }}
+          {% endif %}
+
+          === CHASSIS STATUS ===
+          Hardware:
+          {{ chassis_status.stdout[0] | default('Hardware status not available') }}
+
+          Routing Engine:
+          {{ chassis_status.stdout[1] | default('RE status not available') }}
+
+          FPC/PIC Status:
+          {{ chassis_status.stdout[2] | default('FPC/PIC status not available') }}
+
+          Environment:
+          {{ chassis_status.stdout[3] | default('Environment status not available') }}
+
+          === CONFIGURATION SUMMARY ===
+          Core Interfaces: {{ (juniper_mx_config.core_interfaces | default([])) | length }}
+          Customer Interfaces: {{ (juniper_mx_config.customer_interfaces | default([])) | length }}
+          AE Interfaces: {{ (juniper_mx_config.ae_interfaces | default([])) | length }}
+          MPLS LSPs: {{ (juniper_mx_config.mpls_lsps | default([])) | length }}
+          BGP Groups: {{ (juniper_mx_config.bgp_groups | default([])) | length }}
+          BGP Neighbors: {{ (juniper_mx_config.bgp_neighbors | default([])) | length }}
+          L3VPN VRFs: {{ (juniper_mx_config.l3vpn_vrfs | default([])) | length }}
+          L2VPN Instances: {{ (juniper_mx_config.l2vpn_instances | default([])) | length }}
+          EVPN Instances: {{ (juniper_mx_config.evpn_instances | default([])) | length }}
+          Service Sets: {{ (juniper_mx_config.service_sets | default([])) | length }}
+
+          Features Configured:
+          - MPLS Core: {{ 'Yes' if juniper_mx_config.mpls_interfaces is defined else 'No' }}
+          - Traffic Engineering: {{ 'Yes' if juniper_mx_config.mpls_lsps is defined else 'No' }}
+          - BGP/MPLS VPN: {{ 'Yes' if juniper_mx_config.bgp_vpn_groups is defined else 'No' }}
+          - L3VPN Services: {{ 'Yes' if juniper_mx_config.l3vpn_vrfs is defined else 'No' }}
+          - L2VPN Services: {{ 'Yes' if juniper_mx_config.l2vpn_instances is defined else 'No' }}
+          - EVPN Services: {{ 'Yes' if juniper_mx_config.evpn_instances is defined else 'No' }}
+          - Service Chaining: {{ 'Yes' if juniper_mx_config.service_sets is defined else 'No' }}
+          - Flow Monitoring: {{ 'Yes' if juniper_mx_config.flow_monitoring_templates is defined else 'No' }}
+          - Service Assurance: {{ 'Yes' if juniper_mx_config.service_assurance_probes is defined else 'No' }}
+          - IGP Protocol: {{ juniper_mx_config.igp_protocol | default('Not configured') | upper }}
+          - Redundant RE: {{ 'Yes' if juniper_mx_config.redundant_re | default(false) else 'No' }}
+
+          Status: {{ 'SUCCESS' if ansible_failed_task is not defined else 'FAILED' }}
+        dest: "{{ playbook_dir }}/../reports/juniper/{{ inventory_hostname }}_mx_sp_deployment_{{ ansible_date_time.epoch }}.txt"
+      delegate_to: localhost
+      tags: [ reporting ]
+
+# Example usage:
+# ansible-playbook juniper_mx_service_provider.yml --limit juniper_mx
+# ansible-playbook juniper_mx_service_provider.yml --tags mpls,bgp,l3vpn
+# ansible-playbook juniper_mx_service_provider.yml --tags evpn,service_assurance --check

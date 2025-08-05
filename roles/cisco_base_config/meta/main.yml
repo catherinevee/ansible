@@ -1,0 +1,24 @@
+---
+# Role metadata
+galaxy_info:
+  author: Network Automation Team
+  description: Cisco IOS/IOS-XE base configuration role
+  company: Organization
+  license: MIT
+  min_ansible_version: "2.9"
+  platforms:
+  - name: IOS
+    versions:
+    - all
+  galaxy_tags:
+  - networking
+  - cisco
+  - ios
+  - infrastructure
+
+dependencies: [] # No role dependencies required
+
+collections:
+- cisco.ios
+- ansible.netcommon
+# Required collections for this role

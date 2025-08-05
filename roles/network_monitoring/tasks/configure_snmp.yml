@@ -1,0 +1,77 @@
+---
+# SNMP monitoring configuration for multi-vendor devices
+- name: Configure SNMP on Cisco devices
+  cisco.ios.ios_config:
+    lines:
+    - "snmp-server community {{ snmp_ro_community }} RO {{ snmp_acl | default('') }}"
+    - "snmp-server community {{ snmp_rw_community }} RW {{ snmp_acl | default('') }}"
+    - "snmp-server location {{ snmp_location | default(device_location) | default('Unknown') }}"
+    - "snmp-server contact {{ snmp_contact | default('Network Operations') }}"
+    - "snmp-server chassis-id {{ inventory_hostname }}"
+    - "snmp-server enable traps"
+    - "snmp-server host {{ item }} version {{ snmp_version | default('2c') }} {{ snmp_ro_community }}"
+    loop: "{{ snmp_servers }}"
+  when: ansible_network_os == "ios"
+  notify: save_configuration
+  # Configure comprehensive SNMP settings for Cisco devices
+
+- name: Configure SNMPv3 users on Cisco devices
+  cisco.ios.ios_config:
+    lines:
+    - "snmp-server group {{ item.group }} v3 {{ item.security_level | default('auth') }}"
+    - "snmp-server user {{ item.username }} {{ item.group }} v3 auth {{ item.auth_protocol | default('sha') }} {{ item.auth_password }} priv {{ item.priv_protocol | default('aes') }} {{ item.priv_password }}"
+    loop: "{{ snmpv3_users | default([]) }}"
+  when:
+  - ansible_network_os == "ios"
+  - snmp_version | default('2c') == '3'
+  notify: save_configuration
+  # Configure SNMPv3 for enhanced security
+
+- name: Configure SNMP on Arista devices
+  arista.eos.eos_config:
+    lines:
+    - "snmp-server community {{ snmp_ro_community }} ro"
+    - "snmp-server community {{ snmp_rw_community }} rw"
+    - "snmp-server location {{ snmp_location | default(device_location) | default('Unknown') }}"
+    - "snmp-server contact {{ snmp_contact | default('Network Operations') }}"
+    - "snmp-server host {{ item }} version {{ snmp_version | default('2c') }} {{ snmp_ro_community }}"
+    loop: "{{ snmp_servers }}"
+  when: ansible_network_os == "eos"
+  # Configure SNMP on Arista EOS devices
+
+- name: Configure SNMP on Juniper devices
+  junipernetworks.junos.junos_config:
+    lines:
+    - "set snmp community {{ snmp_ro_community }} authorization read-only"
+    - "set snmp community {{ snmp_rw_community }} authorization read-write"
+    - "set snmp location {{ snmp_location | default(device_location) | default('Unknown') }}"
+    - "set snmp contact {{ snmp_contact | default('Network Operations') }}"
+    - "set snmp trap-group monitoring targets {{ item }}"
+    loop: "{{ snmp_servers }}"
+  when: ansible_network_os == "junos"
+  # Configure SNMP on Juniper Junos devices
+
+- name: Verify SNMP configuration
+  block:
+  - name: Test SNMP connectivity to monitoring servers
+    ansible.builtin.command:
+      cmd: "snmpwalk -v{{ snmp_version | default('2c') }} -c {{ snmp_ro_community }} {{ ansible_host }} 1.3.6.1.2.1.1.1.0"
+    delegate_to: "{{ item }}"
+    loop: "{{ snmp_servers }}"
+    register: snmp_test_results
+    ignore_errors: true
+    # Test SNMP connectivity from monitoring servers
+
+  - name: Display SNMP test results
+    ansible.builtin.debug:
+      msg:
+      - "SNMP Server: {{ item.item }}"
+      - "Test Result: {{ 'PASS' if item.rc == 0 else 'FAIL' }}"
+      - "Response: {{ item.stdout if item.rc == 0 else item.stderr }}"
+    loop: "{{ snmp_test_results.results }}"
+    # Display SNMP connectivity test results
+  rescue:
+  - name: SNMP test failed
+    ansible.builtin.debug:
+      msg: "SNMP connectivity test failed - check configuration and network connectivity"
+  # Verify SNMP configuration with error handling

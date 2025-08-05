@@ -1,0 +1,141 @@
+Network Diagnostics Report
+==========================
+
+Device Information:
+------------------
+Device: {{ diagnostics_data.device }}
+Diagnostic Timestamp: {{ diagnostics_data.timestamp }}
+Device Type: {{ diagnostics_data.device_type }}
+
+System Information:
+------------------
+{% if diagnostics_data.device_facts.ansible_facts is defined %}
+Hostname: {{ diagnostics_data.device_facts.ansible_facts.ansible_net_hostname | default('Unknown') }}
+Model: {{ diagnostics_data.device_facts.ansible_facts.ansible_net_model | default('Unknown') }}
+Version: {{ diagnostics_data.device_facts.ansible_facts.ansible_net_version | default('Unknown') }}
+Serial Number: {{ diagnostics_data.device_facts.ansible_facts.ansible_net_serialnum | default('Unknown') }}
+Uptime: {{ diagnostics_data.device_facts.ansible_facts.ansible_net_uptime | default('Unknown') }}
+{% endif %}
+
+Interface Diagnostics:
+---------------------
+{% if diagnostics_data.interface_diagnostics.stdout is defined %}
+Interface Summary:
+{{ diagnostics_data.interface_diagnostics.stdout[1] | default('Interface information not available') }}
+
+Interface Status Details:
+{{ diagnostics_data.interface_diagnostics.stdout[2] | default('Detailed status not available') }}
+{% else %}
+Interface diagnostics not collected
+{% endif %}
+
+Connectivity Test Results:
+-------------------------
+{% if diagnostics_data.connectivity_results.results is defined %}
+Ping Test Results:
+{% for ping_result in diagnostics_data.connectivity_results.results %}
+Target: {{ ping_result.item }}
+  - Status: {{ 'SUCCESS' if ping_result.failed is not defined or not ping_result.failed else 'FAILED' }}
+  - Packets: {{ ping_result.packet_loss | default('Unknown') }} loss
+  - RTT: {{ ping_result.rtt | default('Unknown') }}
+{% endfor %}
+{% else %}
+Connectivity tests not performed
+{% endif %}
+
+Protocol Status:
+---------------
+{% if diagnostics_data.protocol_status.stdout is defined %}
+Routing Protocols:
+{{ diagnostics_data.protocol_status.stdout[0] | default('Protocol information not available') }}
+
+BGP Summary:
+{{ diagnostics_data.protocol_status.stdout[1] | default('BGP not configured or not available') }}
+
+OSPF Neighbors:
+{{ diagnostics_data.protocol_status.stdout[2] | default('OSPF not configured or not available') }}
+{% else %}
+Protocol diagnostics not collected
+{% endif %}
+
+Hardware Status:
+---------------
+{% if diagnostics_data.hardware_status.stdout is defined %}
+CPU Utilization:
+{{ diagnostics_data.hardware_status.stdout[3] | default('CPU information not available') }}
+
+Memory Usage:
+{{ diagnostics_data.hardware_status.stdout[4] | default('Memory information not available') }}
+
+Environmental Status:
+{{ diagnostics_data.hardware_status.stdout[2] | default('Environmental data not available') }}
+{% else %}
+Hardware diagnostics not collected
+{% endif %}
+
+Error Analysis:
+--------------
+{% if diagnostics_data.error_logs.stdout is defined %}
+Recent Errors and Warnings:
+{{ diagnostics_data.error_logs.stdout[0] | default('No recent errors found') }}
+
+System Log Summary:
+{{ diagnostics_data.error_logs.stdout[1] | default('Log information not available') }}
+{% else %}
+Error log analysis not performed
+{% endif %}
+
+Network Discovery:
+-----------------
+{% if diagnostics_data.protocol_status.stdout is defined and diagnostics_data.protocol_status.stdout | length > 5 %}
+CDP/LLDP Neighbors:
+{{ diagnostics_data.protocol_status.stdout[5] | default('No neighbor discovery data') }}
+{% endif %}
+
+Performance Metrics:
+-------------------
+Interface Utilization: Requires baseline measurement
+Packet Loss: {{ 'Normal' if diagnostics_data.connectivity_results.results is defined else 'Not tested' }}
+Latency: {{ 'Within normal range' if diagnostics_data.connectivity_results.results is defined else 'Not measured' }}
+
+Health Assessment:
+-----------------
+Overall Status: {% if diagnostics_data.device_facts.ansible_facts is defined %}OPERATIONAL{% else %}UNKNOWN{% endif %}
+
+Critical Issues: {% if diagnostics_data.error_logs.stdout is defined %}Review error logs{% else %}None identified{% endif %}
+
+Recommendations:
+---------------
+1. Monitor interface utilization and error counters
+2. Verify all critical protocols are functioning
+3. Check environmental conditions regularly
+4. Review and archive diagnostic reports
+5. Establish baseline performance metrics
+6. Schedule regular health checks
+
+Troubleshooting Actions:
+-----------------------
+{% if diagnostics_data.connectivity_results.results is defined %}
+{% for ping_result in diagnostics_data.connectivity_results.results %}
+{% if ping_result.failed is defined and ping_result.failed %}
+- Investigate connectivity to {{ ping_result.item }}
+{% endif %}
+{% endfor %}
+{% endif %}
+
+- Verify all interface states match expected configuration
+- Check protocol neighbor relationships
+- Monitor system resource utilization
+- Review security logs for anomalies
+
+Next Steps:
+----------
+1. Address any identified connectivity issues
+2. Investigate any failed protocol relationships  
+3. Monitor trends in performance metrics
+4. Schedule follow-up diagnostics if issues persist
+5. Update network documentation with findings
+
+Generated by: Ansible Network Automation Framework
+Report Template Version: 1.0
+Diagnostic Session Complete

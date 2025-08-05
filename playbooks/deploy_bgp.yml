@@ -1,0 +1,238 @@
+---
+# Advanced BGP configuration deployment across multiple vendors
+- name: Deploy BGP Configuration Across Network Infrastructure
+  hosts: all
+  gather_facts: false
+  vars:
+    deployment_timestamp: "{{ ansible_date_time.iso8601 }}"
+
+  tasks:
+  - name: Display BGP deployment information
+    ansible.builtin.debug:
+      msg:
+      - "=== BGP Configuration Deployment ==="
+      - "Timestamp: {{ deployment_timestamp }}"
+      - "Target Devices: {{ ansible_play_hosts | length }}"
+      - "====================================="
+
+# Cisco BGP Configuration
+- name: Configure BGP on Cisco Devices
+  hosts: cisco_routers
+  gather_facts: false
+  connection: network_cli
+  vars:
+    bgp_config:
+      local_asn: "{{ bgp_asn | default('65001') }}"
+      router_id: "{{ bgp_router_id | default(ansible_host) }}"
+      networks_to_advertise:
+      - network: "10.0.0.0"
+        mask: "255.0.0.0"
+      - network: "192.168.0.0"
+        mask: "255.255.0.0"
+
+  tasks:
+  - name: Configure BGP global settings
+    cisco.ios.ios_bgp_global:
+      config:
+        as_number: "{{ bgp_config.local_asn }}"
+        bgp:
+          router_id: "{{ bgp_config.router_id }}"
+          log_neighbor_changes: true
+          bestpath:
+            as_path:
+              multipath_relax: true
+            med:
+              confed: true
+      state: merged
+    register: bgp_global_result
+    # Configure global BGP parameters with best practices
+
+  - name: Configure BGP neighbors
+    cisco.ios.ios_bgp_address_family:
+      config:
+        as_number: "{{ bgp_config.local_asn }}"
+        address_family:
+        - afi: "ipv4"
+          safi: "unicast"
+          neighbors:
+          - neighbor_address: "{{ item.peer_ip }}"
+            remote_as: "{{ item.peer_asn }}"
+            description: "{{ item.description }}"
+            activate: true
+            send_community:
+              set: true
+            soft_reconfiguration:
+              inbound: true
+      state: merged
+    loop: "{{ bgp_neighbors | default([]) }}"
+    when: bgp_neighbors is defined
+    register: bgp_neighbors_result
+    # Configure BGP neighbors with advanced features
+
+  - name: Advertise BGP networks
+    cisco.ios.ios_bgp_address_family:
+      config:
+        as_number: "{{ bgp_config.local_asn }}"
+        address_family:
+        - afi: "ipv4"
+          safi: "unicast"
+          networks:
+          - address: "{{ item.network }}"
+            netmask: "{{ item.mask }}"
+      state: merged
+    loop: "{{ bgp_config.networks_to_advertise }}"
+    register: bgp_networks_result
+    # Advertise local networks via BGP
+
+  - name: Configure BGP route maps
+    cisco.ios.ios_route_maps:
+      config:
+      - route_map: "{{ item.name }}"
+        entries:
+        - sequence: "{{ item.sequence }}"
+          action: "{{ item.action }}"
+          match:
+            as_path: "{{ item.match_as_path | default(omit) }}"
+            community: "{{ item.match_community | default(omit) }}"
+          set:
+            local_preference: "{{ item.set_local_pref | default(omit) }}"
+            community: "{{ item.set_community | default(omit) }}"
+      state: merged
+    loop: "{{ bgp_route_maps | default([]) }}"
+    when: bgp_route_maps is defined
+    # Apply route maps for BGP policy control
+
+    # Juniper BGP Configuration  
+- name: Configure BGP on Juniper Devices
+  hosts: juniper_routers
+  gather_facts: false
+  connection: netconf
+  vars:
+    juniper_bgp_config:
+      local_asn: "{{ bgp_asn | default('65001') }}"
+      router_id: "{{ bgp_router_id | default(ansible_host) }}"
+
+  tasks:
+  - name: Configure BGP global settings on Junos
+    junipernetworks.junos.junos_bgp_global:
+      config:
+        as_number: "{{ juniper_bgp_config.local_asn }}"
+        router_id: "{{ juniper_bgp_config.router_id }}"
+        graceful_restart:
+        - disable: false
+          restart_time: 120
+          stale_routes_time: 300
+      state: merged
+    register: junos_bgp_global_result
+    # Configure Junos BGP with graceful restart
+
+  - name: Configure BGP neighbors on Junos
+    junipernetworks.junos.junos_bgp_address_family:
+      config:
+        as_number: "{{ juniper_bgp_config.local_asn }}"
+        address_family:
+        - afi: "ipv4"
+          safi: "unicast"
+          neighbors:
+          - neighbor_address: "{{ item.peer_ip }}"
+            remote_as: "{{ item.peer_asn }}"
+            description: "{{ item.description }}"
+            authentication_key: "{{ item.auth_key | default(omit) }}"
+            peer_as: "{{ item.peer_asn }}"
+      state: merged
+    loop: "{{ bgp_neighbors | default([]) }}"
+    when: bgp_neighbors is defined
+    # Configure Junos BGP neighbors with authentication
+
+    # Arista BGP Configuration
+- name: Configure BGP on Arista Devices
+  hosts: arista_switches
+  gather_facts: false
+  connection: httpapi
+  vars:
+    arista_bgp_config:
+      local_asn: "{{ bgp_asn | default('65001') }}"
+      router_id: "{{ bgp_router_id | default(ansible_host) }}"
+
+  tasks:
+  - name: Configure BGP on Arista EOS
+    arista.eos.eos_bgp_global:
+      config:
+        as_number: "{{ arista_bgp_config.local_asn }}"
+        router_id: "{{ arista_bgp_config.router_id }}"
+        bgp:
+          default:
+            ipv4_unicast: false
+          log_neighbor_changes: true
+          graceful_restart: true
+          graceful_restart_time: 300
+      state: merged
+    register: eos_bgp_result
+    # Configure EOS BGP with advanced features
+
+  - name: Configure EVPN address family on Arista
+    arista.eos.eos_bgp_address_family:
+      config:
+        as_number: "{{ arista_bgp_config.local_asn }}"
+        address_family:
+        - afi: "l2vpn"
+          safi: "evpn"
+          neighbors:
+          - neighbor_address: "{{ item.peer_ip }}"
+            activate: true
+            send_community: "extended"
+      state: merged
+    loop: "{{ evpn_neighbors | default([]) }}"
+    when:
+    - evpn_neighbors is defined
+    - enable_evpn | default(false)
+    # Configure EVPN for data center deployments
+
+    # BGP Validation and Verification
+- name: BGP Configuration Validation
+  hosts: all
+  gather_facts: false
+
+  tasks:
+  - name: Verify BGP neighbor states on Cisco
+    cisco.ios.ios_command:
+      commands:
+      - show ip bgp summary
+      - show ip bgp neighbors
+    register: cisco_bgp_status
+    when: ansible_network_os == "ios"
+    # Gather BGP status from Cisco devices
+
+  - name: Verify BGP on Juniper
+    junipernetworks.junos.junos_command:
+      commands:
+      - show bgp summary
+      - show bgp neighbor
+      format: json
+    register: junos_bgp_status
+    when: ansible_network_os == "junos"
+    # Gather structured BGP data from Junos
+
+  - name: Verify BGP on Arista
+    arista.eos.eos_command:
+      commands:
+      - show ip bgp summary
+      - show ip bgp neighbors
+    register: arista_bgp_status
+    when: ansible_network_os == "eos"
+    # Gather BGP status from Arista devices
+
+  - name: Generate BGP deployment report
+    ansible.builtin.template:
+      src: "bgp_deployment_report.j2"
+      dest: "{{ playbook_dir }}/../reports/bgp_deployment_{{ inventory_hostname }}_{{ ansible_date_time.date }}.txt"
+      mode: '0644'
+    delegate_to: localhost
+    vars:
+      bgp_deployment_data:
+        device: "{{ inventory_hostname }}"
+        timestamp: "{{ deployment_timestamp }}"
+        bgp_global: "{{ bgp_global_result | default({}) }}"
+        bgp_neighbors: "{{ bgp_neighbors_result | default({}) }}"
+        bgp_status: "{{ cisco_bgp_status | default(junos_bgp_status) | default(arista_bgp_status) | default({}) }}"
+    # Generate detailed BGP deployment report

@@ -1,0 +1,334 @@
+---
+# Advanced network disaster recovery and business continuity playbook
+- name: Network Disaster Recovery and Business Continuity
+  hosts: all
+  gather_facts: false
+  vars:
+    dr_timestamp: "{{ ansible_date_time.iso8601 }}"
+    dr_operation: "{{ operation | default('backup') }}" # backup, restore, failover, test
+
+  tasks:
+  - name: Display disaster recovery operation
+    ansible.builtin.debug:
+      msg:
+      - "=== Network Disaster Recovery Operation ==="
+      - "Operation: {{ dr_operation | upper }}"
+      - "Timestamp: {{ dr_timestamp }}"
+      - "Target: {{ inventory_hostname }}"
+      - "========================================="
+
+# Configuration Backup Operations
+- name: Network Configuration Backup
+  hosts: all
+  gather_facts: false
+  when: dr_operation in ['backup', 'test']
+
+  tasks:
+  - name: Create timestamped backup directory
+    ansible.builtin.file:
+      path: "{{ dr_backup_path }}/{{ ansible_date_time.date }}"
+      state: directory
+      mode: '0755'
+    delegate_to: localhost
+    run_once: true
+    # Create backup directory structure
+
+  - name: Backup Cisco device configurations
+    cisco.ios.ios_config:
+      backup: true
+      backup_options:
+        filename: "{{ inventory_hostname }}_DR_{{ ansible_date_time.epoch }}.cfg"
+        dir_path: "{{ dr_backup_path }}/{{ ansible_date_time.date }}"
+    when: ansible_network_os == "ios"
+    register: cisco_dr_backup
+    # Backup Cisco configurations for DR
+
+  - name: Backup running and startup configurations
+    cisco.ios.ios_command:
+      commands:
+      - show running-config
+      - show startup-config
+      - show version
+      - show inventory
+    when: ansible_network_os == "ios"
+    register: cisco_config_data
+    # Collect comprehensive configuration data
+
+  - name: Save additional Cisco configuration data
+    ansible.builtin.copy:
+      content: |
+        ! {{ inventory_hostname }} Complete Configuration Backup
+        ! Generated: {{ dr_timestamp }}
+        ! Running Configuration:
+        {{ cisco_config_data.stdout[0] }}
+
+        ! Startup Configuration:
+        {{ cisco_config_data.stdout[1] }}
+
+        ! Version Information:
+        {{ cisco_config_data.stdout[2] }}
+
+        ! Hardware Inventory:
+        {{ cisco_config_data.stdout[3] }}
+      dest: "{{ dr_backup_path }}/{{ ansible_date_time.date }}/{{ inventory_hostname }}_complete_backup.txt"
+      mode: '0644'
+    delegate_to: localhost
+    when: ansible_network_os == "ios" and cisco_config_data is defined
+    # Save comprehensive backup data
+
+  - name: Backup Arista configurations
+    arista.eos.eos_config:
+      backup: true
+      backup_options:
+        filename: "{{ inventory_hostname }}_DR_{{ ansible_date_time.epoch }}.cfg"
+        dir_path: "{{ dr_backup_path }}/{{ ansible_date_time.date }}"
+    when: ansible_network_os == "eos"
+    register: arista_dr_backup
+    # Backup Arista configurations
+
+  - name: Backup Juniper configurations
+    junipernetworks.junos.junos_config:
+      backup: true
+      backup_options:
+        filename: "{{ inventory_hostname }}_DR_{{ ansible_date_time.epoch }}.xml"
+        dir_path: "{{ dr_backup_path }}/{{ ansible_date_time.date }}"
+    when: ansible_network_os == "junos"
+    register: juniper_dr_backup
+    # Backup Juniper configurations in XML format
+
+  - name: Backup Palo Alto configuration
+    paloaltonetworks.panos.panos_op:
+      provider: "{{ panos_provider }}"
+      cmd: "show config running"
+    when: "'palo_alto' in group_names"
+    register: panos_dr_config
+    # Get PAN-OS configuration
+
+  - name: Save Palo Alto backup
+    ansible.builtin.copy:
+      content: "{{ panos_dr_config.stdout }}"
+      dest: "{{ dr_backup_path }}/{{ ansible_date_time.date }}/{{ inventory_hostname }}_DR_{{ ansible_date_time.epoch }}.xml"
+      mode: '0644'
+    delegate_to: localhost
+    when:
+    - "'palo_alto' in group_names"
+    - panos_dr_config is defined
+    # Save PAN-OS backup file
+
+    # Configuration Restoration Operations
+- name: Network Configuration Restore
+  hosts: all
+  gather_facts: false
+  when: dr_operation == 'restore'
+
+  tasks:
+  - name: Verify restore file exists
+    ansible.builtin.stat:
+      path: "{{ restore_file_path }}"
+    delegate_to: localhost
+    register: restore_file_check
+    # Verify backup file exists before restoration
+
+  - name: Fail if restore file not found
+    ansible.builtin.fail:
+      msg: "Restore file not found: {{ restore_file_path }}"
+    when: not restore_file_check.stat.exists
+    # Fail gracefully if backup file missing
+
+  - name: Create configuration rollback point
+    cisco.ios.ios_config:
+      backup: true
+      backup_options:
+        filename: "{{ inventory_hostname }}_pre_restore_{{ ansible_date_time.epoch }}.cfg"
+        dir_path: "{{ dr_backup_path }}/rollback"
+    when: ansible_network_os == "ios"
+    # Create rollback point before restoration
+
+  - name: Restore Cisco configuration
+    cisco.ios.ios_config:
+      src: "{{ restore_file_path }}"
+      match: none
+      replace: config
+    when:
+    - ansible_network_os == "ios"
+    - restore_file_check.stat.exists
+    register: cisco_restore_result
+    # Restore Cisco configuration from backup
+
+  - name: Restore Arista configuration
+    arista.eos.eos_config:
+      src: "{{ restore_file_path }}"
+      match: none
+      replace: config
+    when:
+    - ansible_network_os == "eos"
+    - restore_file_check.stat.exists
+    register: arista_restore_result
+    # Restore Arista configuration
+
+  - name: Restore Juniper configuration
+    junipernetworks.junos.junos_config:
+      src: "{{ restore_file_path }}"
+      src_format: xml
+      replace: true
+    when:
+    - ansible_network_os == "junos"
+    - restore_file_check.stat.exists
+    register: juniper_restore_result
+    # Restore Juniper configuration from XML
+
+    # Network Failover Operations
+- name: Network Failover Operations
+  hosts: cisco_devices
+  gather_facts: false
+  when: dr_operation == 'failover'
+
+  tasks:
+  - name: Implement HSRP failover
+    cisco.ios.ios_config:
+      lines:
+      - "standby {{ hsrp_group }} priority {{ failover_priority }}"
+      - "standby {{ hsrp_group }} preempt"
+      parents: "interface {{ item.interface }}"
+    loop: "{{ hsrp_failover_config | default([]) }}"
+    when: hsrp_failover_config is defined
+    # Configure HSRP failover priorities
+
+  - name: Implement VRRP failover
+    cisco.ios.ios_config:
+      lines:
+      - "vrrp {{ vrrp_group }} priority {{ failover_priority }}"
+      - "vrrp {{ vrrp_group }} preempt"
+      parents: "interface {{ item.interface }}"
+    loop: "{{ vrrp_failover_config | default([]) }}"
+    when: vrrp_failover_config is defined
+    # Configure VRRP failover
+
+  - name: Update routing protocol priorities
+    cisco.ios.ios_config:
+      lines:
+      - "router ospf {{ ospf_process_id }}"
+      - "auto-cost reference-bandwidth {{ failover_bandwidth | default('10000') }}"
+    when: enable_ospf_failover | default(false)
+    # Adjust OSPF costs for failover
+
+    # DR Testing Operations
+- name: Disaster Recovery Testing
+  hosts: all
+  gather_facts: false
+  when: dr_operation == 'test'
+
+  tasks:
+  - name: Test network connectivity post-DR
+    ansible.builtin.uri:
+      url: "http://{{ item }}"
+      method: GET
+      timeout: 10
+      status_code: -1
+    loop: "{{ dr_test_targets | default(['8.8.8.8', '1.1.1.1']) }}"
+    register: dr_connectivity_test
+    ignore_errors: true
+    delegate_to: localhost
+    # Test connectivity to key services
+
+  - name: Test critical service availability
+    ansible.builtin.wait_for:
+      host: "{{ item.host }}"
+      port: "{{ item.port }}"
+      timeout: 30
+    loop: "{{ critical_services | default([]) }}"
+    register: service_availability_test
+    ignore_errors: true
+    delegate_to: localhost
+    # Test critical service availability
+
+  - name: Validate configuration integrity
+    cisco.ios.ios_command:
+      commands:
+      - show running-config | include {{ item }}
+    loop: "{{ config_validation_strings | default(['hostname', 'interface', 'router']) }}"
+    register: config_validation
+    when: ansible_network_os == "ios"
+    # Validate configuration integrity
+
+    # DR Documentation and Reporting
+- name: Generate DR Report
+  hosts: all
+  gather_facts: false
+
+  tasks:
+  - name: Compile DR operation results
+    ansible.builtin.set_fact:
+      dr_summary:
+        device: "{{ inventory_hostname }}"
+        operation: "{{ dr_operation }}"
+        timestamp: "{{ dr_timestamp }}"
+        backup_result: "{{ cisco_dr_backup | default(arista_dr_backup) | default(juniper_dr_backup) | default({}) }}"
+        restore_result: "{{ cisco_restore_result | default(arista_restore_result) | default(juniper_restore_result) | default({}) }}"
+        connectivity_test: "{{ dr_connectivity_test | default({}) }}"
+        service_test: "{{ service_availability_test | default({}) }}"
+    # Compile DR operation results
+
+  - name: Generate DR operation report
+    ansible.builtin.template:
+      src: "disaster_recovery_report.j2"
+      dest: "{{ playbook_dir }}/../reports/dr_report_{{ inventory_hostname }}_{{ ansible_date_time.date }}.txt"
+      mode: '0644'
+    delegate_to: localhost
+    vars:
+      dr_data: "{{ dr_summary }}"
+    # Generate comprehensive DR report
+
+  - name: Display DR operation summary
+    ansible.builtin.debug:
+      msg:
+      - "=== DR Operation Summary ==="
+      - "Device: {{ inventory_hostname }}"
+      - "Operation: {{ dr_operation | upper }}"
+      - "Status: {{ 'COMPLETED' if dr_summary is defined else 'INCOMPLETE' }}"
+      - "Timestamp: {{ dr_timestamp }}"
+      - "Report: dr_report_{{ inventory_hostname }}_{{ ansible_date_time.date }}.txt"
+      - "==========================="
+    # Display operation summary
+
+    # Network Recovery Validation
+- name: Post-Recovery Validation
+  hosts: all
+  gather_facts: false
+  when: dr_operation in ['restore', 'failover']
+
+  tasks:
+  - name: Wait for network convergence
+    ansible.builtin.pause:
+      seconds: "{{ convergence_wait_time | default(120) }}"
+    # Allow time for network protocols to converge
+
+  - name: Validate routing table convergence
+    cisco.ios.ios_command:
+      commands:
+      - show ip route summary
+      - show ip route | count
+    register: post_recovery_routing
+    when: ansible_network_os == "ios"
+    # Validate routing convergence
+
+  - name: Test end-to-end connectivity
+    cisco.ios.ios_ping:
+      dest: "{{ item }}"
+      count: 5
+      timeout: 10
+    loop: "{{ recovery_test_targets | default(['8.8.8.8']) }}"
+    register: recovery_ping_test
+    when: ansible_network_os == "ios"
+    # Test connectivity post-recovery
+
+  - name: Validate critical applications
+    ansible.builtin.uri:
+      url: "http://{{ item.url }}"
+      method: GET
+      timeout: 30
+    loop: "{{ critical_applications | default([]) }}"
+    register: app_validation
+    ignore_errors: true
+    delegate_to: localhost
+    # Validate critical application availability

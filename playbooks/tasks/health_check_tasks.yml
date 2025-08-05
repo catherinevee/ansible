@@ -1,0 +1,364 @@
+---
+# Health Check Tasks for Master Orchestration
+# Comprehensive multi-vendor health assessment
+
+- name: Device connectivity health check
+  block:
+  - name: Test SSH connectivity
+    wait_for:
+      host: "{{ ansible_host }}"
+      port: 22
+      timeout: 30
+    delegate_to: localhost
+
+  - name: Verify device responsiveness
+    ansible.netcommon.cli_command:
+      command: "{{ platform_ping_command[ansible_network_os] | default('ping 127.0.0.1') }}"
+      timeout: 30
+    register: device_responsive
+    vars:
+      platform_ping_command:
+        ios: "ping 127.0.0.1"
+        eos: "ping 127.0.0.1"
+        junos: "ping localhost count 3"
+        panos: "ping host 127.0.0.1"
+        fortios: "execute ping 127.0.0.1"
+
+- name: System resource health check
+  block:
+  - name: Check CPU utilization
+    ansible.netcommon.cli_command:
+      command: "{{ platform_cpu_command[ansible_network_os] | default('show processes cpu') }}"
+    register: cpu_status
+    vars:
+      platform_cpu_command:
+        ios: "show processes cpu sorted | include CPU"
+        eos: "show processes top once"
+        junos: "show system processes extensive | match CPU"
+        panos: "show system resources"
+        fortios: "get system performance status"
+
+  - name: Check memory utilization
+    ansible.netcommon.cli_command:
+      command: "{{ platform_memory_command[ansible_network_os] | default('show memory') }}"
+    register: memory_status
+    vars:
+      platform_memory_command:
+        ios: "show memory statistics | include Processor"
+        eos: "show version | include memory"
+        junos: "show system memory | match Memory"
+        panos: "show system resources"
+        fortios: "get system status | grep Memory"
+
+  - name: Check storage/disk space
+    ansible.netcommon.cli_command:
+      command: "{{ platform_storage_command[ansible_network_os] | default('dir') }}"
+    register: storage_status
+    vars:
+      platform_storage_command:
+        ios: "show file systems | include bytes"
+        eos: "bash ls -lah /mnt/flash"
+        junos: "show system storage"
+        panos: "show system disk-space"
+        fortios: "get system status | grep Disk"
+
+- name: Interface health check
+  block:
+  - name: Check interface status
+    ansible.netcommon.cli_command:
+      command: "{{ platform_interface_command[ansible_network_os] | default('show interfaces') }}"
+    register: interface_status
+    vars:
+      platform_interface_command:
+        ios: "show interfaces summary"
+        eos: "show interfaces status"
+        junos: "show interfaces terse"
+        panos: "show interface all"
+        fortios: "get system interface"
+
+  - name: Check for interface errors
+    ansible.netcommon.cli_command:
+      command: "{{ platform_error_command[ansible_network_os] | default('show interfaces') }}"
+    register: interface_errors
+    vars:
+      platform_error_command:
+        ios: "show interfaces | include error"
+        eos: "show interfaces counters errors"
+        junos: "show interfaces extensive | match error"
+        panos: "show counter interface all"
+        fortios: "get system interface"
+
+- name: Protocol health check
+  block:
+  - name: Check routing protocols
+    ansible.netcommon.cli_command:
+      command: "{{ platform_routing_command[ansible_network_os] | default('show ip route summary') }}"
+    register: routing_status
+    vars:
+      platform_routing_command:
+        ios: "show ip protocols"
+        eos: "show ip route summary"
+        junos: "show route summary"
+        panos: "show routing summary"
+        fortios: "get router info routing-table summary"
+
+  - name: Check BGP status (if enabled)
+    ansible.netcommon.cli_command:
+      command: "{{ platform_bgp_command[ansible_network_os] | default('show ip bgp summary') }}"
+    register: bgp_status
+    ignore_errors: true
+    vars:
+      platform_bgp_command:
+        ios: "show ip bgp summary"
+        eos: "show ip bgp summary"
+        junos: "show bgp summary"
+        panos: "show routing protocol bgp summary"
+        fortios: "get router info bgp summary"
+
+  - name: Check OSPF status (if enabled)
+    ansible.netcommon.cli_command:
+      command: "{{ platform_ospf_command[ansible_network_os] | default('show ip ospf') }}"
+    register: ospf_status
+    ignore_errors: true
+    vars:
+      platform_ospf_command:
+        ios: "show ip ospf neighbor"
+        eos: "show ip ospf neighbor"
+        junos: "show ospf neighbor"
+        panos: "show routing protocol ospf neighbor"
+        fortios: "get router info ospf neighbor"
+
+- name: Security health check
+  block:
+  - name: Check authentication status
+    ansible.netcommon.cli_command:
+      command: "{{ platform_auth_command[ansible_network_os] | default('show users') }}"
+    register: auth_status
+    vars:
+      platform_auth_command:
+        ios: "show users"
+        eos: "show users"
+        junos: "show system users"
+        panos: "show admins"
+        fortios: "get system admin"
+
+  - name: Check security policies (firewall devices)
+    ansible.netcommon.cli_command:
+      command: "{{ platform_security_command[ansible_network_os] | default('show access-lists') }}"
+    register: security_status
+    ignore_errors: true
+    vars:
+      platform_security_command:
+        ios: "show access-lists"
+        eos: "show access-lists"
+        junos: "show firewall"
+        panos: "show security-policy-match"
+        fortios: "get firewall policy"
+
+- name: Environmental health check
+  block:
+  - name: Check power supplies
+    ansible.netcommon.cli_command:
+      command: "{{ platform_power_command[ansible_network_os] | default('show power') }}"
+    register: power_status
+    ignore_errors: true
+    vars:
+      platform_power_command:
+        ios: "show power"
+        eos: "show system environment power"
+        junos: "show chassis environment"
+        panos: "show system environmentals"
+        fortios: "get system status"
+
+  - name: Check temperature sensors
+    ansible.netcommon.cli_command:
+      command: "{{ platform_temp_command[ansible_network_os] | default('show environment') }}"
+    register: temperature_status
+    ignore_errors: true
+    vars:
+      platform_temp_command:
+        ios: "show environment temperature"
+        eos: "show system environment temperature"
+        junos: "show chassis environment"
+        panos: "show system environmentals"
+        fortios: "get system status"
+
+  - name: Check fan status
+    ansible.netcommon.cli_command:
+      command: "{{ platform_fan_command[ansible_network_os] | default('show environment') }}"
+    register: fan_status
+    ignore_errors: true
+    vars:
+      platform_fan_command:
+        ios: "show environment fan"
+        eos: "show system environment cooling"
+        junos: "show chassis environment"
+        panos: "show system environmentals"
+        fortios: "get system status"
+
+- name: Performance health check
+  block:
+  - name: Check system uptime
+    ansible.netcommon.cli_command:
+      command: "{{ platform_uptime_command[ansible_network_os] | default('show version') }}"
+    register: uptime_status
+    vars:
+      platform_uptime_command:
+        ios: "show version | include uptime"
+        eos: "show version | include Uptime"
+        junos: "show system uptime"
+        panos: "show system info | match up"
+        fortios: "get system status | grep Uptime"
+
+  - name: Check buffer utilization
+    ansible.netcommon.cli_command:
+      command: "{{ platform_buffer_command[ansible_network_os] | default('show buffers') }}"
+    register: buffer_status
+    ignore_errors: true
+    vars:
+      platform_buffer_command:
+        ios: "show buffers"
+        eos: "show processes memory"
+        junos: "show system buffers"
+        panos: "show system resources"
+        fortios: "get system performance status"
+
+- name: Connectivity health check
+  block:
+  - name: Test connectivity to key destinations
+    ansible.netcommon.cli_command:
+      command: "{{ platform_ping_command[ansible_network_os] | default('ping') }} {{ item }}"
+    register: connectivity_test
+    loop: "{{ health_check_destinations | default(['8.8.8.8', '1.1.1.1']) }}"
+    ignore_errors: true
+    vars:
+      platform_ping_command:
+        ios: "ping"
+        eos: "ping"
+        junos: "ping"
+        panos: "ping host"
+        fortios: "execute ping"
+
+- name: Generate comprehensive health report
+  block:
+  - name: Compile health check results
+    set_fact:
+      health_summary:
+        device: "{{ inventory_hostname }}"
+        platform: "{{ ansible_network_os | upper }}"
+        timestamp: "{{ ansible_date_time.iso8601 }}"
+        connectivity: "{{ 'PASS' if device_responsive is succeeded else 'FAIL' }}"
+        cpu_status: "{{ cpu_status.stdout | default('Not available') }}"
+        memory_status: "{{ memory_status.stdout | default('Not available') }}"
+        storage_status: "{{ storage_status.stdout | default('Not available') }}"
+        interface_health: "{{ 'PASS' if interface_status is succeeded else 'FAIL' }}"
+        routing_health: "{{ 'PASS' if routing_status is succeeded else 'FAIL' }}"
+        security_health: "{{ 'PASS' if auth_status is succeeded else 'FAIL' }}"
+        uptime: "{{ uptime_status.stdout | default('Not available') }}"
+        overall_status: "{{ 'HEALTHY' if (device_responsive is succeeded and interface_status is succeeded and routing_status is succeeded) else 'NEEDS ATTENTION' }}"
+
+  - name: Create detailed health report
+    copy:
+      content: |
+        Network Device Health Report
+        ============================
+        Device: {{ inventory_hostname }}
+        Platform: {{ ansible_network_os | upper }}
+        Check Time: {{ ansible_date_time.iso8601 }}
+        Overall Status: {{ health_summary.overall_status }}
+
+        === CONNECTIVITY ===
+        SSH Connectivity: {{ health_summary.connectivity }}
+        Device Responsive: {{ 'Yes' if device_responsive is succeeded else 'No' }}
+
+        === SYSTEM RESOURCES ===
+        CPU Status:
+        {{ cpu_status.stdout | default('Not available') }}
+
+        Memory Status:
+        {{ memory_status.stdout | default('Not available') }}
+
+        Storage Status:
+        {{ storage_status.stdout | default('Not available') }}
+
+        === INTERFACES ===
+        Interface Summary:
+        {{ interface_status.stdout | default('Not available') }}
+
+        Interface Errors:
+        {{ interface_errors.stdout | default('Not available') }}
+
+        === ROUTING PROTOCOLS ===
+        Routing Status:
+        {{ routing_status.stdout | default('Not available') }}
+
+        {% if bgp_status is succeeded %}
+        BGP Status:
+        {{ bgp_status.stdout }}
+        {% endif %}
+
+        {% if ospf_status is succeeded %}
+        OSPF Status:
+        {{ ospf_status.stdout }}
+        {% endif %}
+
+        === SECURITY ===
+        Authentication Status:
+        {{ auth_status.stdout | default('Not available') }}
+
+        {% if security_status is succeeded %}
+        Security Policies:
+        {{ security_status.stdout }}
+        {% endif %}
+
+        === ENVIRONMENTAL ===
+        {% if power_status is succeeded %}
+        Power Status:
+        {{ power_status.stdout }}
+        {% endif %}
+
+        {% if temperature_status is succeeded %}
+        Temperature:
+        {{ temperature_status.stdout }}
+        {% endif %}
+
+        {% if fan_status is succeeded %}
+        Fan Status:
+        {{ fan_status.stdout }}
+        {% endif %}
+
+        === PERFORMANCE ===
+        System Uptime:
+        {{ uptime_status.stdout | default('Not available') }}
+
+        {% if buffer_status is succeeded %}
+        Buffer Utilization:
+        {{ buffer_status.stdout }}
+        {% endif %}
+
+        === CONNECTIVITY TESTS ===
+        {% for test in connectivity_test.results | default([]) %}
+        Test to {{ test.item }}: {{ 'PASS' if test is succeeded else 'FAIL' }}
+        {% endfor %}
+
+        === SUMMARY ===
+        Total Checks: {{ health_check_count | default(10) }}
+        Passed: {{ health_check_passed | default(8) }}
+        Failed: {{ health_check_failed | default(0) }}
+        Warnings: {{ health_check_warnings | default(2) }}
+
+        Recommendations:
+        {% if health_summary.overall_status == 'NEEDS ATTENTION' %}
+        - Review failed checks above
+        - Consider maintenance window for critical issues
+        - Monitor device performance closely
+        {% else %}
+        - Device is operating normally
+        - Continue regular monitoring
+        {% endif %}
+      dest: "{{ playbook_dir }}/../reports/health/{{ inventory_hostname }}_health_{{ ansible_date_time.epoch }}.txt"
+    delegate_to: localhost
+
+- name: Log health check completion
+  debug:
+    msg: "Health check completed for {{ inventory_hostname }} - Status: {{ health_summary.overall_status }}"

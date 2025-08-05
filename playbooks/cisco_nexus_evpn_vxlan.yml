@@ -1,0 +1,533 @@
+---
+# ====================================================================
+# CISCO NEXUS EVPN-VXLAN DATA CENTER AUTOMATION PLAYBOOK
+# ====================================================================
+# Comprehensive automation for Cisco Nexus data center switches
+# with EVPN-VXLAN overlay, eBGP underlay, and advanced features
+# ====================================================================
+
+- name: Deploy Cisco Nexus EVPN-VXLAN Data Center Fabric
+  hosts: cisco_nexus
+  gather_facts: false
+  connection: network_cli
+  vars:
+    ansible_network_os: nxos
+    ansible_connection: network_cli
+
+  tasks:
+  # ===========================================
+  # PHASE 1: GLOBAL FEATURE ENABLEMENT
+  # ===========================================
+  - name: Enable Required Features for EVPN-VXLAN
+    cisco.nxos.nxos_feature:
+      feature: "{{ item }}"
+      state: enabled
+    loop:
+    - bgp
+    - pim
+    - interface-vlan
+    - vn-segment-vlan-based
+    - nv overlay
+    - ngoam
+    - bfd
+    - hsrp
+    - lacp
+    - vpc
+    tags: [ 'features', 'global' ]
+
+  - name: Configure EVPN Control Plane
+    cisco.nxos.nxos_config:
+      lines:
+      - "nv overlay evpn"
+      parents: []
+    tags: [ 'evpn', 'control-plane' ]
+
+  # ===========================================
+  # PHASE 2: FABRIC UNDERLAY CONFIGURATION
+  # ===========================================
+  - name: Configure Fabric Interfaces
+    cisco.nxos.nxos_interfaces:
+      config:
+      - name: "{{ item.interface }}"
+        description: "{{ item.description }}"
+        enabled: true
+        mtu: "{{ item.mtu | default('9216') }}"
+      state: merged
+    loop: "{{ fabric_interfaces | default([]) }}"
+    tags: [ 'underlay', 'interfaces' ]
+
+  - name: Configure Point-to-Point Links
+    cisco.nxos.nxos_l3_interfaces:
+      config:
+      - name: "{{ item.interface }}"
+        ipv4:
+        - address: "{{ item.ip_address }}"
+      state: merged
+    loop: "{{ p2p_links | default([]) }}"
+    tags: [ 'underlay', 'p2p-links' ]
+
+  - name: Configure Loopback Interfaces
+    cisco.nxos.nxos_l3_interfaces:
+      config:
+      - name: "Loopback0"
+        ipv4:
+        - address: "{{ loopback0_ip }}"
+      - name: "Loopback1"
+        ipv4:
+        - address: "{{ loopback1_ip }}"
+      state: merged
+    tags: [ 'underlay', 'loopbacks' ]
+
+  # ===========================================
+  # PHASE 3: eBGP UNDERLAY CONFIGURATION
+  # ===========================================
+  - name: Configure BGP Global Settings
+    cisco.nxos.nxos_config:
+      lines:
+      - "router bgp {{ bgp_asn }}"
+      - " router-id {{ bgp_router_id | default(loopback0_ip.split('/')[0]) }}"
+      - " timers bgp {{ bgp_keepalive | default('3') }} {{ bgp_holdtime | default('9') }}"
+      - " bestpath as-path multipath-relax"
+      - " bestpath compare-routerid"
+      - " maximum-paths {{ bgp_max_paths | default('64') }}"
+      - " maximum-paths ibgp {{ ibgp_max_paths | default('64') }}"
+      - " log-neighbor-changes"
+      parents: []
+    tags: [ 'ebgp', 'global' ]
+
+  - name: Configure eBGP Underlay Neighbors
+    cisco.nxos.nxos_config:
+      lines:
+      - " neighbor {{ item.neighbor_ip }}"
+      - "  remote-as {{ item.remote_asn }}"
+      - "  description {{ item.description }}"
+      - "  timers {{ bgp_keepalive | default('3') }} {{ bgp_holdtime | default('9') }}"
+      - "  bfd"
+      - "  maximum-routes {{ item.max_routes | default('12000') }}"
+      - "  address-family ipv4 unicast"
+      - "   send-community"
+      - "   send-community extended"
+      parents: "router bgp {{ bgp_asn }}"
+    loop: "{{ ebgp_underlay_neighbors | default([]) }}"
+    tags: [ 'ebgp', 'neighbors' ]
+
+  - name: Advertise Loopbacks in BGP
+    cisco.nxos.nxos_config:
+      lines:
+      - " address-family ipv4 unicast"
+      - "  network {{ loopback0_ip }}"
+      - "  network {{ loopback1_ip }}"
+      parents: "router bgp {{ bgp_asn }}"
+    tags: [ 'ebgp', 'networks' ]
+
+  # ===========================================
+  # PHASE 4: EVPN OVERLAY CONFIGURATION
+  # ===========================================
+  - name: Configure EVPN Address Family
+    cisco.nxos.nxos_config:
+      lines:
+      - " address-family l2vpn evpn"
+      - "  retain route-target all"
+      parents: "router bgp {{ bgp_asn }}"
+    tags: [ 'evpn', 'address-family' ]
+
+  - name: Configure EVPN Route Reflector (Spine)
+    cisco.nxos.nxos_config:
+      lines:
+      - " neighbor {{ item.leaf_ip }}"
+      - "  remote-as {{ item.leaf_asn }}"
+      - "  description EVPN-RR-{{ item.leaf_name }}"
+      - "  update-source {{ evpn_update_source | default('Loopback0') }}"
+      - "  ebgp-multihop {{ evpn_multihop_ttl | default('5') }}"
+      - "  address-family l2vpn evpn"
+      - "   send-community"
+      - "   send-community extended"
+      - "   route-reflector-client"
+      parents: "router bgp {{ bgp_asn }}"
+    loop: "{{ evpn_leaf_neighbors | default([]) }}"
+    when: device_role == 'spine'
+    tags: [ 'evpn', 'route-reflector' ]
+
+  - name: Configure EVPN Neighbors (Leaf)
+    cisco.nxos.nxos_config:
+      lines:
+      - " neighbor {{ item.rr_ip }}"
+      - "  remote-as {{ item.rr_asn }}"
+      - "  description EVPN-RR-{{ item.rr_name }}"
+      - "  update-source {{ evpn_update_source | default('Loopback0') }}"
+      - "  ebgp-multihop {{ evpn_multihop_ttl | default('5') }}"
+      - "  address-family l2vpn evpn"
+      - "   send-community"
+      - "   send-community extended"
+      parents: "router bgp {{ bgp_asn }}"
+    loop: "{{ evpn_route_reflectors | default([]) }}"
+    when: device_role in ['leaf', 'border_leaf']
+    tags: [ 'evpn', 'leaf-neighbors' ]
+
+  # ===========================================
+  # PHASE 5: VXLAN CONFIGURATION
+  # ===========================================
+  - name: Configure NVE Interface
+    cisco.nxos.nxos_config:
+      lines:
+      - "interface nve1"
+      - " no shutdown"
+      - " source-interface {{ nve_source_interface | default('Loopback1') }}"
+      - " host-reachability protocol bgp"
+      - " global ingress-replication protocol bgp"
+      parents: []
+    when: device_role in ['leaf', 'border_leaf']
+    tags: [ 'vxlan', 'nve' ]
+
+  - name: Configure VXLAN L2 VNIs
+    cisco.nxos.nxos_config:
+      lines:
+      - " member vni {{ item.vni }}"
+      - "  suppress-arp"
+      - "  mcast-group {{ item.multicast_group | default('239.1.1.' + item.vni|string) }}"
+      parents: "interface nve1"
+    loop: "{{ vxlan_l2_vnis | default([]) }}"
+    when: device_role in ['leaf', 'border_leaf']
+    tags: [ 'vxlan', 'l2-vni' ]
+
+  - name: Configure VXLAN L3 VNIs
+    cisco.nxos.nxos_config:
+      lines:
+      - " member vni {{ item.l3_vni }} associate-vrf {{ item.vrf_name }}"
+      parents: "interface nve1"
+    loop: "{{ evpn_l3_vnis | default([]) }}"
+    when: device_role in ['leaf', 'border_leaf']
+    tags: [ 'vxlan', 'l3-vni' ]
+
+  # ===========================================
+  # PHASE 6: VLAN CONFIGURATION
+  # ===========================================
+  - name: Configure VLANs for VXLAN
+    cisco.nxos.nxos_vlans:
+      config:
+      - vlan_id: "{{ item.vlan_id }}"
+        name: "{{ item.vlan_name }}"
+        state: active
+      state: merged
+    loop: "{{ vxlan_l2_vnis | default([]) }}"
+    when: device_role in ['leaf', 'border_leaf']
+    tags: [ 'vlans', 'l2' ]
+
+  - name: Configure VLAN to VNI Mapping
+    cisco.nxos.nxos_config:
+      lines:
+      - "vlan {{ item.vlan_id }}"
+      - " vn-segment {{ item.vni }}"
+      parents: []
+    loop: "{{ vxlan_vlan_vni_mappings | default([]) }}"
+    when: device_role in ['leaf', 'border_leaf']
+    tags: [ 'vlans', 'vni-mapping' ]
+
+  # ===========================================
+  # PHASE 7: EVPN INSTANCE CONFIGURATION
+  # ===========================================
+  - name: Configure EVPN Instance for L2 VNIs
+    cisco.nxos.nxos_config:
+      lines:
+      - "evpn"
+      - " vni {{ item.vni }} l2"
+      - "  rd {{ bgp_router_id }}:{{ item.vni }}"
+      - "  route-target import {{ evpn_route_target | default(bgp_asn) }}:{{ item.vni }}"
+      - "  route-target export {{ evpn_route_target | default(bgp_asn) }}:{{ item.vni }}"
+      parents: []
+    loop: "{{ vxlan_l2_vnis | default([]) }}"
+    when: device_role in ['leaf', 'border_leaf']
+    tags: [ 'evpn', 'l2-instance' ]
+
+  - name: Configure EVPN Instance for L3 VNIs
+    cisco.nxos.nxos_config:
+      lines:
+      - "evpn"
+      - " vni {{ item.l3_vni }} l3"
+      - "  rd {{ bgp_router_id }}:{{ item.l3_vni }}"
+      - "  route-target import {{ evpn_route_target | default(bgp_asn) }}:{{ item.l3_vni }}"
+      - "  route-target export {{ evpn_route_target | default(bgp_asn) }}:{{ item.l3_vni }}"
+      parents: []
+    loop: "{{ evpn_l3_vnis | default([]) }}"
+    when: device_role in ['leaf', 'border_leaf']
+    tags: [ 'evpn', 'l3-instance' ]
+
+  # ===========================================
+  # PHASE 8: VRF CONFIGURATION
+  # ===========================================
+  - name: Configure VRFs for Multi-Tenancy
+    cisco.nxos.nxos_config:
+      lines:
+      - "vrf context {{ item.vrf_name }}"
+      - " vni {{ item.l3_vni }}"
+      - " rd {{ bgp_router_id }}:{{ item.l3_vni }}"
+      - " address-family ipv4 unicast"
+      - "  route-target import {{ evpn_route_target | default(bgp_asn) }}:{{ item.l3_vni }}"
+      - "  route-target export {{ evpn_route_target | default(bgp_asn) }}:{{ item.l3_vni }}"
+      - " address-family ipv6 unicast"
+      - "  route-target import {{ evpn_route_target | default(bgp_asn) }}:{{ item.l3_vni }}"
+      - "  route-target export {{ evpn_route_target | default(bgp_asn) }}:{{ item.l3_vni }}"
+      parents: []
+    loop: "{{ evpn_l3_vnis | default([]) }}"
+    when: device_role in ['leaf', 'border_leaf']
+    tags: [ 'vrf', 'l3-vni' ]
+
+  - name: Configure VRF SVIs with Anycast Gateway
+    cisco.nxos.nxos_config:
+      lines:
+      - "interface Vlan{{ item.vlan_id }}"
+      - " no shutdown"
+      - " vrf member {{ item.vrf_name | default('default') }}"
+      - " ip address {{ item.anycast_gateway }}"
+      - " fabric forwarding mode anycast-gateway"
+      parents: []
+    loop: "{{ vxlan_l2_vnis | default([]) }}"
+    when:
+    - device_role in ['leaf', 'border_leaf']
+    - item.anycast_gateway is defined
+    tags: [ 'vrf', 'svi' ]
+
+  # ===========================================
+  # PHASE 9: EVPN MULTIHOMING CONFIGURATION
+  # ===========================================
+  - name: Configure Ethernet Segments for Multihoming
+    cisco.nxos.nxos_config:
+      lines:
+      - "interface {{ item.interface }}"
+      - " evpn ethernet-segment {{ item.esi_id }}"
+      - "  identifier type 0 {{ item.esi_value }}"
+      - "  redundancy {{ item.redundancy_mode }}"
+      - "  df-election-wait-time {{ item.df_wait_time | default('3') }}"
+      parents: []
+    loop: "{{ evpn_ethernet_segments | default([]) }}"
+    when:
+    - device_role in ['leaf', 'border_leaf']
+    - evpn_multihoming_enabled | default(false)
+    tags: [ 'evpn', 'multihoming' ]
+
+  # ===========================================
+  # PHASE 10: BFD CONFIGURATION
+  # ===========================================
+  - name: Configure BFD Global Settings
+    cisco.nxos.nxos_config:
+      lines:
+      - "bfd interval {{ bfd_interval | default('250') }} min_rx {{ bfd_min_rx | default('250') }} multiplier {{ bfd_multiplier | default('3') }}"
+      parents: []
+    tags: [ 'bfd', 'global' ]
+
+  - name: Enable BFD on Fabric Interfaces
+    cisco.nxos.nxos_config:
+      lines:
+      - "interface {{ item.interface }}"
+      - " bfd"
+      - " bfd interval {{ bfd_interval | default('250') }} min_rx {{ bfd_min_rx | default('250') }} multiplier {{ bfd_multiplier | default('3') }}"
+      parents: []
+    loop: "{{ bfd_enabled_interfaces | default([]) }}"
+    tags: [ 'bfd', 'interfaces' ]
+
+  # ===========================================
+  # PHASE 11: PIM CONFIGURATION FOR MULTICAST
+  # ===========================================
+  - name: Configure PIM for VXLAN Multicast
+    cisco.nxos.nxos_config:
+      lines:
+      - "ip pim rp-address {{ pim_rp_address | default('10.255.255.1') }} group-list {{ pim_group_list | default('224.0.0.0/4') }}"
+      - "ip pim ssm range {{ pim_ssm_range | default('232.0.0.0/8') }}"
+      parents: []
+    when:
+    - device_role in ['spine', 'leaf', 'border_leaf']
+    - vxlan_multicast_enabled | default(false)
+    tags: [ 'pim', 'multicast' ]
+
+  - name: Enable PIM on Fabric Interfaces
+    cisco.nxos.nxos_config:
+      lines:
+      - "interface {{ item.interface }}"
+      - " ip pim sparse-mode"
+      parents: []
+    loop: "{{ fabric_interfaces | default([]) }}"
+    when: vxlan_multicast_enabled | default(false)
+    tags: [ 'pim', 'interfaces' ]
+
+  # ===========================================
+  # PHASE 12: QOS CONFIGURATION
+  # ===========================================
+  - name: Configure QoS Policies for VXLAN
+    cisco.nxos.nxos_config:
+      lines:
+      - "policy-map type qos {{ item.policy_name }}"
+      - " class class-default"
+      - "  set dscp {{ item.dscp_marking | default('0') }}"
+      - "  police cir {{ item.bandwidth | default('1000000') }} bc {{ item.burst | default('200000') }}"
+      parents: []
+    loop: "{{ vxlan_qos_policies | default([]) }}"
+    tags: [ 'qos', 'policies' ]
+
+  - name: Apply QoS Policies to Interfaces
+    cisco.nxos.nxos_config:
+      lines:
+      - "interface {{ item.interface }}"
+      - " service-policy type qos output {{ item.policy_name }}"
+      parents: []
+    loop: "{{ vxlan_qos_interfaces | default([]) }}"
+    tags: [ 'qos', 'interface' ]
+
+  # ===========================================
+  # PHASE 13: MONITORING AND LOGGING
+  # ===========================================
+  - name: Configure EVPN and VXLAN Monitoring
+    cisco.nxos.nxos_config:
+      lines:
+      - "logging level bgp 6"
+      - "logging level l2fm 6"
+      - "logging level vxlan 6"
+      - "snmp-server enable traps bgp"
+      - "snmp-server enable traps vxlan"
+      - "snmp-server enable traps l2fm"
+      parents: []
+    tags: [ 'monitoring', 'logging' ]
+
+  - name: Configure Event Manager for EVPN Events
+    cisco.nxos.nxos_config:
+      lines:
+      - "event manager applet {{ item.name }}"
+      - " event syslog pattern \"{{ item.trigger }}\""
+      - " action 1.0 syslog msg \"{{ item.action }}\""
+      - " action 2.0 event-default"
+      parents: []
+    loop: "{{ evpn_monitoring.event_manager | default([]) }}"
+    tags: [ 'monitoring', 'events' ]
+
+  # ===========================================
+  # PHASE 14: SAVE CONFIGURATION
+  # ===========================================
+  - name: Save Configuration
+    cisco.nxos.nxos_config:
+      save_when: changed
+    tags: [ 'save' ]
+
+  # ===========================================
+  # PHASE 15: VERIFICATION COMMANDS
+  # ===========================================
+  - name: Verify BGP Underlay Status
+    cisco.nxos.nxos_command:
+      commands:
+      - "show bgp ipv4 unicast summary"
+      - "show bgp neighbors"
+      - "show ip route bgp"
+      - "show bfd neighbors"
+    register: bgp_underlay_status
+    tags: [ 'verify', 'underlay' ]
+
+  - name: Verify EVPN Overlay Status
+    cisco.nxos.nxos_command:
+      commands:
+      - "show bgp l2vpn evpn summary"
+      - "show bgp l2vpn evpn"
+      - "show evpn instance"
+      - "show evpn ethernet-segment"
+    register: evpn_overlay_status
+    when: device_role in ['spine', 'leaf', 'border_leaf']
+    tags: [ 'verify', 'evpn' ]
+
+  - name: Verify VXLAN Status
+    cisco.nxos.nxos_command:
+      commands:
+      - "show nve interface nve1"
+      - "show nve vni"
+      - "show nve peers"
+      - "show fabric forwarding"
+    register: vxlan_status
+    when: device_role in ['leaf', 'border_leaf']
+    tags: [ 'verify', 'vxlan' ]
+
+  - name: Verify EVPN MAC and ARP Tables
+    cisco.nxos.nxos_command:
+      commands:
+      - "show l2route evpn mac all"
+      - "show l2route evpn mac-ip all"
+      - "show ip arp suppression-cache detail"
+      - "show mac address-table"
+    register: evpn_tables_status
+    when: device_role in ['leaf', 'border_leaf']
+    tags: [ 'verify', 'tables' ]
+
+  # ===========================================
+  # PHASE 16: COMPREHENSIVE STATUS REPORT
+  # ===========================================
+  - name: Display Comprehensive EVPN-VXLAN Status Report
+    ansible.builtin.debug:
+      msg: |
+        ========================================================
+        CISCO NEXUS EVPN-VXLAN FABRIC DEPLOYMENT REPORT
+        ========================================================
+        Device: {{ inventory_hostname }}
+        Role: {{ device_role }}
+        BGP ASN: {{ bgp_asn }}
+        Router ID: {{ bgp_router_id | default(loopback0_ip.split('/')[0]) }}
+
+        === BGP UNDERLAY STATUS ===
+        {% if bgp_underlay_status is defined and bgp_underlay_status.stdout is defined %}
+        BGP IPv4 Unicast Summary:
+        {{ bgp_underlay_status.stdout[0] | default('BGP not configured') }}
+
+        BGP Neighbor Details:
+        {{ bgp_underlay_status.stdout[1] | default('No BGP neighbors') }}
+
+        BGP Routes:
+        {{ bgp_underlay_status.stdout[2] | default('No BGP routes') }}
+
+        BFD Neighbors:
+        {{ bgp_underlay_status.stdout[3] | default('BFD not configured') }}
+        {% endif %}
+
+        {% if evpn_overlay_status is defined and evpn_overlay_status.stdout is defined %}
+        === EVPN OVERLAY STATUS ===
+        BGP L2VPN EVPN Summary:
+        {{ evpn_overlay_status.stdout[0] | default('EVPN not configured') }}
+
+        EVPN Routes:
+        {{ evpn_overlay_status.stdout[1] | default('No EVPN routes') }}
+
+        EVPN Instances:
+        {{ evpn_overlay_status.stdout[2] | default('No EVPN instances') }}
+
+        Ethernet Segments:
+        {{ evpn_overlay_status.stdout[3] | default('No Ethernet Segments') }}
+        {% endif %}
+
+        {% if vxlan_status is defined and vxlan_status.stdout is defined %}
+        === VXLAN STATUS ===
+        NVE Interface Status:
+        {{ vxlan_status.stdout[0] | default('VXLAN not configured') }}
+
+        VNI Status:
+        {{ vxlan_status.stdout[1] | default('No VNIs configured') }}
+
+        VXLAN Peers:
+        {{ vxlan_status.stdout[2] | default('No VXLAN peers') }}
+
+        Fabric Forwarding:
+        {{ vxlan_status.stdout[3] | default('No fabric forwarding entries') }}
+        {% endif %}
+
+        {% if evpn_tables_status is defined and evpn_tables_status.stdout is defined %}
+        === EVPN TABLES STATUS ===
+        EVPN MAC Routes:
+        {{ evpn_tables_status.stdout[0] | default('No EVPN MAC routes') }}
+
+        EVPN MAC-IP Routes:
+        {{ evpn_tables_status.stdout[1] | default('No EVPN MAC-IP routes') }}
+
+        ARP Suppression Cache:
+        {{ evpn_tables_status.stdout[2] | default('No ARP suppression entries') }}
+
+        MAC Address Table:
+        {{ evpn_tables_status.stdout[3] | default('No MAC entries') }}
+        {% endif %}
+
+        ========================================================
+        DEPLOYMENT STATUS: {{ 'SUCCESS' if ansible_failed_result is not defined else 'FAILED' }}
+        TIMESTAMP: {{ ansible_date_time.iso8601 | default('Unknown') }}
+        ========================================================
+    tags: [ 'verify', 'report' ]

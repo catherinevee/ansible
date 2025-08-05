@@ -1,0 +1,865 @@
+---
+# Juniper ACX Metro Ethernet Aggregation Platform Configuration
+# Supports: ACX1000, ACX2000, ACX4000, ACX5000, ACX5048, ACX5096
+# Features: Metro Ethernet, L2VPN, MEF Services, OAM, SLA, Carrier Ethernet
+
+- name: Deploy Juniper ACX Metro Ethernet Configuration
+  hosts: juniper_acx
+  gather_facts: false
+  connection: netconf
+  vars:
+    ansible_network_os: junos
+    ansible_user: "{{ vault_juniper_username }}"
+    ansible_password: "{{ vault_juniper_password }}"
+    timeout: 600
+
+  tasks:
+  # Phase 1: Metro Ethernet System Configuration
+  - name: "Phase 1: Configure Metro Ethernet System Settings"
+    block:
+    - name: Configure system settings for metro ethernet
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set system host-name {{ juniper_acx_config.hostname }}"
+        - "set system domain-name {{ juniper_acx_config.domain_name }}"
+        - "set system time-zone {{ juniper_acx_config.timezone }}"
+        - "set system root-authentication encrypted-password {{ vault_juniper_root_password }}"
+        - "set system login message '{{ juniper_acx_config.login_banner }}'"
+        - "set system services ssh root-login allow"
+        - "set system services ssh protocol-version v2"
+        - "set system services netconf ssh"
+        - "set system services netconf rfc-compliant"
+        comment: "Metro ethernet system configuration"
+      no_log: true
+      tags: [ system, metro_ethernet ]
+
+    - name: Configure metro ethernet chassis settings
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set chassis aggregated-devices ethernet device-count {{ juniper_acx_config.ae_device_count | default(128) }}"
+        - "set chassis network-services ethernet-switching"
+        - "set chassis pic {{ item.pic_slot }} tunnel-services bandwidth {{ item.tunnel_bandwidth }}"
+        comment: "Metro ethernet chassis configuration"
+      loop: "{{ juniper_acx_config.tunnel_services_pics }}"
+      when: juniper_acx_config.tunnel_services_pics is defined
+      tags: [ chassis, tunnel_services ]
+
+    - name: Configure LLDP for metro ethernet discovery
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set protocols lldp interface {{ item }}"
+        - "set protocols lldp-med interface {{ item }}"
+        comment: "LLDP metro ethernet discovery"
+      loop: "{{ juniper_acx_config.lldp_interfaces }}"
+      when: juniper_acx_config.lldp_interfaces is defined
+      tags: [ lldp, discovery ]
+
+  # Phase 2: Metro Ethernet Interface Configuration
+  - name: "Phase 2: Configure Metro Ethernet Interfaces"
+    block:
+    - name: Configure uplink interfaces to provider network
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set interfaces {{ item.interface }} description '{{ item.description }}'"
+        - "set interfaces {{ item.interface }} mtu {{ item.mtu | default(9216) }}"
+        - "set interfaces {{ item.interface }} unit {{ item.unit | default(0) }} family inet address {{ item.ipv4_address }}/{{ item.ipv4_prefix }}"
+        - "set interfaces {{ item.interface }} unit {{ item.unit | default(0) }} family inet6 address {{ item.ipv6_address }}/{{ item.ipv6_prefix }}"
+        - "set interfaces {{ item.interface }} unit {{ item.unit | default(0) }} family mpls"
+        comment: "Provider uplink interface configuration"
+      loop: "{{ juniper_acx_config.uplink_interfaces }}"
+      when: juniper_acx_config.uplink_interfaces is defined
+      tags: [ interfaces, uplinks ]
+
+    - name: Configure metro ethernet access interfaces
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set interfaces {{ item.interface }} description '{{ item.description }}'"
+        - "set interfaces {{ item.interface }} mtu {{ item.mtu | default(9216) }}"
+        - "set interfaces {{ item.interface }} flexible-vlan-tagging"
+        - "set interfaces {{ item.interface }} encapsulation flexible-ethernet-services"
+        - "set interfaces {{ item.interface }} speed {{ item.speed | default('auto') }}"
+        - "set interfaces {{ item.interface }} link-mode {{ item.link_mode | default('full-duplex') }}"
+        comment: "Metro ethernet access interface configuration"
+      loop: "{{ juniper_acx_config.access_interfaces }}"
+      when: juniper_acx_config.access_interfaces is defined
+      tags: [ interfaces, access ]
+
+    - name: Configure aggregated ethernet for metro redundancy
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set interfaces {{ item.ae_interface }} description '{{ item.description }}'"
+        - "set interfaces {{ item.ae_interface }} mtu {{ item.mtu | default(9216) }}"
+        - "set interfaces {{ item.ae_interface }} aggregated-ether-options lacp {{ item.lacp_mode | default('active') }}"
+        - "set interfaces {{ item.ae_interface }} aggregated-ether-options lacp periodic {{ item.lacp_periodic | default('fast') }}"
+        - "set interfaces {{ item.ae_interface }} aggregated-ether-options minimum-links {{ item.minimum_links | default(1) }}"
+        - "set interfaces {{ item.ae_interface }} aggregated-ether-options link-speed {{ item.link_speed | default('10g') }}"
+        comment: "Metro ethernet AE configuration"
+      loop: "{{ juniper_acx_config.metro_ae_interfaces }}"
+      when: juniper_acx_config.metro_ae_interfaces is defined
+      tags: [ interfaces, ae, metro ]
+
+    - name: Configure AE member interfaces for metro redundancy
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set interfaces {{ item.1 }} gigether-options 802.3ad {{ item.0.ae_interface }}"
+        - "set interfaces {{ item.1 }} description 'Metro AE Member of {{ item.0.ae_interface }}'"
+        comment: "Metro AE member configuration"
+      loop: "{{ juniper_acx_config.metro_ae_interfaces | subelements('member_interfaces') }}"
+      when: juniper_acx_config.metro_ae_interfaces is defined
+      tags: [ interfaces, ae_members, metro ]
+
+  # Phase 3: Metro Ethernet Services and L2VPN
+  - name: "Phase 3: Configure Metro Ethernet Services"
+    block:
+    - name: Configure E-Line services (Point-to-Point)
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set interfaces {{ item.interface_a }} unit {{ item.unit_a }} description '{{ item.description_a }}'"
+        - "set interfaces {{ item.interface_a }} unit {{ item.unit_a }} encapsulation vlan-ccc"
+        - "set interfaces {{ item.interface_a }} unit {{ item.unit_a }} vlan-id {{ item.vlan_id_a }}"
+        - "set interfaces {{ item.interface_b }} unit {{ item.unit_b }} description '{{ item.description_b }}'"
+        - "set interfaces {{ item.interface_b }} unit {{ item.unit_b }} encapsulation vlan-ccc"
+        - "set interfaces {{ item.interface_b }} unit {{ item.unit_b }} vlan-id {{ item.vlan_id_b }}"
+        - "set protocols l2circuit neighbor {{ item.remote_pe }} interface {{ item.interface_a }}.{{ item.unit_a }} virtual-circuit-id {{ item.vc_id }}"
+        - "set protocols l2circuit neighbor {{ item.remote_pe }} interface {{ item.interface_a }}.{{ item.unit_a }} mtu {{ item.mtu | default(1518) }}"
+        comment: "E-Line service configuration"
+      loop: "{{ juniper_acx_config.eline_services }}"
+      when: juniper_acx_config.eline_services is defined
+      tags: [ metro_services, eline, l2vpn ]
+
+    - name: Configure E-LAN services (Multipoint-to-Multipoint)
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set routing-instances {{ item.elan_name }} instance-type l2vpn"
+        - "set routing-instances {{ item.elan_name }} interface {{ interface_unit }}"
+        - "set routing-instances {{ item.elan_name }} route-distinguisher {{ item.rd }}"
+        - "set routing-instances {{ item.elan_name }} vrf-target target:{{ item.rt_import }}"
+        - "set routing-instances {{ item.elan_name }} vrf-target target:{{ item.rt_export }}"
+        - "set routing-instances {{ item.elan_name }} protocols l2vpn encapsulation-type {{ item.encapsulation | default('ethernet') }}"
+        comment: "E-LAN service configuration"
+      loop: "{{ juniper_acx_config.elan_services | subelements('interfaces') }}"
+      loop_control:
+        loop_var: interface_unit
+      when: juniper_acx_config.elan_services is defined
+      tags: [ metro_services, elan, l2vpn ]
+
+    - name: Configure E-Tree services (Root-Leaf)
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set routing-instances {{ item.etree_name }} instance-type l2vpn"
+        - "set routing-instances {{ item.etree_name }} interface {{ item.root_interface }}"
+        - "set routing-instances {{ item.etree_name }} interface {{ leaf_interface }}"
+        - "set routing-instances {{ item.etree_name }} route-distinguisher {{ item.rd }}"
+        - "set routing-instances {{ item.etree_name }} vrf-target target:{{ item.rt_import }}"
+        - "set routing-instances {{ item.etree_name }} vrf-target target:{{ item.rt_export }}"
+        - "set routing-instances {{ item.etree_name }} protocols l2vpn site {{ item.root_site }} site-identifier {{ item.root_site_id }}"
+        - "set routing-instances {{ item.etree_name }} protocols l2vpn site {{ item.root_site }} interface {{ item.root_interface }} remote-site-id {{ leaf_site.site_id }}"
+        comment: "E-Tree service configuration"
+      loop: "{{ juniper_acx_config.etree_services | subelements('leaf_sites') }}"
+      loop_control:
+        loop_var: leaf_site
+      when: juniper_acx_config.etree_services is defined
+      tags: [ metro_services, etree, l2vpn ]
+
+    - name: Configure advanced EVPN instances with multihoming
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set routing-instances {{ item.evpn_name }} instance-type evpn"
+        - "set routing-instances {{ item.evpn_name }} vlan-id {{ item.vlan_id }}"
+        - "set routing-instances {{ item.evpn_name }} interface {{ item.interface }}"
+        - "set routing-instances {{ item.evpn_name }} route-distinguisher {{ item.rd }}"
+        - "set routing-instances {{ item.evpn_name }} vrf-target target:{{ item.rt_import }}"
+        - "set routing-instances {{ item.evpn_name }} vrf-target target:{{ item.rt_export }}"
+        - "set routing-instances {{ item.evpn_name }} protocols evpn"
+        - "set routing-instances {{ item.evpn_name }} protocols evpn encapsulation {{ item.encapsulation | default('vxlan') }}"
+        - "set routing-instances {{ item.evpn_name }} protocols evpn extended-vni-list {{ item.vni_list | join(' ') }}"
+        comment: "Advanced EVPN instance configuration"
+      loop: "{{ juniper_acx_config.advanced_evpn_instances }}"
+      when: juniper_acx_config.advanced_evpn_instances is defined
+      tags: [ metro_services, evpn, advanced ]
+
+    - name: Configure EVPN multihoming with Ethernet Segment Identifiers
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set routing-instances {{ item.evpn_name }} protocols evpn ethernet-segment {{ item.esi_name }} identifier {{ item.esi_id }}"
+        - "set routing-instances {{ item.evpn_name }} protocols evpn ethernet-segment {{ item.esi_name }} df-election-type {{ item.df_election | default('preference') }}"
+        - "set routing-instances {{ item.evpn_name }} protocols evpn ethernet-segment {{ item.esi_name }} preference {{ item.df_preference | default(100) }}"
+        - "set routing-instances {{ item.evpn_name }} protocols evpn ethernet-segment {{ item.esi_name }} backup-forwarder-election hold-time {{ item.backup_hold_time | default(30) }}"
+        - "set routing-instances {{ item.evpn_name }} protocols evpn ethernet-segment {{ item.esi_name }} interface {{ item.interface }}"
+        comment: "EVPN multihoming ESI configuration"
+      loop: "{{ juniper_acx_config.evpn_multihoming_advanced }}"
+      when: juniper_acx_config.evpn_multihoming_advanced is defined
+      tags: [ metro_services, evpn, multihoming, esi ]
+
+    - name: Configure EVPN MAC mobility and learning
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set routing-instances {{ item.evpn_name }} protocols evpn mac-table-size {{ item.mac_table_size | default(32768) }}"
+        - "set routing-instances {{ item.evpn_name }} protocols evpn mac-table-aging-time {{ item.mac_aging_time | default(300) }}"
+        - "set routing-instances {{ item.evpn_name }} protocols evpn duplicate-mac-detection window {{ item.dup_mac_window | default(180) }}"
+        - "set routing-instances {{ item.evpn_name }} protocols evpn duplicate-mac-detection threshold {{ item.dup_mac_threshold | default(5) }}"
+        - "set routing-instances {{ item.evpn_name }} protocols evpn mac-ip-advertisement {{ item.mac_ip_adv | default('enable') }}"
+        comment: "EVPN MAC mobility configuration"
+      loop: "{{ juniper_acx_config.evpn_mac_mobility }}"
+      when: juniper_acx_config.evpn_mac_mobility is defined
+      tags: [ metro_services, evpn, mac_mobility ]
+
+    - name: Configure EVPN VXLAN tunnel endpoints
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set routing-instances {{ item.evpn_name }} vtep source-interface {{ item.source_interface }}"
+        - "set routing-instances {{ item.evpn_name }} vtep remote-vtep-list {{ item.remote_vteps | join(' ') }}"
+        - "set routing-instances {{ item.evpn_name }} vtep vni {{ item.vni }}"
+        - "set routing-instances {{ item.evpn_name }} vtep vni {{ item.vni }} vrf-target target:{{ item.vni_rt }}"
+        comment: "EVPN VXLAN VTEP configuration"
+      loop: "{{ juniper_acx_config.evpn_vxlan_vteps }}"
+      when: juniper_acx_config.evpn_vxlan_vteps is defined
+      tags: [ metro_services, evpn, vxlan, vtep ]
+
+    - name: Configure customer interfaces for metro services
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set interfaces {{ item.interface }} unit {{ item.unit }} description '{{ item.description }}'"
+        - "set interfaces {{ item.interface }} unit {{ item.unit }} vlan-id {{ item.vlan_id }}"
+        - "set interfaces {{ item.interface }} unit {{ item.unit }} family bridge interface-mode {{ item.interface_mode | default('access') }}"
+        - "set interfaces {{ item.interface }} unit {{ item.unit }} family bridge vlan-id {{ item.bridge_vlan_id | default(item.vlan_id) }}"
+        comment: "Metro service customer interface configuration"
+      loop: "{{ juniper_acx_config.metro_customer_interfaces }}"
+      when: juniper_acx_config.metro_customer_interfaces is defined
+      tags: [ interfaces, customer, metro_services ]
+
+  # Phase 4: eBGP and EVPN Configuration
+  - name: "Phase 4: Configure eBGP and Advanced EVPN Services"
+    block:
+    - name: Configure eBGP global settings for metro aggregation
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set routing-options router-id {{ juniper_acx_config.router_id }}"
+        - "set routing-options autonomous-system {{ juniper_acx_config.local_asn }}"
+        - "set protocols bgp log-updown"
+        - "set protocols bgp graceful-restart"
+        - "set protocols bgp graceful-restart restart-time {{ juniper_acx_config.bgp_graceful_restart_time | default(120) }}"
+        - "set protocols bgp graceful-restart stale-routes-time {{ juniper_acx_config.bgp_stale_routes_time | default(300) }}"
+        comment: "eBGP global configuration for metro"
+      when:
+      - juniper_acx_config.router_id is defined
+      - juniper_acx_config.local_asn is defined
+      tags: [ bgp, ebgp, global ]
+
+    - name: Configure eBGP peer groups for different service types
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set protocols bgp group {{ item.group_name }} type {{ item.group_type }}"
+        - "set protocols bgp group {{ item.group_name }} peer-as {{ item.peer_as }}"
+        - "set protocols bgp group {{ item.group_name }} local-as {{ item.local_as | default(juniper_acx_config.local_asn) }}"
+        - "set protocols bgp group {{ item.group_name }} import {{ item.import_policy }}"
+        - "set protocols bgp group {{ item.group_name }} export {{ item.export_policy }}"
+        - "set protocols bgp group {{ item.group_name }} hold-time {{ item.hold_time | default(90) }}"
+        - "set protocols bgp group {{ item.group_name }} keepalive {{ item.keepalive | default(30) }}"
+        - "set protocols bgp group {{ item.group_name }} authentication-key {{ item.auth_key }}"
+        comment: "eBGP peer group configuration"
+      loop: "{{ juniper_acx_config.ebgp_peer_groups }}"
+      when: juniper_acx_config.ebgp_peer_groups is defined
+      no_log: true
+      tags: [ bgp, ebgp, peer_groups ]
+
+    - name: Configure eBGP address families for metro services
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set protocols bgp group {{ item.group_name }} family inet unicast"
+        - "set protocols bgp group {{ item.group_name }} family inet6 unicast"
+        - "set protocols bgp group {{ item.group_name }} family l2vpn signaling"
+        - "set protocols bgp group {{ item.group_name }} family evpn signaling"
+        - "set protocols bgp group {{ item.group_name }} family inet-vpn unicast"
+        - "set protocols bgp group {{ item.group_name }} family route-target"
+        comment: "eBGP address family configuration"
+      loop: "{{ juniper_acx_config.ebgp_address_families }}"
+      when: juniper_acx_config.ebgp_address_families is defined
+      tags: [ bgp, ebgp, address_families ]
+
+    - name: Configure eBGP neighbors with advanced options
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set protocols bgp group {{ item.group_name }} neighbor {{ item.neighbor_ip }} description '{{ item.description }}'"
+        - "set protocols bgp group {{ item.group_name }} neighbor {{ item.neighbor_ip }} peer-as {{ item.peer_as }}"
+        - "set protocols bgp group {{ item.group_name }} neighbor {{ item.neighbor_ip }} local-address {{ item.local_address }}"
+        - "set protocols bgp group {{ item.group_name }} neighbor {{ item.neighbor_ip }} multihop ttl {{ item.multihop_ttl | default(1) }}"
+        - "set protocols bgp group {{ item.group_name }} neighbor {{ item.neighbor_ip }} bfd-liveness-detection minimum-interval {{ item.bfd_interval | default(300) }}"
+        - "set protocols bgp group {{ item.group_name }} neighbor {{ item.neighbor_ip }} bfd-liveness-detection multiplier {{ item.bfd_multiplier | default(3) }}"
+        - "set protocols bgp group {{ item.group_name }} neighbor {{ item.neighbor_ip }} as-override"
+        comment: "eBGP neighbor configuration with BFD"
+      loop: "{{ juniper_acx_config.ebgp_neighbors }}"
+      when: juniper_acx_config.ebgp_neighbors is defined
+      tags: [ bgp, ebgp, neighbors, bfd ]
+
+    - name: Configure eBGP route policies for metro services
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set policy-options policy-statement {{ item.0.policy_name }} term {{ item.1.term_name }} from protocol {{ item.1.from.protocol | default('bgp') }}"
+        - "set policy-options policy-statement {{ item.0.policy_name }} term {{ item.1.term_name }} from neighbor {{ item.1.from.neighbor }}"
+        - "set policy-options policy-statement {{ item.0.policy_name }} term {{ item.1.term_name }} from as-path {{ item.1.from.as_path }}"
+        - "set policy-options policy-statement {{ item.0.policy_name }} term {{ item.1.term_name }} from community {{ item.1.from.community }}"
+        - "set policy-options policy-statement {{ item.0.policy_name }} term {{ item.1.term_name }} from route-filter {{ item.1.from.route_filter }} {{ item.1.from.filter_type }}"
+        - "set policy-options policy-statement {{ item.0.policy_name }} term {{ item.1.term_name }} then {{ item.1.then.action }}"
+        - "set policy-options policy-statement {{ item.0.policy_name }} term {{ item.1.term_name }} then community {{ item.1.then.community_action }} {{ item.1.then.community_name }}"
+        - "set policy-options policy-statement {{ item.0.policy_name }} term {{ item.1.term_name }} then local-preference {{ item.1.then.local_preference | default(omit) }}"
+        - "set policy-options policy-statement {{ item.0.policy_name }} term {{ item.1.term_name }} then med {{ item.1.then.med | default(omit) }}"
+        comment: "eBGP route policy configuration"
+      loop: "{{ juniper_acx_config.ebgp_route_policies | subelements('terms') }}"
+      when: juniper_acx_config.ebgp_route_policies is defined
+      tags: [ bgp, ebgp, policies, routing ]
+
+    - name: Configure AS-Path regular expressions for eBGP filtering
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set policy-options as-path {{ item.as_path_name }} '{{ item.as_path_regex }}'"
+        comment: "AS-Path regex configuration"
+      loop: "{{ juniper_acx_config.ebgp_as_paths }}"
+      when: juniper_acx_config.ebgp_as_paths is defined
+      tags: [ bgp, ebgp, as_paths ]
+
+    - name: Configure BGP communities for metro service identification
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set policy-options community {{ item.name }} members {{ item.members | join(' ') }}"
+        comment: "BGP community configuration for metro"
+      loop: "{{ juniper_acx_config.ebgp_communities }}"
+      when: juniper_acx_config.ebgp_communities is defined
+      tags: [ bgp, ebgp, communities ]
+
+  # Phase 5: MEF Service Configuration
+  - name: "Phase 5: Configure MEF Services and UNI/NNI"
+    block:
+    - name: Configure UNI (User Network Interface) parameters
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set interfaces {{ item.interface }} unit {{ item.unit }} family bridge interface-mode {{ item.interface_mode }}"
+        - "set interfaces {{ item.interface }} unit {{ item.unit }} family bridge vlan-id-list {{ item.vlan_id_list | join(' ') }}"
+        - "set class-of-service interfaces {{ item.interface }} unit {{ item.unit }} scheduler-map {{ item.scheduler_map }}"
+        - "set class-of-service interfaces {{ item.interface }} unit {{ item.unit }} classifiers exp {{ item.exp_classifier }}"
+        comment: "MEF UNI configuration"
+      loop: "{{ juniper_acx_config.mef_uni_interfaces }}"
+      when: juniper_acx_config.mef_uni_interfaces is defined
+      tags: [ mef, uni, interfaces ]
+
+    - name: Configure NNI (Network-to-Network Interface) parameters
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set interfaces {{ item.interface }} unit {{ item.unit }} family bridge interface-mode trunk"
+        - "set interfaces {{ item.interface }} unit {{ item.unit }} family bridge vlan-id-list {{ item.vlan_id_list | join(' ') }}"
+        - "set interfaces {{ item.interface }} unit {{ item.unit }} family mpls"
+        - "set class-of-service interfaces {{ item.interface }} unit {{ item.unit }} scheduler-map {{ item.scheduler_map }}"
+        comment: "MEF NNI configuration"
+      loop: "{{ juniper_acx_config.mef_nni_interfaces }}"
+      when: juniper_acx_config.mef_nni_interfaces is defined
+      tags: [ mef, nni, interfaces ]
+
+    - name: Configure MEF bandwidth profiles
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set class-of-service traffic-control-profiles {{ item.profile_name }} guaranteed-rate {{ item.cir }}"
+        - "set class-of-service traffic-control-profiles {{ item.profile_name }} shaping-rate {{ item.eir }}"
+        - "set class-of-service traffic-control-profiles {{ item.profile_name }} burst-size {{ item.cbs }}"
+        - "set class-of-service traffic-control-profiles {{ item.profile_name }} excess-burst-size {{ item.ebs }}"
+        comment: "MEF bandwidth profile configuration"
+      loop: "{{ juniper_acx_config.mef_bandwidth_profiles }}"
+      when: juniper_acx_config.mef_bandwidth_profiles is defined
+      tags: [ mef, bandwidth_profiles, qos ]
+
+    - name: Configure MEF service level agreements
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set class-of-service forwarding-classes class {{ item.cos_class }} queue-num {{ item.queue_num }}"
+        - "set class-of-service forwarding-classes class {{ item.cos_class }} priority {{ item.priority }}"
+        - "set class-of-service schedulers {{ item.scheduler_name }} transmit-rate {{ item.transmit_rate }}"
+        - "set class-of-service schedulers {{ item.scheduler_name }} buffer-size {{ item.buffer_size }}"
+        - "set class-of-service schedulers {{ item.scheduler_name }} priority {{ item.priority }}"
+        comment: "MEF SLA configuration"
+      loop: "{{ juniper_acx_config.mef_sla_profiles }}"
+      when: juniper_acx_config.mef_sla_profiles is defined
+      tags: [ mef, sla, qos ]
+
+  # Phase 6: Ethernet OAM Configuration
+  - name: "Phase 6: Configure Ethernet OAM and Service Monitoring"
+    block:
+    - name: Configure CFM (Connectivity Fault Management)
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set protocols oam ethernet connectivity-fault-management maintenance-domain {{ item.md_name }} level {{ item.md_level }}"
+        - "set protocols oam ethernet connectivity-fault-management maintenance-domain {{ item.md_name }} maintenance-association {{ item.ma_name }} continuity-check interval {{ item.cci_interval | default('1s') }}"
+        - "set protocols oam ethernet connectivity-fault-management maintenance-domain {{ item.md_name }} maintenance-association {{ item.ma_name }} continuity-check loss-threshold {{ item.loss_threshold | default(3) }}"
+        - "set protocols oam ethernet connectivity-fault-management maintenance-domain {{ item.md_name }} maintenance-association {{ item.ma_name }} mep {{ item.mep_id }} interface {{ item.interface }}"
+        - "set protocols oam ethernet connectivity-fault-management maintenance-domain {{ item.md_name }} maintenance-association {{ item.ma_name }} mep {{ item.mep_id }} direction {{ item.direction | default('up') }}"
+        comment: "CFM OAM configuration"
+      loop: "{{ juniper_acx_config.cfm_domains }}"
+      when: juniper_acx_config.cfm_domains is defined
+      tags: [ oam, cfm, monitoring ]
+
+    - name: Configure LFM (Link Fault Management)
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set protocols oam ethernet link-fault-management interface {{ item.interface }}"
+        - "set protocols oam ethernet link-fault-management interface {{ item.interface }} pdu-interval {{ item.pdu_interval | default('1s') }}"
+        - "set protocols oam ethernet link-fault-management interface {{ item.interface }} link-discovery {{ item.link_discovery | default('enable') }}"
+        comment: "LFM OAM configuration"
+      loop: "{{ juniper_acx_config.lfm_interfaces }}"
+      when: juniper_acx_config.lfm_interfaces is defined
+      tags: [ oam, lfm, link_monitoring ]
+
+    - name: Configure performance monitoring
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set services rpm probe {{ item.probe_name }} test {{ item.test_name }} probe-type {{ item.probe_type }}"
+        - "set services rpm probe {{ item.probe_name }} test {{ item.test_name }} target {{ item.target_type }} {{ item.target_address }}"
+        - "set services rpm probe {{ item.probe_name }} test {{ item.test_name }} probe-count {{ item.probe_count | default(15) }}"
+        - "set services rpm probe {{ item.probe_name }} test {{ item.test_name }} probe-interval {{ item.probe_interval | default(1) }}"
+        - "set services rpm probe {{ item.probe_name }} test {{ item.test_name }} test-interval {{ item.test_interval | default(300) }}"
+        - "set services rpm probe {{ item.probe_name }} test {{ item.test_name }} thresholds successive-loss {{ item.loss_threshold | default(5) }}"
+        - "set services rpm probe {{ item.probe_name }} test {{ item.test_name }} history-size {{ item.history_size | default(100) }}"
+        comment: "Performance monitoring configuration"
+      loop: "{{ juniper_acx_config.performance_monitoring }}"
+      when: juniper_acx_config.performance_monitoring is defined
+      tags: [ monitoring, performance, rpm ]
+
+    - name: Configure Y.1731 performance monitoring
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set protocols oam ethernet connectivity-fault-management performance-monitoring measurement-interval {{ item.measurement_interval | default('15-mins') }}"
+        - "set protocols oam ethernet connectivity-fault-management performance-monitoring loss-measurement session {{ item.session_name }} measurement-type {{ item.measurement_type }}"
+        - "set protocols oam ethernet connectivity-fault-management performance-monitoring loss-measurement session {{ item.session_name }} source-mep {{ item.source_mep }}"
+        - "set protocols oam ethernet connectivity-fault-management performance-monitoring loss-measurement session {{ item.session_name }} destination-mep {{ item.destination_mep }}"
+        - "set protocols oam ethernet connectivity-fault-management performance-monitoring loss-measurement session {{ item.session_name }} priority {{ item.priority | default(0) }}"
+        comment: "Y.1731 performance monitoring configuration"
+      loop: "{{ juniper_acx_config.y1731_performance }}"
+      when: juniper_acx_config.y1731_performance is defined
+      tags: [ oam, y1731, performance ]
+
+  # Phase 7: Metro Ethernet QoS and Traffic Engineering
+  - name: "Phase 7: Configure Metro Ethernet QoS"
+    block:
+    - name: Configure metro ethernet forwarding classes
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set class-of-service forwarding-classes class {{ item.name }} queue-num {{ item.queue_num }}"
+        - "set class-of-service forwarding-classes class {{ item.name }} priority {{ item.priority }}"
+        - "set class-of-service forwarding-classes class {{ item.name }} policing-priority {{ item.policing_priority }}"
+        comment: "Metro ethernet forwarding class configuration"
+      loop: "{{ juniper_acx_config.metro_forwarding_classes }}"
+      when: juniper_acx_config.metro_forwarding_classes is defined
+      tags: [ qos, forwarding_classes, metro ]
+
+    - name: Configure metro ethernet schedulers
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set class-of-service schedulers {{ item.name }} transmit-rate {{ item.transmit_rate }}"
+        - "set class-of-service schedulers {{ item.name }} buffer-size {{ item.buffer_size }}"
+        - "set class-of-service schedulers {{ item.name }} priority {{ item.priority }}"
+        - "set class-of-service schedulers {{ item.name }} excess-priority {{ item.excess_priority }}"
+        - "set class-of-service schedulers {{ item.name }} drop-profile-map loss-priority low protocol-map {{ item.drop_profile_low }}"
+        - "set class-of-service schedulers {{ item.name }} drop-profile-map loss-priority high protocol-map {{ item.drop_profile_high }}"
+        comment: "Metro ethernet scheduler configuration"
+      loop: "{{ juniper_acx_config.metro_schedulers }}"
+      when: juniper_acx_config.metro_schedulers is defined
+      tags: [ qos, schedulers, metro ]
+
+    - name: Configure traffic policing for metro services
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set firewall policer {{ item.policer_name }} if-exceeding bandwidth-limit {{ item.bandwidth_limit }}"
+        - "set firewall policer {{ item.policer_name }} if-exceeding burst-size-limit {{ item.burst_size_limit }}"
+        - "set firewall policer {{ item.policer_name }} then {{ item.exceed_action | default('discard') }}"
+        - "set firewall policer {{ item.policer_name }} then loss-priority {{ item.loss_priority | default('high') }}"
+        comment: "Metro service policing configuration"
+      loop: "{{ juniper_acx_config.metro_policers }}"
+      when: juniper_acx_config.metro_policers is defined
+      tags: [ qos, policing, metro ]
+
+    - name: Configure DSCP and EXP classifiers
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set class-of-service classifiers dscp {{ item.classifier_name }} forwarding-class {{ item.fc_name }} loss-priority {{ item.loss_priority }} code-points {{ item.dscp_values | join(' ') }}"
+        - "set class-of-service classifiers exp {{ item.classifier_name }} forwarding-class {{ item.fc_name }} loss-priority {{ item.loss_priority }} code-points {{ item.exp_values | join(' ') }}"
+        comment: "DSCP/EXP classifier configuration"
+      loop: "{{ juniper_acx_config.qos_classifiers }}"
+      when: juniper_acx_config.qos_classifiers is defined
+      tags: [ qos, classifiers, dscp, exp ]
+
+    - name: Apply QoS to metro ethernet interfaces
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set class-of-service interfaces {{ item.interface }} scheduler-map {{ item.scheduler_map }}"
+        - "set class-of-service interfaces {{ item.interface }} unit {{ item.unit | default('*') }} classifiers dscp {{ item.dscp_classifier }}"
+        - "set class-of-service interfaces {{ item.interface }} unit {{ item.unit | default('*') }} classifiers exp {{ item.exp_classifier }}"
+        - "set class-of-service interfaces {{ item.interface }} unit {{ item.unit | default('*') }} rewrite-rules dscp {{ item.dscp_rewrite }}"
+        - "set class-of-service interfaces {{ item.interface }} unit {{ item.unit | default('*') }} rewrite-rules exp {{ item.exp_rewrite }}"
+        comment: "Metro ethernet interface QoS application"
+      loop: "{{ juniper_acx_config.metro_interface_qos }}"
+      when: juniper_acx_config.metro_interface_qos is defined
+      tags: [ qos, interfaces, metro ]
+
+  # Phase 8: Network Synchronization and Timing
+  - name: "Phase 8: Configure Network Synchronization"
+    block:
+    - name: Configure synchronous ethernet
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set chassis synchronization interfaces {{ item.interface }} priority {{ item.priority }}"
+        - "set chassis synchronization interfaces {{ item.interface }} wait-to-restore {{ item.wait_to_restore | default(300) }}"
+        - "set chassis synchronization interfaces {{ item.interface }} quality-level {{ item.quality_level | default('prc') }}"
+        comment: "Synchronous ethernet configuration"
+      loop: "{{ juniper_acx_config.sync_ethernet_interfaces }}"
+      when: juniper_acx_config.sync_ethernet_interfaces is defined
+      tags: [ synchronization, sync_ethernet, timing ]
+
+    - name: Configure IEEE 1588 PTP
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set protocols ptp slave interface {{ item.interface }}"
+        - "set protocols ptp slave interface {{ item.interface }} unicast-negotiation"
+        - "set protocols ptp slave interface {{ item.interface }} sync-interval {{ item.sync_interval | default(-3) }}"
+        - "set protocols ptp slave interface {{ item.interface }} delay-request-interval {{ item.delay_request_interval | default(-3) }}"
+        comment: "IEEE 1588 PTP configuration"
+      loop: "{{ juniper_acx_config.ptp_slave_interfaces }}"
+      when: juniper_acx_config.ptp_slave_interfaces is defined
+      tags: [ synchronization, ptp, timing ]
+
+    - name: Configure NTP for time synchronization
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set system ntp server {{ item.server }} prefer"
+        - "set system ntp server {{ item.server }} version {{ item.version | default(4) }}"
+        - "set system ntp source-address {{ juniper_acx_config.ntp_source_address }}"
+        comment: "NTP time synchronization configuration"
+      loop: "{{ juniper_acx_config.ntp_servers }}"
+      when:
+      - juniper_acx_config.ntp_servers is defined
+      - juniper_acx_config.ntp_source_address is defined
+      tags: [ synchronization, ntp, timing ]
+
+  # Phase 9: Service Activation and Testing
+  - name: "Phase 9: Configure Service Activation Tests"
+    block:
+    - name: Configure service activation tests
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set services service-activation-tests test {{ item.test_name }} test-type {{ item.test_type }}"
+        - "set services service-activation-tests test {{ item.test_name }} interface {{ item.interface }}"
+        - "set services service-activation-tests test {{ item.test_name }} destination-address {{ item.destination_address }}"
+        - "set services service-activation-tests test {{ item.test_name }} test-duration {{ item.test_duration | default(60) }}"
+        - "set services service-activation-tests test {{ item.test_name }} rate {{ item.test_rate }}"
+        comment: "Service activation test configuration"
+      loop: "{{ juniper_acx_config.service_activation_tests }}"
+      when: juniper_acx_config.service_activation_tests is defined
+      tags: [ testing, service_activation ]
+
+    - name: Configure loopback tests for troubleshooting
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set interfaces {{ item.interface }} unit {{ item.unit }} family bridge interface-mode {{ item.interface_mode }}"
+        - "set interfaces {{ item.interface }} unit {{ item.unit }} family bridge filter output {{ item.loopback_filter }}"
+        comment: "Loopback test configuration"
+      loop: "{{ juniper_acx_config.loopback_tests }}"
+      when: juniper_acx_config.loopback_tests is defined
+      tags: [ testing, loopback ]
+
+  # Phase 10: Security and Access Control
+  - name: "Phase 10: Configure Metro Ethernet Security"
+    block:
+    - name: Configure storm control
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set ethernet-switching-options storm-control interface {{ item.interface }} bandwidth {{ item.bandwidth_limit }}"
+        - "set ethernet-switching-options storm-control interface {{ item.interface }} burst-size {{ item.burst_size }}"
+        - "set ethernet-switching-options storm-control interface {{ item.interface }} multicast"
+        - "set ethernet-switching-options storm-control interface {{ item.interface }} broadcast"
+        - "set ethernet-switching-options storm-control interface {{ item.interface }} unknown-unicast"
+        comment: "Storm control configuration"
+      loop: "{{ juniper_acx_config.storm_control_interfaces }}"
+      when: juniper_acx_config.storm_control_interfaces is defined
+      tags: [ security, storm_control ]
+
+    - name: Configure port security
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set ethernet-switching-options secure-access-port interface {{ item.interface }} no-dhcp-untrust"
+        - "set ethernet-switching-options secure-access-port interface {{ item.interface }} dhcp-trusted-option-82-check"
+        - "set ethernet-switching-options secure-access-port interface {{ item.interface }} mac-limit {{ item.mac_limit | default(1) }} action {{ item.limit_action | default('drop') }}"
+        comment: "Port security configuration"
+      loop: "{{ juniper_acx_config.port_security_interfaces }}"
+      when: juniper_acx_config.port_security_interfaces is defined
+      tags: [ security, port_security ]
+
+    - name: Configure firewall filters for metro services
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set firewall family bridge filter {{ item.filter_name }} term {{ term.term_name }} from {{ term.from_condition }}"
+        - "set firewall family bridge filter {{ item.filter_name }} term {{ term.term_name }} then {{ term.then_action }}"
+        comment: "Metro service firewall filter configuration"
+      loop: "{{ juniper_acx_config.metro_firewall_filters | subelements('terms') }}"
+      loop_control:
+        loop_var: term
+      when: juniper_acx_config.metro_firewall_filters is defined
+      tags: [ security, firewall, filters ]
+
+  post_tasks:
+  # Phase 11: Metro Ethernet Verification and Reporting
+  - name: "Phase 11: Post-Deployment ACX Metro Ethernet Verification"
+    block:
+    - name: Commit ACX metro ethernet configuration
+      junipernetworks.junos.junos_config:
+        comment: "ACX metro ethernet configuration deployment - {{ ansible_date_time.iso8601 }}"
+        confirm: 15
+      tags: [ commit, verification ]
+
+    - name: Gather ACX metro ethernet facts
+      junipernetworks.junos.junos_facts:
+        gather_subset:
+        - all
+      register: acx_facts
+      tags: [ verification, facts ]
+
+    - name: Verify metro ethernet services
+      junipernetworks.junos.junos_command:
+        commands:
+        - "show l2circuit connections"
+        - "show l2vpn connections"
+        - "show bridge domain"
+        - "show ethernet-switching table"
+        display: text
+      register: metro_services_status
+      tags: [ verification, metro_services ]
+
+    - name: Verify eBGP and EVPN status
+      junipernetworks.junos.junos_command:
+        commands:
+        - "show bgp summary"
+        - "show bgp neighbor"
+        - "show route table bgp.evpn.0"
+        - "show route table bgp.l2vpn.0"
+        - "show evpn database"
+        - "show evpn instance"
+        - "show bgp group"
+        - "show route protocol bgp"
+        display: text
+      register: ebgp_evpn_status
+      tags: [ verification, ebgp, evpn, bgp ]
+
+    - name: Verify EVPN multihoming and ESI status
+      junipernetworks.junos.junos_command:
+        commands:
+        - "show evpn instance extensive"
+        - "show evpn ethernet-segment"
+        - "show evpn mac-table"
+        - "show route table default-switch.evpn.0"
+        - "show route table __juniper_private1__.evpn.0"
+        display: text
+      register: evpn_multihoming_status
+      ignore_errors: true
+      tags: [ verification, evpn, multihoming, esi ]
+
+    - name: Verify OAM and monitoring
+      junipernetworks.junos.junos_command:
+        commands:
+        - "show oam ethernet connectivity-fault-management maintenance-domain"
+        - "show oam ethernet link-fault-management"
+        - "show services rpm probe-results"
+        - "show oam ethernet connectivity-fault-management mep"
+        display: text
+      register: oam_status
+      ignore_errors: true
+      tags: [ verification, oam, monitoring ]
+
+    - name: Verify QoS and traffic engineering
+      junipernetworks.junos.junos_command:
+        commands:
+        - "show class-of-service interface"
+        - "show class-of-service scheduler-map"
+        - "show class-of-service forwarding-class"
+        - "show firewall"
+        display: text
+      register: qos_status
+      tags: [ verification, qos ]
+
+    - name: Verify synchronization status
+      junipernetworks.junos.junos_command:
+        commands:
+        - "show chassis synchronization"
+        - "show protocols ptp"
+        - "show system ntp associations"
+        - "show system ntp status"
+        display: text
+      register: sync_status
+      ignore_errors: true
+      tags: [ verification, synchronization ]
+
+    - name: Verify interface status
+      junipernetworks.junos.junos_command:
+        commands:
+        - "show interfaces terse"
+        - "show interfaces descriptions"
+        - "show lacp interfaces"
+        - "show lldp neighbors"
+        display: text
+      register: interface_status
+      tags: [ verification, interfaces ]
+
+    - name: Generate ACX metro ethernet deployment report
+      copy:
+        content: |
+          Juniper ACX Metro Ethernet Deployment Report
+          ===========================================
+          Device: {{ inventory_hostname }}
+          Platform: {{ acx_facts.ansible_facts.ansible_net_model | default('Juniper ACX') }}
+          Software Version: {{ acx_facts.ansible_facts.ansible_net_version | default('Unknown') }}
+          Serial Number: {{ acx_facts.ansible_facts.ansible_net_serialnum | default('Unknown') }}
+          Deployment Time: {{ ansible_date_time.iso8601 }}
+
+          === DEVICE INFORMATION ===
+          Hostname: {{ acx_facts.ansible_facts.ansible_net_hostname | default('Unknown') }}
+          Model: {{ acx_facts.ansible_facts.ansible_net_model | default('Unknown') }}
+          Version: {{ acx_facts.ansible_facts.ansible_net_version | default('Unknown') }}
+
+          === METRO ETHERNET SERVICES ===
+          L2Circuit Connections:
+          {{ metro_services_status.stdout[0] | default('No L2Circuit connections') }}
+
+          L2VPN Connections:
+          {{ metro_services_status.stdout[1] | default('No L2VPN connections') }}
+
+          Bridge Domains:
+          {{ metro_services_status.stdout[2] | default('No bridge domains') }}
+
+          Ethernet Switching Table:
+          {{ metro_services_status.stdout[3] | default('No ethernet switching entries') }}
+
+          === eBGP AND EVPN STATUS ===
+          BGP Summary:
+          {{ ebgp_evpn_status.stdout[0] | default('BGP not configured') }}
+
+          BGP Neighbors:
+          {{ ebgp_evpn_status.stdout[1] | default('No BGP neighbors') }}
+
+          EVPN Routes:
+          {{ ebgp_evpn_status.stdout[2] | default('No EVPN routes') }}
+
+          L2VPN Routes:
+          {{ ebgp_evpn_status.stdout[3] | default('No L2VPN routes') }}
+
+          EVPN Database:
+          {{ ebgp_evpn_status.stdout[4] | default('No EVPN database entries') }}
+
+          EVPN Instances:
+          {{ ebgp_evpn_status.stdout[5] | default('No EVPN instances') }}
+
+          BGP Groups:
+          {{ ebgp_evpn_status.stdout[6] | default('No BGP groups configured') }}
+
+          BGP Routes:
+          {{ ebgp_evpn_status.stdout[7] | default('No BGP routes learned') }}
+
+          {% if evpn_multihoming_status is defined and evpn_multihoming_status.stdout is defined %}
+          === EVPN MULTIHOMING STATUS ===
+          EVPN Instance Details:
+          {{ evpn_multihoming_status.stdout[0] | default('No EVPN instance details') }}
+
+          Ethernet Segments:
+          {{ evpn_multihoming_status.stdout[1] | default('No Ethernet Segments configured') }}
+
+          EVPN MAC Table:
+          {{ evpn_multihoming_status.stdout[2] | default('No EVPN MAC entries') }}
+
+          Default Switch EVPN Routes:
+          {{ evpn_multihoming_status.stdout[3] | default('No default switch EVPN routes') }}
+
+          EVPN Private Routes:
+          {{ evpn_multihoming_status.stdout[4] | default('No private EVPN routes') }}
+          {% endif %}
+
+          {% if oam_status is defined and oam_status.stdout is defined %}
+          === OAM AND MONITORING ===
+          CFM Maintenance Domains:
+          {{ oam_status.stdout[0] | default('No CFM domains configured') }}
+
+          Link Fault Management:
+          {{ oam_status.stdout[1] | default('No LFM configured') }}
+
+          RPM Probe Results:
+          {{ oam_status.stdout[2] | default('No RPM probes configured') }}
+
+          CFM MEPs:
+          {{ oam_status.stdout[3] | default('No CFM MEPs configured') }}
+          {% endif %}
+
+          === QOS AND TRAFFIC ENGINEERING ===
+          CoS Interfaces:
+          {{ qos_status.stdout[0] | default('No CoS interfaces configured') }}
+
+          Scheduler Maps:
+          {{ qos_status.stdout[1] | default('No scheduler maps configured') }}
+
+          Forwarding Classes:
+          {{ qos_status.stdout[2] | default('No forwarding classes configured') }}
+
+          Firewall Filters:
+          {{ qos_status.stdout[3] | default('No firewall filters configured') }}
+
+          {% if sync_status is defined and sync_status.stdout is defined %}
+          === SYNCHRONIZATION STATUS ===
+          Chassis Synchronization:
+          {{ sync_status.stdout[0] | default('Synchronization not configured') }}
+
+          PTP Status:
+          {{ sync_status.stdout[1] | default('PTP not configured') }}
+
+          NTP Associations:
+          {{ sync_status.stdout[2] | default('NTP not configured') }}
+
+          NTP Status:
+          {{ sync_status.stdout[3] | default('NTP status not available') }}
+          {% endif %}
+
+          === INTERFACE STATUS ===
+          Interface Summary:
+          {{ interface_status.stdout[0] | default('Interface status not available') }}
+
+          Interface Descriptions:
+          {{ interface_status.stdout[1] | default('Interface descriptions not available') }}
+
+          LACP Interfaces:
+          {{ interface_status.stdout[2] | default('No LACP interfaces') }}
+
+          LLDP Neighbors:
+          {{ interface_status.stdout[3] | default('No LLDP neighbors') }}
+
+          === CONFIGURATION SUMMARY ===
+          Uplink Interfaces: {{ (juniper_acx_config.uplink_interfaces | default([])) | length }}
+          Access Interfaces: {{ (juniper_acx_config.access_interfaces | default([])) | length }}
+          Metro AE Interfaces: {{ (juniper_acx_config.metro_ae_interfaces | default([])) | length }}
+          E-Line Services: {{ (juniper_acx_config.eline_services | default([])) | length }}
+          E-LAN Services: {{ (juniper_acx_config.elan_services | default([])) | length }}
+          E-Tree Services: {{ (juniper_acx_config.etree_services | default([])) | length }}
+          MEF UNI Interfaces: {{ (juniper_acx_config.mef_uni_interfaces | default([])) | length }}
+          MEF NNI Interfaces: {{ (juniper_acx_config.mef_nni_interfaces | default([])) | length }}
+          CFM Domains: {{ (juniper_acx_config.cfm_domains | default([])) | length }}
+          Performance Monitoring: {{ (juniper_acx_config.performance_monitoring | default([])) | length }}
+
+          Features Configured:
+          - Metro Ethernet Services: {{ 'Yes' if (juniper_acx_config.eline_services is defined or juniper_acx_config.elan_services is defined) else 'No' }}
+          - MEF Services: {{ 'Yes' if juniper_acx_config.mef_uni_interfaces is defined else 'No' }}
+          - Ethernet OAM: {{ 'Yes' if juniper_acx_config.cfm_domains is defined else 'No' }}
+          - Performance Monitoring: {{ 'Yes' if juniper_acx_config.performance_monitoring is defined else 'No' }}
+          - Synchronization: {{ 'Yes' if juniper_acx_config.sync_ethernet_interfaces is defined else 'No' }}
+          - PTP: {{ 'Yes' if juniper_acx_config.ptp_slave_interfaces is defined else 'No' }}
+          - Service Activation Tests: {{ 'Yes' if juniper_acx_config.service_activation_tests is defined else 'No' }}
+          - Storm Control: {{ 'Yes' if juniper_acx_config.storm_control_interfaces is defined else 'No' }}
+          - Port Security: {{ 'Yes' if juniper_acx_config.port_security_interfaces is defined else 'No' }}
+
+          Status: {{ 'SUCCESS' if ansible_failed_task is not defined else 'FAILED' }}
+        dest: "{{ playbook_dir }}/../reports/juniper/{{ inventory_hostname }}_acx_metro_deployment_{{ ansible_date_time.epoch }}.txt"
+      delegate_to: localhost
+      tags: [ reporting ]
+
+# Example usage:
+# ansible-playbook juniper_acx_metro_ethernet.yml --limit juniper_acx
+# ansible-playbook juniper_acx_metro_ethernet.yml --tags metro_services,oam
+# ansible-playbook juniper_acx_metro_ethernet.yml --tags mef,qos --check

@@ -1,0 +1,573 @@
+---
+# Multi-vendor basic network configuration
+# Applies baseline settings across Cisco, Juniper, Arista, Fortinet, and Palo Alto devices
+# Handles vendor-specific syntax differences for common network operations
+
+- name: Deploy Basic Configuration Across All Network Vendors
+  hosts: production
+  gather_facts: false
+  vars:
+    ansible_command_timeout: 60
+    ansible_connect_timeout: 30
+
+  tasks:
+  # Cisco IOS/IOS-XE baseline configuration
+  - name: Configure Cisco Basic System Settings
+    cisco.ios.ios_config:
+      lines:
+      - "hostname {{ inventory_hostname }}"
+      - "service timestamps debug datetime msec"
+      - "service timestamps log datetime msec"
+      - "service password-encryption"
+      - "no service pad"
+      - "no service config"
+      - "no ip http server"
+      - "no ip http secure-server"
+      - "ip domain-name {{ domain_name | default('local.lan') }}"
+      - "ip name-server {{ primary_dns | default('8.8.8.8') }}"
+      - "ip name-server {{ secondary_dns | default('8.8.4.4') }}"
+      parents: []
+    when:
+    - ansible_network_os == "ios"
+    - device_vendor == "cisco"
+    tags: [ 'cisco', 'basic', 'system' ]
+
+  - name: Configure Cisco Users and Authentication
+    cisco.ios.ios_config:
+      lines:
+      - "username {{ item.username }} privilege {{ item.privilege | default('15') }} secret {{ item.password }}"
+      parents: []
+    loop: "{{ local_users | default([]) }}"
+    when:
+    - ansible_network_os == "ios"
+    - device_vendor == "cisco"
+    tags: [ 'cisco', 'basic', 'users' ]
+
+  - name: Configure Cisco VTY Lines
+    cisco.ios.ios_config:
+      lines:
+      - "line vty 0 4"
+      - " transport input ssh"
+      - " login local"
+      - " exec-timeout {{ exec_timeout | default('10 0') }}"
+      - "line vty 5 15"
+      - " transport input ssh"
+      - " login local"
+      - " exec-timeout {{ exec_timeout | default('10 0') }}"
+      parents: []
+    when:
+    - ansible_network_os == "ios"
+    - device_vendor == "cisco"
+    tags: [ 'cisco', 'basic', 'access' ]
+
+  - name: Configure Cisco SSH Settings
+    cisco.ios.ios_config:
+      lines:
+      - "ip ssh version 2"
+      - "ip ssh time-out {{ ssh_timeout | default('60') }}"
+      - "ip ssh authentication-retries {{ ssh_retries | default('3') }}"
+      - "crypto key generate rsa general-keys modulus {{ rsa_key_size | default('2048') }}"
+      parents: []
+    when:
+    - ansible_network_os == "ios"
+    - device_vendor == "cisco"
+    tags: [ 'cisco', 'basic', 'ssh' ]
+
+  - name: Configure Cisco Management Interface
+    cisco.ios.ios_l3_interfaces:
+      config:
+      - name: "{{ mgmt_interface | default('GigabitEthernet0/0') }}"
+        ipv4:
+        - address: "{{ mgmt_ip }}/{{ mgmt_mask | default('24') }}"
+      state: merged
+    when:
+    - ansible_network_os == "ios"
+    - device_vendor == "cisco"
+    - mgmt_ip is defined
+    tags: [ 'cisco', 'basic', 'management' ]
+
+  - name: Configure Cisco Default Route
+    cisco.ios.ios_static_routes:
+      config:
+      - vrf: "{{ mgmt_vrf | default(omit) }}"
+        address_families:
+        - afi: ipv4
+          routes:
+          - dest: "0.0.0.0/0"
+            next_hops:
+            - forward_router_address: "{{ default_gateway }}"
+      state: merged
+    when:
+    - ansible_network_os == "ios"
+    - device_vendor == "cisco"
+    - default_gateway is defined
+    tags: [ 'cisco', 'basic', 'routing' ]
+
+  # ===========================================
+  # CISCO NEXUS BASIC CONFIGURATION
+  # ===========================================
+  - name: Configure Cisco Nexus Basic System Settings
+    cisco.nxos.nxos_config:
+      lines:
+      - "hostname {{ inventory_hostname }}"
+      - "feature ssh"
+      - "feature scp-server"
+      - "no feature telnet"
+      - "ip domain-name {{ domain_name | default('local.lan') }}"
+      - "ip name-server {{ primary_dns | default('8.8.8.8') }} {{ secondary_dns | default('8.8.4.4') }}"
+      - "clock timezone {{ timezone | default('UTC') }} {{ timezone_offset | default('0') }} {{ timezone_minutes | default('0') }}"
+      parents: []
+    when:
+    - ansible_network_os == "nxos"
+    - device_vendor == "cisco"
+    tags: [ 'cisco-nexus', 'basic', 'system' ]
+
+  - name: Configure Cisco Nexus Users
+    cisco.nxos.nxos_user:
+      name: "{{ item.username }}"
+      configured_password: "{{ item.password }}"
+      role: "{{ item.role | default('network-admin') }}"
+      state: present
+    loop: "{{ local_users | default([]) }}"
+    when:
+    - ansible_network_os == "nxos"
+    - device_vendor == "cisco"
+    tags: [ 'cisco-nexus', 'basic', 'users' ]
+
+  # ===========================================
+  # JUNIPER JUNOS BASIC CONFIGURATION
+  # ===========================================
+  - name: Configure Juniper Basic System Settings
+    junipernetworks.junos.junos_config:
+      lines:
+      - "set system host-name {{ inventory_hostname }}"
+      - "set system domain-name {{ domain_name | default('local.lan') }}"
+      - "set system name-server {{ primary_dns | default('8.8.8.8') }}"
+      - "set system name-server {{ secondary_dns | default('8.8.4.4') }}"
+      - "set system time-zone {{ timezone | default('UTC') }}"
+      - "set system services ssh protocol-version v2"
+      - "set system services netconf ssh"
+      format: set
+    when:
+    - ansible_network_os == "junos"
+    - device_vendor == "juniper"
+    tags: [ 'juniper', 'basic', 'system' ]
+
+  - name: Configure Juniper Root Authentication
+    junipernetworks.junos.junos_config:
+      lines:
+      - "set system root-authentication encrypted-password {{ root_password_hash }}"
+      format: set
+    when:
+    - ansible_network_os == "junos"
+    - device_vendor == "juniper"
+    - root_password_hash is defined
+    tags: [ 'juniper', 'basic', 'auth' ]
+
+  - name: Configure Juniper Local Users
+    junipernetworks.junos.junos_config:
+      lines:
+      - "set system login user {{ item.username }} class {{ item.class | default('super-user') }}"
+      - "set system login user {{ item.username }} authentication encrypted-password {{ item.password_hash }}"
+      format: set
+    loop: "{{ local_users | default([]) }}"
+    when:
+    - ansible_network_os == "junos"
+    - device_vendor == "juniper"
+    tags: [ 'juniper', 'basic', 'users' ]
+
+  - name: Configure Juniper Management Interface
+    junipernetworks.junos.junos_config:
+      lines:
+      - "set interfaces {{ mgmt_interface | default('fxp0') }} unit 0 family inet address {{ mgmt_ip }}/{{ mgmt_mask | default('24') }}"
+      format: set
+    when:
+    - ansible_network_os == "junos"
+    - device_vendor == "juniper"
+    - mgmt_ip is defined
+    tags: [ 'juniper', 'basic', 'management' ]
+
+  - name: Configure Juniper Default Route
+    junipernetworks.junos.junos_config:
+      lines:
+      - "set routing-options static route 0.0.0.0/0 next-hop {{ default_gateway }}"
+      format: set
+    when:
+    - ansible_network_os == "junos"
+    - device_vendor == "juniper"
+    - default_gateway is defined
+    tags: [ 'juniper', 'basic', 'routing' ]
+
+  # ===========================================
+  # ARISTA EOS BASIC CONFIGURATION
+  # ===========================================
+  - name: Configure Arista Basic System Settings
+    arista.eos.eos_config:
+      lines:
+      - "hostname {{ inventory_hostname }}"
+      - "ip domain-name {{ domain_name | default('local.lan') }}"
+      - "ip name-server {{ primary_dns | default('8.8.8.8') }}"
+      - "ip name-server {{ secondary_dns | default('8.8.4.4') }}"
+      - "clock timezone {{ timezone | default('UTC') }}"
+      - "service password-encryption"
+      - "no aaa root"
+      parents: []
+    when:
+    - ansible_network_os == "eos"
+    - device_vendor == "arista"
+    tags: [ 'arista', 'basic', 'system' ]
+
+  - name: Configure Arista Local Users
+    arista.eos.eos_config:
+      lines:
+      - "username {{ item.username }} privilege {{ item.privilege | default('15') }} role {{ item.role | default('network-admin') }} secret {{ item.password }}"
+      parents: []
+    loop: "{{ local_users | default([]) }}"
+    when:
+    - ansible_network_os == "eos"
+    - device_vendor == "arista"
+    tags: [ 'arista', 'basic', 'users' ]
+
+  - name: Configure Arista SSH and Management
+    arista.eos.eos_config:
+      lines:
+      - "management ssh"
+      - " idle-timeout {{ ssh_timeout | default('0') }}"
+      - " authentication timeout {{ ssh_auth_timeout | default('30') }}"
+      - " server-port {{ ssh_port | default('22') }}"
+      - "management api http-commands"
+      - " no shutdown"
+      - " protocol https port {{ https_port | default('443') }}"
+      parents: []
+    when:
+    - ansible_network_os == "eos"
+    - device_vendor == "arista"
+    tags: [ 'arista', 'basic', 'management' ]
+
+  - name: Configure Arista Management Interface
+    arista.eos.eos_l3_interfaces:
+      config:
+      - name: "Management1"
+        ipv4:
+        - address: "{{ mgmt_ip }}/{{ mgmt_mask | default('24') }}"
+      state: merged
+    when:
+    - ansible_network_os == "eos"
+    - device_vendor == "arista"
+    - mgmt_ip is defined
+    tags: [ 'arista', 'basic', 'interface' ]
+
+  # ===========================================
+  # FORTINET FORTIGATE BASIC CONFIGURATION
+  # ===========================================
+  - name: Configure FortiGate Basic System Settings
+    fortinet.fortios.fortios_system_global:
+      system_global:
+        hostname: "{{ inventory_hostname }}"
+        admintimeout: "{{ admin_timeout | default('60') }}"
+        timezone: "{{ fortinet_timezone | default('04') }}"
+        admin_sport: "{{ https_port | default('443') }}"
+        admin_ssh_port: "{{ ssh_port | default('22') }}"
+        strong_crypto: "enable"
+    when:
+    - ansible_network_os == "fortios"
+    - device_vendor == "fortinet"
+    tags: [ 'fortinet', 'basic', 'system' ]
+
+  - name: Configure FortiGate DNS Settings
+    fortinet.fortios.fortios_system_dns:
+      system_dns:
+        primary: "{{ primary_dns | default('8.8.8.8') }}"
+        secondary: "{{ secondary_dns | default('8.8.4.4') }}"
+        domain: "{{ domain_name | default('local.lan') }}"
+    when:
+    - ansible_network_os == "fortios"
+    - device_vendor == "fortinet"
+    tags: [ 'fortinet', 'basic', 'dns' ]
+
+  - name: Configure FortiGate Admin Users
+    fortinet.fortios.fortios_system_admin:
+      state: present
+      system_admin:
+        name: "{{ item.username }}"
+        password: "{{ item.password }}"
+        accprofile: "{{ item.profile | default('super_admin') }}"
+        trusthost1: "{{ item.trusted_host | default('0.0.0.0 0.0.0.0') }}"
+    loop: "{{ local_users | default([]) }}"
+    when:
+    - ansible_network_os == "fortios"
+    - device_vendor == "fortinet"
+    tags: [ 'fortinet', 'basic', 'users' ]
+
+  # ===========================================
+  # PALO ALTO BASIC CONFIGURATION
+  # ===========================================
+  - name: Configure Palo Alto Basic System Settings
+    paloaltonetworks.panos.panos_config_element:
+      xpath: "/config/devices/entry[@name='localhost.localdomain']/deviceconfig/system"
+      element: |
+        <hostname>{{ inventory_hostname }}</hostname>
+        <domain>{{ domain_name | default('local.lan') }}</domain>
+        <dns-setting>
+          <servers>
+            <primary>{{ primary_dns | default('8.8.8.8') }}</primary>
+            <secondary>{{ secondary_dns | default('8.8.4.4') }}</secondary>
+          </servers>
+        </dns-setting>
+        <timezone>{{ palo_timezone | default('US/Pacific') }}</timezone>
+    when:
+    - ansible_network_os == "panos"
+    - device_vendor == "paloalto"
+    tags: [ 'paloalto', 'basic', 'system' ]
+
+  - name: Configure Palo Alto Admin Users
+    paloaltonetworks.panos.panos_administrator:
+      admin_username: "{{ item.username }}"
+      admin_password: "{{ item.password }}"
+      role: "{{ item.role | default('superuser') }}"
+      state: present
+    loop: "{{ local_users | default([]) }}"
+    when:
+    - ansible_network_os == "panos"
+    - device_vendor == "paloalto"
+    tags: [ 'paloalto', 'basic', 'users' ]
+
+  # ===========================================
+  # COMMON NTP CONFIGURATION
+  # ===========================================
+  - name: Configure NTP - Cisco IOS
+    cisco.ios.ios_config:
+      lines:
+      - "ntp server {{ item.server }} prefer"
+      - "ntp source {{ ntp_source_interface | default('Loopback0') }}"
+      - "ntp authenticate"
+      - "ntp authentication-key {{ item.key_id | default('1') }} sha1 {{ item.key | default('default_key') }}"
+      - "ntp trusted-key {{ item.key_id | default('1') }}"
+      parents: []
+    loop: "{{ ntp_servers | default([]) }}"
+    when:
+    - ansible_network_os == "ios"
+    - device_vendor == "cisco"
+    tags: [ 'cisco', 'ntp', 'time' ]
+
+  - name: Configure NTP - Juniper
+    junipernetworks.junos.junos_config:
+      lines:
+      - "set system ntp server {{ item.server }}"
+      - "set system ntp authentication-key {{ item.key_id | default('1') }} type sha1"
+      - "set system ntp authentication-key {{ item.key_id | default('1') }} value {{ item.key | default('default_key') }}"
+      - "set system ntp trusted-key {{ item.key_id | default('1') }}"
+      format: set
+    loop: "{{ ntp_servers | default([]) }}"
+    when:
+    - ansible_network_os == "junos"
+    - device_vendor == "juniper"
+    tags: [ 'juniper', 'ntp', 'time' ]
+
+  - name: Configure NTP - Arista
+    arista.eos.eos_config:
+      lines:
+      - "ntp server {{ item.server }} prefer"
+      - "ntp source {{ ntp_source_interface | default('Management1') }}"
+      - "ntp authenticate"
+      - "ntp authentication-key {{ item.key_id | default('1') }} sha1 {{ item.key | default('default_key') }}"
+      - "ntp trusted-key {{ item.key_id | default('1') }}"
+      parents: []
+    loop: "{{ ntp_servers | default([]) }}"
+    when:
+    - ansible_network_os == "eos"
+    - device_vendor == "arista"
+    tags: [ 'arista', 'ntp', 'time' ]
+
+  # ===========================================
+  # COMMON SNMP CONFIGURATION
+  # ===========================================
+  - name: Configure SNMP - Cisco IOS
+    cisco.ios.ios_config:
+      lines:
+      - "snmp-server community {{ snmp_ro_community | default('public') }} RO"
+      - "snmp-server community {{ snmp_rw_community | default('private') }} RW"
+      - "snmp-server location {{ snmp_location | default('Data Center') }}"
+      - "snmp-server contact {{ snmp_contact | default('Network Admin') }}"
+      - "snmp-server host {{ item.host }} version {{ item.version | default('2c') }} {{ item.community }}"
+      - "snmp-server enable traps"
+      parents: []
+    loop: "{{ snmp_hosts | default([]) }}"
+    when:
+    - ansible_network_os == "ios"
+    - device_vendor == "cisco"
+    tags: [ 'cisco', 'snmp', 'monitoring' ]
+
+  - name: Configure SNMP - Juniper
+    junipernetworks.junos.junos_config:
+      lines:
+      - "set snmp community {{ snmp_ro_community | default('public') }} authorization read-only"
+      - "set snmp community {{ snmp_rw_community | default('private') }} authorization read-write"
+      - "set snmp location {{ snmp_location | default('Data Center') }}"
+      - "set snmp contact {{ snmp_contact | default('Network Admin') }}"
+      - "set snmp trap-group {{ item.group | default('nms') }} targets {{ item.host }}"
+      format: set
+    loop: "{{ snmp_hosts | default([]) }}"
+    when:
+    - ansible_network_os == "junos"
+    - device_vendor == "juniper"
+    tags: [ 'juniper', 'snmp', 'monitoring' ]
+
+  # ===========================================
+  # COMMON LOGGING CONFIGURATION
+  # ===========================================
+  - name: Configure Logging - Cisco IOS
+    cisco.ios.ios_config:
+      lines:
+      - "logging {{ item.server }}"
+      - "logging facility {{ logging_facility | default('local7') }}"
+      - "logging source-interface {{ logging_source | default('Loopback0') }}"
+      - "logging buffered {{ buffer_size | default('32768') }} {{ buffer_level | default('informational') }}"
+      - "logging console {{ console_level | default('critical') }}"
+      parents: []
+    loop: "{{ syslog_servers | default([]) }}"
+    when:
+    - ansible_network_os == "ios"
+    - device_vendor == "cisco"
+    tags: [ 'cisco', 'logging', 'syslog' ]
+
+  - name: Configure Logging - Juniper
+    junipernetworks.junos.junos_config:
+      lines:
+      - "set system syslog host {{ item.server }} any {{ item.level | default('info') }}"
+      - "set system syslog host {{ item.server }} facility {{ logging_facility | default('local7') }}"
+      - "set system syslog file messages any {{ file_log_level | default('notice') }}"
+      - "set system syslog file messages archive size {{ log_file_size | default('1m') }}"
+      - "set system syslog file messages archive files {{ log_file_count | default('10') }}"
+      format: set
+    loop: "{{ syslog_servers | default([]) }}"
+    when:
+    - ansible_network_os == "junos"
+    - device_vendor == "juniper"
+    tags: [ 'juniper', 'logging', 'syslog' ]
+
+  # ===========================================
+  # SAVE CONFIGURATIONS
+  # ===========================================
+  - name: Save Configuration - Cisco IOS
+    cisco.ios.ios_config:
+      save_when: changed
+    when:
+    - ansible_network_os in ["ios", "iosxr"]
+    - device_vendor == "cisco"
+    tags: [ 'cisco', 'save' ]
+
+  - name: Save Configuration - Cisco NX-OS
+    cisco.nxos.nxos_config:
+      save_when: changed
+    when:
+    - ansible_network_os == "nxos"
+    - device_vendor == "cisco"
+    tags: [ 'cisco-nexus', 'save' ]
+
+  - name: Commit Configuration - Juniper
+    junipernetworks.junos.junos_config:
+      comment: "Ansible basic configuration {{ ansible_date_time.iso8601 }}"
+    when:
+    - ansible_network_os == "junos"
+    - device_vendor == "juniper"
+    tags: [ 'juniper', 'save' ]
+
+  - name: Save Configuration - Arista
+    arista.eos.eos_config:
+      save_when: changed
+    when:
+    - ansible_network_os == "eos"
+    - device_vendor == "arista"
+    tags: [ 'arista', 'save' ]
+
+  # ===========================================
+  # VERIFICATION AND STATUS REPORTING
+  # ===========================================
+  - name: Verify Configuration - Multi-Vendor
+    block:
+    - name: Gather Cisco Facts
+      cisco.ios.ios_facts:
+        gather_subset:
+        - "!config"
+        - "default"
+        - "hardware"
+        - "interfaces"
+      register: cisco_facts
+      when:
+      - ansible_network_os == "ios"
+      - device_vendor == "cisco"
+
+    - name: Gather Juniper Facts
+      junipernetworks.junos.junos_facts:
+        gather_subset:
+        - "!config"
+        - "default"
+        - "hardware"
+        - "interfaces"
+      register: juniper_facts
+      when:
+      - ansible_network_os == "junos"
+      - device_vendor == "juniper"
+
+    - name: Gather Arista Facts
+      arista.eos.eos_facts:
+        gather_subset:
+        - "!config"
+        - "default"
+        - "hardware"
+        - "interfaces"
+      register: arista_facts
+      when:
+      - ansible_network_os == "eos"
+      - device_vendor == "arista"
+
+    - name: Display Multi-Vendor Status Report
+      ansible.builtin.debug:
+        msg: |
+          ====================================================
+          MULTI-VENDOR BASIC CONFIGURATION DEPLOYMENT REPORT
+          ====================================================
+          Device: {{ inventory_hostname }}
+          Vendor: {{ device_vendor | default('Unknown') }}
+          Platform: {{ ansible_network_os | default('Unknown') }}
+
+          {% if cisco_facts is defined and cisco_facts.ansible_facts is defined %}
+          === CISCO DEVICE INFO ===
+          Model: {{ cisco_facts.ansible_facts.ansible_net_model | default('Unknown') }}
+          Version: {{ cisco_facts.ansible_facts.ansible_net_version | default('Unknown') }}
+          Serial: {{ cisco_facts.ansible_facts.ansible_net_serialnum | default('Unknown') }}
+          Uptime: {{ cisco_facts.ansible_facts.ansible_net_uptime | default('Unknown') }}
+          Interfaces: {{ cisco_facts.ansible_facts.ansible_net_interfaces.keys() | list | length }}
+          {% endif %}
+
+          {% if juniper_facts is defined and juniper_facts.ansible_facts is defined %}
+          === JUNIPER DEVICE INFO ===
+          Model: {{ juniper_facts.ansible_facts.ansible_net_model | default('Unknown') }}
+          Version: {{ juniper_facts.ansible_facts.ansible_net_version | default('Unknown') }}  
+          Serial: {{ juniper_facts.ansible_facts.ansible_net_serialnum | default('Unknown') }}
+          Hostname: {{ juniper_facts.ansible_facts.ansible_net_hostname | default('Unknown') }}
+          Interfaces: {{ juniper_facts.ansible_facts.ansible_net_interfaces.keys() | list | length }}
+          {% endif %}
+
+          {% if arista_facts is defined and arista_facts.ansible_facts is defined %}
+          === ARISTA DEVICE INFO ===
+          Model: {{ arista_facts.ansible_facts.ansible_net_model | default('Unknown') }}
+          Version: {{ arista_facts.ansible_facts.ansible_net_version | default('Unknown') }}
+          Serial: {{ arista_facts.ansible_facts.ansible_net_serialnum | default('Unknown') }}
+          Uptime: {{ arista_facts.ansible_facts.ansible_net_uptime | default('Unknown') }}
+          Interfaces: {{ arista_facts.ansible_facts.ansible_net_interfaces.keys() | list | length }}
+          {% endif %}
+
+          === CONFIGURATION STATUS ===
+          Management IP: {{ mgmt_ip | default('Not Configured') }}
+          Domain Name: {{ domain_name | default('local.lan') }}
+          Primary DNS: {{ primary_dns | default('8.8.8.8') }}
+          NTP Servers: {{ ntp_servers | default([]) | length }}
+          Local Users: {{ local_users | default([]) | length }}
+          SNMP Hosts: {{ snmp_hosts | default([]) | length }}
+
+          Deployment Status: {{ 'SUCCESS' if ansible_failed_result is not defined else 'FAILED' }}
+          Timestamp: {{ ansible_date_time.iso8601 | default('Unknown') }}
+          ====================================================
+    tags: [ 'verify', 'report' ]

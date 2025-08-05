@@ -1,0 +1,1087 @@
+---
+# Advanced Juniper Networks Configuration Variables
+# Comprehensive variables for enterprise Juniper deployments
+# Supports: EX, QFX, SRX, MX series devices with advanced features
+
+# System Configuration
+juniper_system_config:
+  hostname: "{{ inventory_hostname }}"
+  domain_name: "{{ site_domain | default('corp.local') }}"
+  domain_search:
+  - "{{ site_domain | default('corp.local') }}"
+  - "mgmt.{{ site_domain | default('corp.local') }}"
+  timezone: "{{ site_timezone | default('America/New_York') }}"
+  ssh_root_login: "allow"
+  ssh_connection_limit: 10
+  ssh_rate_limit: 5
+
+# Management Configuration
+juniper_mgmt_config:
+  interface: "{{ mgmt_interface | default('me0') }}"
+  ip_address: "{{ ansible_host }}"
+  netmask: "{{ mgmt_netmask | default('24') }}"
+  gateway: "{{ mgmt_gateway | default('10.0.1.1') }}"
+  vrf: "mgmt_junos"
+  description: "Management Interface"
+
+# NTP Configuration
+juniper_ntp_config:
+  servers:
+  - server: "0.pool.ntp.org"
+    prefer: true
+  - server: "1.pool.ntp.org"
+    prefer: false
+  - server: "{{ ntp_server_primary | default('10.0.1.10') }}"
+    prefer: false
+  - server: "{{ ntp_server_secondary | default('10.0.1.11') }}"
+    prefer: false
+
+# Authentication and Security Configuration
+juniper_security_config:
+  authentication_order:
+  - "radius"
+  - "password"
+  root_authentication:
+    encrypted_password: "{{ vault_juniper_root_password }}"
+  login:
+    users:
+    - name: "admin"
+      class: "super-user"
+      full_name: "Network Administrator"
+      authentication:
+        encrypted_password: "{{ vault_juniper_admin_password }}"
+    - name: "netops"
+      class: "operator"
+      full_name: "Network Operations"
+      authentication:
+        encrypted_password: "{{ vault_juniper_netops_password }}"
+    - name: "readonly"
+      class: "read-only"
+      full_name: "Read Only User"
+      authentication:
+        encrypted_password: "{{ vault_juniper_readonly_password }}"
+
+# RADIUS Configuration
+juniper_radius_config:
+  servers:
+  - server: "{{ radius_server_primary | default('10.0.1.20') }}"
+    port: 1812
+    secret: "{{ vault_radius_secret }}"
+    timeout: 5
+    retry: 3
+    source_address: "{{ ansible_host }}"
+  - server: "{{ radius_server_secondary | default('10.0.1.21') }}"
+    port: 1812
+    secret: "{{ vault_radius_secret }}"
+    timeout: 5
+    retry: 3
+    source_address: "{{ ansible_host }}"
+
+# Interface Configuration
+juniper_interface_config:
+  physical_interfaces:
+  - name: "xe-0/0/0"
+    description: "Core Uplink 1"
+    mtu: 9216
+    speed: "10g"
+    link_mode: "full-duplex"
+  - name: "xe-0/0/1"
+    description: "Core Uplink 2"
+    mtu: 9216
+    speed: "10g"
+    link_mode: "full-duplex"
+
+  l2_interfaces:
+  - name: "ge-0/0/0"
+    description: "Server Access Port"
+    mode: "access"
+    access_vlan: "100"
+  - name: "ge-0/0/1"
+    description: "Trunk to Distribution"
+    mode: "trunk"
+    vlan_members: [ "100", "200", "300" ]
+    native_vlan: "1"
+
+  l3_interfaces:
+  - name: "xe-0/0/0"
+    unit: 0
+    description: "P2P Link to Core"
+    ipv4_address: "10.1.1.1"
+    ipv4_prefix: "30"
+    ipv6_address: "2001:db8:1::1"
+    ipv6_prefix: "64"
+
+# VLAN Configuration
+juniper_vlan_config:
+  vlans:
+  - name: "VLAN_100_DATA"
+    vlan_id: 100
+    description: "Data VLAN"
+  - name: "VLAN_200_VOICE"
+    vlan_id: 200
+    description: "Voice VLAN"
+  - name: "VLAN_300_MGMT"
+    vlan_id: 300
+    description: "Management VLAN"
+
+  irb_interfaces:
+  - vlan_id: 100
+    description: "Data VLAN Gateway"
+    ipv4_address: "10.100.1.1"
+    ipv4_prefix: "24"
+    ipv6_address: "2001:db8:100::1"
+    ipv6_prefix: "64"
+  - vlan_id: 200
+    description: "Voice VLAN Gateway"
+    ipv4_address: "10.200.1.1"
+    ipv4_prefix: "24"
+
+  srx_vlans:
+  - vlan_id: 100
+    description: "Internal LAN"
+    ipv4_address: "192.168.100.1"
+    ipv4_prefix: "24"
+    tenant_name: "default"
+
+# Link Aggregation Configuration
+juniper_lag_config:
+  lag_interfaces:
+  - lag_interface: "ae0"
+    description: "Server Connection LAG"
+    lacp_mode: "active"
+    lacp_periodic: "fast"
+    minimum_links: 1
+    member_interfaces:
+    - "ge-0/0/2"
+    - "ge-0/0/3"
+    switching_mode: "trunk"
+    vlan_members: [ "100", "200" ]
+    native_vlan: "1"
+  - lag_interface: "ae1"
+    description: "Core Uplink LAG"
+    lacp_mode: "active"
+    lacp_periodic: "fast"
+    minimum_links: 2
+    member_interfaces:
+    - "xe-0/0/0"
+    - "xe-0/0/1"
+    switching_mode: "trunk"
+    vlan_members: [ "100", "200", "300" ]
+
+# Virtual Chassis Configuration
+juniper_vc_config:
+  members:
+  - member_id: 0
+    role: "line-card"
+    serial_number: "{{ switch_0_serial }}"
+  - member_id: 1
+    role: "line-card"
+    serial_number: "{{ switch_1_serial }}"
+
+# OSPF Configuration
+juniper_ospf_config:
+  router_id: "{{ ansible_host }}"
+  reference_bandwidth: "100g"
+  spf_options:
+    delay: 200
+    holddown: 5000
+    rapid_runs: 3
+  interfaces:
+  - interface: "xe-0/0/0.0"
+    area_id: "0.0.0.0"
+    interface_type: "point-to-point"
+    metric: 10
+    hello_interval: 10
+    dead_interval: 40
+    auth_key: "{{ vault_ospf_auth_key }}"
+
+# ISIS Configuration
+juniper_isis_config:
+  reference_bandwidth: "100g"
+  level: "2"
+  auth_key: "{{ vault_isis_auth_key }}"
+  auth_type: "md5"
+  spf_delay: 200
+  interfaces:
+  - interface: "xe-0/0/0.0"
+    level: "2"
+    metric: 10
+    bfd_interval: 300
+
+# BGP Configuration
+juniper_bgp_config:
+  local_asn: "{{ bgp_asn | default('65001') }}"
+  router_id: "{{ ansible_host }}"
+  groups:
+  - group_name: "INTERNAL"
+    group_type: "internal"
+    peer_as: "{{ bgp_asn | default('65001') }}"
+    import_policy: "BGP-IMPORT"
+    export_policy: "BGP-EXPORT"
+  - group_name: "EXTERNAL"
+    group_type: "external"
+    peer_as: "65000"
+    import_policy: "EXTERNAL-IMPORT"
+    export_policy: "EXTERNAL-EXPORT"
+
+  neighbors:
+  - neighbor_ip: "10.1.1.2"
+    group_name: "INTERNAL"
+    peer_as: "{{ bgp_asn | default('65001') }}"
+    description: "Internal BGP Peer"
+    auth_key: "{{ vault_bgp_auth_key }}"
+
+  evpn_groups:
+  - group_name: "EVPN-OVERLAY"
+    local_address: "{{ ansible_host }}"
+    route_reflector_cluster: "1.1.1.1"
+
+# MPLS Configuration
+juniper_mpls_config:
+  interfaces:
+  - "xe-0/0/0.0"
+  - "xe-0/0/1.0"
+
+  lsps:
+  - lsp_name: "LSP-TO-R2"
+    destination: "2.2.2.2"
+    bandwidth: "1g"
+    setup_priority: 7
+    hold_priority: 0
+
+  rsvp_interfaces:
+  - interface: "xe-0/0/0.0"
+    bandwidth: "10g"
+    subscription: 100
+  - interface: "xe-0/0/1.0"
+    bandwidth: "10g"
+    subscription: 100
+
+  ldp_interfaces:
+  - "xe-0/0/0.0"
+  - "xe-0/0/1.0"
+
+# EVPN-VXLAN Configuration (QFX)
+juniper_evpn_config:
+  vtep_source_interface: "lo0.0"
+  switch_route_distinguisher: "{{ ansible_host }}:1"
+  switch_vrf_target: "target:65001:1"
+
+  vrfs:
+  - vrf_name: "TENANT-A"
+    interface: "irb.100"
+    rd: "{{ ansible_host }}:100"
+    rt_import: "target:65001:100"
+    rt_export: "target:65001:100"
+  - vrf_name: "TENANT-B"
+    interface: "irb.200"
+    rd: "{{ ansible_host }}:200"
+    rt_import: "target:65001:200"
+    rt_export: "target:65001:200"
+
+  vnis:
+  - vni: 10100
+    rt_export: "target:65001:10100"
+    rt_import: "target:65001:10100"
+  - vni: 10200
+    rt_export: "target:65001:10200"
+    rt_import: "target:65001:10200"
+
+# Data Center Configuration
+juniper_dc_config:
+  hostname: "{{ inventory_hostname }}"
+  domain_name: "{{ site_domain | default('dc.local') }}"
+  timezone: "{{ site_timezone | default('UTC') }}"
+  ae_device_count: 128
+  loopback_ip: "{{ loopback_ip }}"
+  underlay_asn: "{{ spine_asn | default('65100') }}"
+  leaf_asn: "{{ leaf_asn | default('65001') }}"
+  rr_cluster_id: "1.1.1.1"
+  switch_rd_suffix: "1"
+  switch_vrf_target: "target:65001:1"
+  loopback_subnet: "10.255.255.0"
+  loopback_prefix_len: 24
+  underlay_subnet: "10.1.0.0"
+  underlay_prefix_len: 16
+  enable_vcf: false
+
+  spine_underlay_interfaces:
+  - interface: "xe-0/0/0"
+    ip_address: "10.1.1.0"
+    prefix_length: 31
+    description: "To Leaf-01"
+    mtu: 9216
+  - interface: "xe-0/0/1"
+    ip_address: "10.1.1.2"
+    prefix_length: 31
+    description: "To Leaf-02"
+    mtu: 9216
+
+  leaf_underlay_interfaces:
+  - interface: "xe-0/0/48"
+    ip_address: "10.1.1.1"
+    prefix_length: 31
+    description: "To Spine-01"
+    mtu: 9216
+  - interface: "xe-0/0/49"
+    ip_address: "10.1.1.5"
+    prefix_length: 31
+    description: "To Spine-02"
+    mtu: 9216
+
+  spine_bgp_neighbors:
+  - neighbor_ip: "10.1.1.1"
+    peer_asn: "65001"
+    description: "Leaf-01"
+  - neighbor_ip: "10.1.1.3"
+    peer_asn: "65002"
+    description: "Leaf-02"
+
+  leaf_bgp_neighbors:
+  - neighbor_ip: "10.1.1.0"
+    peer_asn: "65100"
+    description: "Spine-01"
+  - neighbor_ip: "10.1.1.4"
+    peer_asn: "65100"
+    description: "Spine-02"
+
+  evpn_rr_clients:
+  - neighbor_ip: "10.255.255.1"
+    description: "Leaf-01 Loopback"
+  - neighbor_ip: "10.255.255.2"
+    description: "Leaf-02 Loopback"
+
+  evpn_route_reflectors:
+  - rr_ip: "10.255.255.100"
+    description: "Spine-01"
+  - rr_ip: "10.255.255.101"
+    description: "Spine-02"
+
+  vxlan_vlans:
+  - vlan_name: "VLAN_100"
+    vlan_id: 100
+    vni: 10100
+  - vlan_name: "VLAN_200"
+    vlan_id: 200
+    vni: 10200
+
+  evpn_vnis:
+  - vni: 10100
+    rt_export: "target:65001:10100"
+    rt_import: "target:65001:10100"
+  - vni: 10200
+    rt_export: "target:65001:10200"
+    rt_import: "target:65001:10200"
+
+  tenant_vrfs:
+  - vrf_name: "TENANT-A"
+    interface: "irb.100"
+    rd_suffix: "100"
+    rt_import: "target:65001:100"
+    rt_export: "target:65001:100"
+  - vrf_name: "TENANT-B"
+    interface: "irb.200"
+    rd_suffix: "200"
+    rt_import: "target:65001:200"
+    rt_export: "target:65001:200"
+
+  tenant_gateways:
+  - irb_unit: 100
+    gateway_ip: "10.100.1.1"
+    subnet_mask: "24"
+    tenant_name: "TENANT-A"
+    virtual_gateway_mac: "00:1c:73:00:00:99"
+  - irb_unit: 200
+    gateway_ip: "10.200.1.1"
+    subnet_mask: "24"
+    tenant_name: "TENANT-B"
+    virtual_gateway_mac: "00:1c:73:00:00:99"
+
+  tenant_l3_vnis:
+  - l3_vni: 50100
+    rt_export: "target:65001:50100"
+    rt_import: "target:65001:50100"
+  - l3_vni: 50200
+    rt_export: "target:65001:50200"
+    rt_import: "target:65001:50200"
+
+  server_access_ports:
+  - interface: "ge-0/0/0"
+    description: "Server-01 Access"
+    access_vlan: "VLAN_100"
+  - interface: "ge-0/0/1"
+    description: "Server-02 Access"
+    access_vlan: "VLAN_200"
+
+  server_trunk_ports:
+  - interface: "ge-0/0/10"
+    description: "Hypervisor Trunk"
+    allowed_vlans: [ "VLAN_100", "VLAN_200" ]
+    native_vlan: "1"
+
+  server_lag_interfaces:
+  - lag_interface: "ae0"
+    description: "Server Cluster LAG"
+    lacp_mode: "active"
+    lacp_periodic: "fast"
+    minimum_links: 2
+    member_interfaces:
+    - "ge-0/0/20"
+    - "ge-0/0/21"
+    switching_mode: "trunk"
+    vlan_members: [ "VLAN_100", "VLAN_200" ]
+    native_vlan: "1"
+
+  storm_control_interfaces:
+  - interface: "ge-0/0/0"
+    bandwidth_limit: "1m"
+    burst_size: "1k"
+  - interface: "ge-0/0/1"
+    bandwidth_limit: "1m"
+    burst_size: "1k"
+
+  mac_limit_interfaces:
+  - interface: "ge-0/0/0"
+    mac_limit: 10
+    limit_action: "shutdown"
+  - interface: "ge-0/0/1"
+    mac_limit: 10
+    limit_action: "drop"
+
+  dhcp_snooping:
+  - vlan_name: "VLAN_100"
+    trusted_interface: "ge-0/0/10"
+
+  bgp_communities:
+  - name: "TENANT-A"
+    target: "65001:100"
+  - name: "TENANT-B"
+    target: "65001:200"
+
+  evpn_communities:
+  - community_name: "TENANT-A"
+  - community_name: "TENANT-B"
+
+# Data Center QoS Configuration
+juniper_dc_qos:
+  forwarding_classes:
+  - name: "best-effort"
+    queue_num: 0
+  - name: "expedited-forwarding"
+    queue_num: 1
+  - name: "assured-forwarding"
+    queue_num: 2
+  - name: "network-control"
+    queue_num: 3
+
+  schedulers:
+  - name: "be-scheduler"
+    transmit_rate: "25%"
+    buffer_size: "25%"
+    priority: "low"
+    drop_profile: "be-drop"
+  - name: "ef-scheduler"
+    transmit_rate: "25%"
+    buffer_size: "25%"
+    priority: "high"
+    drop_profile: "ef-drop"
+  - name: "af-scheduler"
+    transmit_rate: "25%"
+    buffer_size: "25%"
+    priority: "medium-high"
+    drop_profile: "af-drop"
+  - name: "nc-scheduler"
+    transmit_rate: "25%"
+    buffer_size: "25%"
+    priority: "high"
+    drop_profile: "nc-drop"
+
+  dscp_classifiers:
+  - classifier_name: "dscp-classifier"
+    forwarding_class: "best-effort"
+    loss_priority: "low"
+    dscp_values: [ "0", "1", "2", "3" ]
+  - classifier_name: "dscp-classifier"
+    forwarding_class: "expedited-forwarding"
+    loss_priority: "low"
+    dscp_values: [ "46" ]
+  - classifier_name: "dscp-classifier"
+    forwarding_class: "assured-forwarding"
+    loss_priority: "low"
+    dscp_values: [ "18", "20", "22" ]
+  - classifier_name: "dscp-classifier"
+    forwarding_class: "network-control"
+    loss_priority: "low"
+    dscp_values: [ "48", "56" ]
+
+  interface_qos:
+  - interface: "xe-0/0/0"
+    scheduler_map: "dc-scheduler-map"
+    dscp_classifier: "dscp-classifier"
+    dscp_rewrite: "dscp-rewrite"
+
+# SRX Security Configuration
+juniper_srx_config:
+  hostname: "{{ inventory_hostname }}"
+  domain_name: "{{ site_domain | default('security.local') }}"
+  timezone: "{{ site_timezone | default('America/New_York') }}"
+  mgmt_interface: "fxp0"
+
+  license_keys:
+  - license_key: "{{ vault_srx_utm_license }}"
+  - license_key: "{{ vault_srx_ips_license }}"
+
+  security_zones:
+  - zone_name: "trust"
+    description: "Internal trusted network"
+    allowed_services: [ "ping", "ssh", "https", "snmp" ]
+    allowed_protocols: [ "ospf", "bgp" ]
+  - zone_name: "untrust"
+    description: "External untrusted network"
+    allowed_services: [ "ping", "ike" ]
+    allowed_protocols: [ "bgp" ]
+  - zone_name: "dmz"
+    description: "Demilitarized zone"
+    allowed_services: [ "ping", "ssh", "https" ]
+    allowed_protocols: []
+
+  zone_interfaces:
+  - zone_name: "trust"
+    interface: "ge-0/0/0.0"
+    interface_services: [ "ping", "ssh" ]
+  - zone_name: "untrust"
+    interface: "ge-0/0/1.0"
+    interface_services: [ "ping", "ike" ]
+  - zone_name: "dmz"
+    interface: "ge-0/0/2.0"
+    interface_services: [ "ping", "ssh", "https" ]
+
+  security_interfaces:
+  - interface: "ge-0/0/0"
+    unit: 0
+    ip_address: "192.168.1.1"
+    prefix_length: 24
+    description: "Internal LAN"
+  - interface: "ge-0/0/1"
+    unit: 0
+    ip_address: "203.0.113.1"
+    prefix_length: 30
+    description: "Internet Connection"
+  - interface: "ge-0/0/2"
+    unit: 0
+    ip_address: "10.10.10.1"
+    prefix_length: 24
+    description: "DMZ Network"
+
+  global_policies:
+  - policy_name: "GLOBAL-DENY-ALL"
+    match:
+      source_address: "any"
+      destination_address: "any"
+      application: "any"
+    then:
+      permit: false
+
+  zone_policies:
+  - from_zone: "trust"
+    to_zone: "untrust"
+    policy_name: "TRUST-TO-UNTRUST"
+    match:
+      source_address: "any"
+      destination_address: "any"
+      application: "any"
+    then:
+      permit: true
+  - from_zone: "trust"
+    to_zone: "dmz"
+    policy_name: "TRUST-TO-DMZ"
+    match:
+      source_address: "any"
+      destination_address: "any"
+      application: "junos-http"
+    then:
+      permit: true
+  - from_zone: "dmz"
+    to_zone: "trust"
+    policy_name: "DMZ-TO-TRUST"
+    match:
+      source_address: "any"
+      destination_address: "any"
+      application: "junos-ssh"
+    then:
+      permit: true
+
+  application_policies:
+  - from_zone: "trust"
+    to_zone: "untrust"
+    policy_name: "WEB-FILTERING"
+    match:
+      source_address: "any"
+      destination_address: "any"
+      application: "junos-http"
+    then:
+      application_services: [ "utm-policy", "idp-policy" ]
+
+  global_addresses:
+  - name: "INTERNAL-SERVERS"
+    ip_address: "192.168.1.0"
+    prefix_length: 24
+    description: "Internal server network"
+  - name: "DMZ-SERVERS"
+    ip_address: "10.10.10.0"
+    prefix_length: 24
+    description: "DMZ server network"
+  - name: "WEB-SERVER"
+    ip_address: "10.10.10.10"
+    prefix_length: 32
+    description: "Web server"
+
+  zone_addresses:
+  - zone_name: "trust"
+    address_name: "WORKSTATIONS"
+    ip_address: "192.168.1.0"
+    prefix_length: 26
+    description: "User workstations"
+
+  address_sets:
+  - set_name: "INTERNAL-NETWORKS"
+    addresses: [ "INTERNAL-SERVERS", "WORKSTATIONS" ]
+  - set_name: "PUBLIC-SERVERS"
+    addresses: [ "DMZ-SERVERS", "WEB-SERVER" ]
+
+  custom_applications:
+  - app_name: "CUSTOM-APP-8080"
+    protocol: "tcp"
+    destination_port: "8080"
+    description: "Custom application on port 8080"
+  - app_name: "CUSTOM-UDP-5000"
+    protocol: "udp"
+    destination_port: "5000"
+    description: "Custom UDP application"
+
+  application_sets:
+  - set_name: "WEB-APPS"
+    applications: [ "junos-http", "junos-https", "CUSTOM-APP-8080" ]
+
+# SRX NAT Configuration
+juniper_srx_nat:
+  source_nat_rulesets:
+  - ruleset_name: "TRUST-TO-UNTRUST-NAT"
+    from_zone: "trust"
+    to_zone: "untrust"
+  - ruleset_name: "DMZ-TO-UNTRUST-NAT"
+    from_zone: "dmz"
+    to_zone: "untrust"
+
+  source_nat_rules:
+  - ruleset_name: "TRUST-TO-UNTRUST-NAT"
+    rule_name: "INTERNAL-TO-INTERNET"
+    match:
+      source_address: "192.168.1.0/24"
+      destination_address: "0.0.0.0/0"
+    then:
+      nat_type: "interface"
+  - ruleset_name: "DMZ-TO-UNTRUST-NAT"
+    rule_name: "DMZ-TO-INTERNET"
+    match:
+      source_address: "10.10.10.0/24"
+      destination_address: "0.0.0.0/0"
+    then:
+      nat_type: "interface"
+
+  destination_nat_rulesets:
+  - ruleset_name: "UNTRUST-TO-DMZ-NAT"
+    from_zone: "untrust"
+
+  destination_nat_rules:
+  - ruleset_name: "UNTRUST-TO-DMZ-NAT"
+    rule_name: "WEB-SERVER-NAT"
+    match:
+      destination_address: "203.0.113.1/32"
+      destination_port: "80"
+    then:
+      nat_pool: "WEB-SERVER-POOL"
+
+  nat_pools:
+  - pool_name: "WEB-SERVER-POOL"
+    pool_address: "10.10.10.10"
+    prefix_length: 32
+    port_range: "80"
+
+# SRX VPN Configuration
+juniper_srx_vpn:
+  ike_proposals:
+  - proposal_name: "IKE-PROPOSAL-1"
+    auth_method: "pre-shared-keys"
+    dh_group: "group14"
+    auth_algorithm: "sha-256"
+    encryption_algorithm: "aes-256-cbc"
+    lifetime: 28800
+  - proposal_name: "IKE-PROPOSAL-2"
+    auth_method: "pre-shared-keys"
+    dh_group: "group19"
+    auth_algorithm: "sha-384"
+    encryption_algorithm: "aes-256-gcm"
+    lifetime: 86400
+
+  ike_policies:
+  - policy_name: "IKE-POLICY-1"
+    mode: "main"
+    proposals: [ "IKE-PROPOSAL-1", "IKE-PROPOSAL-2" ]
+    psk: "{{ vault_ipsec_psk }}"
+
+  ike_gateways:
+  - gateway_name: "BRANCH-OFFICE-GW"
+    ike_policy: "IKE-POLICY-1"
+    remote_address: "198.51.100.1"
+    external_interface: "ge-0/0/1.0"
+    local_identity: "203.0.113.1"
+    remote_identity: "198.51.100.1"
+
+  ipsec_proposals:
+  - proposal_name: "IPSEC-PROPOSAL-1"
+    protocol: "esp"
+    auth_algorithm: "hmac-sha-256-128"
+    encryption_algorithm: "aes-256-cbc"
+    lifetime: 3600
+  - proposal_name: "IPSEC-PROPOSAL-2"
+    protocol: "esp"
+    auth_algorithm: "hmac-sha-384-192"
+    encryption_algorithm: "aes-256-gcm"
+    lifetime: 7200
+
+  ipsec_policies:
+  - policy_name: "IPSEC-POLICY-1"
+    pfs_group: "group14"
+    proposals: [ "IPSEC-PROPOSAL-1", "IPSEC-PROPOSAL-2" ]
+
+  ipsec_vpns:
+  - vpn_name: "BRANCH-OFFICE-VPN"
+    bind_interface: "st0.0"
+    ike_gateway: "BRANCH-OFFICE-GW"
+    ipsec_policy: "IPSEC-POLICY-1"
+    establish_tunnels: "immediately"
+
+  tunnel_interfaces:
+  - tunnel_interface: "st0"
+    tunnel_ip: "10.0.0.1"
+    tunnel_prefix: "30"
+    description: "Branch Office VPN Tunnel"
+
+# SRX IPS Configuration
+juniper_srx_ips:
+  log_cache_size: 1000
+  suppression_start_log: 100
+  suppression_max_logs: 10000
+  packet_log_source: "{{ ansible_host }}"
+
+  packet_log_hosts:
+  - host: "{{ siem_server | default('10.0.1.100') }}"
+    port: 514
+
+  idp_policies:
+  - policy_name: "IDP-POLICY-STRICT"
+    rulebase_type: "application"
+  - policy_name: "IDP-POLICY-MODERATE"
+    rulebase_type: "signature"
+
+  custom_attacks:
+  - attack_name: "CUSTOM-SQL-INJECTION"
+    recommended_action: "drop"
+    severity: "major"
+    context: "http-url"
+    pattern: ".*union.*select.*"
+  - attack_name: "CUSTOM-XSS-ATTACK"
+    recommended_action: "drop"
+    severity: "major"
+    context: "http-url"
+    pattern: ".*<script>.*"
+
+  policy_applications:
+  - from_zone: "trust"
+    to_zone: "untrust"
+    policy_name: "WEB-BROWSING"
+    idp_policy: "IDP-POLICY-MODERATE"
+  - from_zone: "dmz"
+    to_zone: "trust"
+    policy_name: "DMZ-ACCESS"
+    idp_policy: "IDP-POLICY-STRICT"
+
+# SRX UTM Configuration
+juniper_srx_utm:
+  custom_url_categories:
+  - category_name: "COMPANY-BLOCKED"
+    urls:
+    - "social-media.example.com"
+    - "gaming.example.com"
+    - "streaming.example.com"
+
+  web_filtering_profiles:
+  - policy_name: "WEB-FILTER-POLICY"
+    profile_name: "CORPORATE-PROFILE"
+    server_config:
+      server: "{{ web_filter_server | default('10.0.1.200') }}"
+      port: 8080
+      proxy_profile: "CORPORATE-PROXY"
+
+  antivirus_profiles:
+  - policy_name: "AV-POLICY"
+    av_profile: "CORPORATE-AV"
+    smtp_profile: "SMTP-AV"
+    ftp_profile: "FTP-AV"
+
+  antispam_profiles:
+  - policy_name: "ANTISPAM-POLICY"
+    profile_name: "CORPORATE-ANTISPAM"
+
+  policy_applications:
+  - from_zone: "trust"
+    to_zone: "untrust"
+    policy_name: "WEB-BROWSING"
+    utm_policy: "WEB-FILTER-POLICY"
+  - from_zone: "trust"
+    to_zone: "dmz"
+    policy_name: "EMAIL-ACCESS"
+    utm_policy: "AV-POLICY"
+
+# SRX ALG Configuration
+juniper_srx_alg:
+  alg_settings:
+  - alg_name: "dns"
+    enable: true
+  - alg_name: "ftp"
+    enable: true
+  - alg_name: "h323"
+    enable: false
+  - alg_name: "mgcp"
+    enable: false
+  - alg_name: "msrpc"
+    enable: true
+  - alg_name: "pptp"
+    enable: false
+  - alg_name: "rsh"
+    enable: false
+  - alg_name: "rtsp"
+    enable: false
+  - alg_name: "sccp"
+    enable: false
+  - alg_name: "sip"
+    enable: true
+  - alg_name: "sql"
+    enable: false
+  - alg_name: "sunrpc"
+    enable: false
+  - alg_name: "talk"
+    enable: false
+  - alg_name: "tftp"
+    enable: true
+
+  dns_doctoring:
+  - domain: "internal.example.com"
+    mapping: "192.168.1.100"
+
+  ftp_mode: "wire"
+
+# SRX Logging Configuration
+juniper_srx_logging:
+  source_address: "{{ ansible_host }}"
+
+  log_streams:
+  - stream_name: "SECURITY-LOG-STREAM"
+    severity: "info"
+    format: "syslog"
+    host: "{{ siem_server | default('10.0.1.100') }}"
+    port: 514
+  - stream_name: "UTM-LOG-STREAM"
+    severity: "info"
+    format: "syslog"
+    host: "{{ utm_log_server | default('10.0.1.101') }}"
+    port: 514
+
+  snmp_clients:
+  - "{{ monitoring_server | default('10.0.1.102') }}"
+  - "{{ nms_server | default('10.0.1.103') }}"
+
+# QoS Configuration
+juniper_qos_config:
+  forwarding_classes:
+  - name: "best-effort"
+    queue_num: 0
+  - name: "expedited-forwarding"
+    queue_num: 1
+  - name: "assured-forwarding"
+    queue_num: 2
+  - name: "network-control"
+    queue_num: 3
+
+  schedulers:
+  - name: "be-scheduler"
+    transmit_rate: 25
+    buffer_size: 25
+    priority: "low"
+  - name: "ef-scheduler"
+    transmit_rate: 25
+    buffer_size: 25
+    priority: "high"
+  - name: "af-scheduler"
+    transmit_rate: 25
+    buffer_size: 25
+    priority: "medium-high"
+  - name: "nc-scheduler"
+    transmit_rate: 25
+    buffer_size: 25
+    priority: "high"
+
+  scheduler_maps:
+  - map_name: "enterprise-scheduler-map"
+    forwarding_class: "best-effort"
+    scheduler: "be-scheduler"
+  - map_name: "enterprise-scheduler-map"
+    forwarding_class: "expedited-forwarding"
+    scheduler: "ef-scheduler"
+  - map_name: "enterprise-scheduler-map"
+    forwarding_class: "assured-forwarding"
+    scheduler: "af-scheduler"
+  - map_name: "enterprise-scheduler-map"
+    forwarding_class: "network-control"
+    scheduler: "nc-scheduler"
+
+  interface_qos:
+  - interface: "ge-0/0/0"
+    scheduler_map: "enterprise-scheduler-map"
+    unit: "*"
+    dscp_classifier: "default"
+
+# Firewall Filters
+juniper_firewall_filters:
+- name: "PROTECT-RE"
+  terms:
+  - name: "ACCEPT-SSH"
+    from:
+      protocol: "tcp"
+      destination_port: "22"
+      source_address: "10.0.0.0/8"
+    then: "accept"
+  - name: "ACCEPT-NETCONF"
+    from:
+      protocol: "tcp"
+      destination_port: "830"
+      source_address: "10.0.0.0/8"
+    then: "accept"
+  - name: "ACCEPT-SNMP"
+    from:
+      protocol: "udp"
+      destination_port: "161"
+      source_address: "10.0.0.0/8"
+    then: "accept"
+  - name: "ACCEPT-NTP"
+    from:
+      protocol: "udp"
+      destination_port: "123"
+    then: "accept"
+  - name: "DENY-ALL"
+    then: "reject"
+
+# Firewall Filter Applications
+juniper_firewall_applications:
+- interface: "lo0"
+  unit: 0
+  direction: "input"
+  filter_name: "PROTECT-RE"
+
+# Static Routes
+juniper_static_routes:
+- destination: "0.0.0.0/0"
+  next_hop: "{{ default_gateway | default('192.168.1.1') }}"
+  preference: 5
+  metric: 1
+
+# Prefix Lists
+juniper_prefix_lists:
+- name: "DEFAULT-ROUTE"
+  prefix: "0.0.0.0/0"
+- name: "RFC1918"
+  prefix: "10.0.0.0/8 orlonger"
+- name: "RFC1918"
+  prefix: "172.16.0.0/12 orlonger"
+- name: "RFC1918"
+  prefix: "192.168.0.0/16 orlonger"
+
+# Route Policies
+juniper_route_policies:
+- name: "BGP-IMPORT"
+  terms:
+  - name: "ACCEPT-DIRECT"
+    from:
+      protocol: "direct"
+    then:
+      action: "accept"
+  - name: "ACCEPT-STATIC"
+    from:
+      protocol: "static"
+    then:
+      action: "accept"
+      metric: 100
+  - name: "REJECT-ALL"
+    then:
+      action: "reject"
+- name: "BGP-EXPORT"
+  terms:
+  - name: "ADVERTISE-INTERNAL"
+    from:
+      protocol: "direct"
+      prefix_list: "RFC1918"
+    then:
+      action: "accept"
+  - name: "REJECT-ALL"
+    then:
+      action: "reject"
+
+# SNMP Configuration
+juniper_snmp_config:
+  description: "{{ inventory_hostname }} - {{ device_role | default('Network Device') }}"
+  location: "{{ site_location | default('Data Center') }}"
+  contact: "{{ snmp_contact | default('network-ops@company.com') }}"
+  communities:
+  - name: "{{ vault_snmp_community_ro }}"
+    authorization: "read-only"
+  - name: "{{ vault_snmp_community_rw }}"
+    authorization: "read-write"
+  trap_options:
+    source_address: "{{ ansible_host }}"
+  trap_groups:
+  - name: "monitoring-servers"
+    targets:
+    - "{{ monitoring_server | default('10.0.1.100') }}"
+    - "{{ backup_monitoring_server | default('10.0.1.101') }}"
+
+# Logging Configuration
+juniper_logging_config:
+  hosts:
+  - host: "{{ syslog_server | default('10.0.1.200') }}"
+    facility: "any"
+    level: "info"
+    port: 514
+    source_address: "{{ ansible_host }}"
+  - host: "{{ backup_syslog_server | default('10.0.1.201') }}"
+    facility: "any"
+    level: "warning"
+    port: 514
+    source_address: "{{ ansible_host }}"
+
+  files:
+  - name: "messages"
+    size: "10m"
+    files: 5
+    facility: "any"
+    level: "notice"
+  - name: "security"
+    size: "10m"
+    files: 5
+    facility: "authorization"
+    level: "info"
+  - name: "interactive-commands"
+    size: "10m"
+    files: 5
+    facility: "interactive-commands"
+    level: "info"

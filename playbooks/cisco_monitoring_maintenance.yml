@@ -1,0 +1,533 @@
+---
+# Cisco Monitoring and Maintenance Playbook
+# Comprehensive monitoring, performance analysis, and automated maintenance for Cisco devices
+# Supports: Health monitoring, performance optimization, automated maintenance tasks
+
+- name: Cisco Network Monitoring and Maintenance
+  hosts: cisco_devices
+  gather_facts: false
+  connection: network_cli
+  vars:
+    ansible_network_os: "{{ platform }}"
+    ansible_user: "{{ vault_cisco_username }}"
+    ansible_password: "{{ vault_cisco_password }}"
+    ansible_become: true
+    ansible_become_method: enable
+    ansible_become_password: "{{ vault_cisco_enable_password }}"
+
+  tasks:
+  # Phase 1: System Health Monitoring
+  - name: "Phase 1: Comprehensive System Health Check"
+    block:
+    - name: Check CPU utilization
+      cisco.ios.ios_command:
+        commands:
+        - "show processes cpu sorted 5min"
+        - "show processes cpu history"
+      register: cpu_status
+      tags: [ monitoring, cpu ]
+
+    - name: Check memory utilization
+      cisco.ios.ios_command:
+        commands:
+        - "show memory summary"
+        - "show memory platform summary"
+      register: memory_status
+      tags: [ monitoring, memory ]
+
+    - name: Check system uptime and reload reason
+      cisco.ios.ios_command:
+        commands:
+        - "show version | include uptime"
+        - "show version | include reload"
+        - "show boot"
+      register: system_status
+      tags: [ monitoring, system ]
+
+    - name: Check environmental status
+      cisco.ios.ios_command:
+        commands:
+        - "show environment all"
+        - "show power"
+        - "show environment temperature"
+        - "show environment fan"
+      register: environmental_status
+      ignore_errors: true
+      tags: [ monitoring, environment ]
+
+  # Phase 2: Interface Monitoring
+  - name: "Phase 2: Interface Performance Monitoring"
+    block:
+    - name: Check interface statistics and errors
+      cisco.ios.ios_command:
+        commands:
+        - "show interfaces summary"
+        - "show interfaces | include protocol|errors|drops"
+        - "show interfaces counters errors"
+      register: interface_stats
+      tags: [ monitoring, interfaces ]
+
+    - name: Check specific interface details
+      cisco.ios.ios_command:
+        commands:
+        - "show interface {{ item.interface }}"
+        - "show interface {{ item.interface }} counters"
+      loop: "{{ cisco_monitoring_config.critical_interfaces }}"
+      register: critical_interface_status
+      when: cisco_monitoring_config.critical_interfaces is defined
+      tags: [ monitoring, critical_interfaces ]
+
+    - name: Check for interface flapping
+      cisco.ios.ios_command:
+        commands:
+        - "show logging | include UPDOWN"
+        - "show logging | include CHANGED"
+      register: interface_flapping
+      tags: [ monitoring, flapping ]
+
+    - name: Monitor bandwidth utilization
+      cisco.ios.ios_command:
+        commands:
+        - "show interfaces | include rate"
+        - "show interfaces accounting"
+      register: bandwidth_utilization
+      tags: [ monitoring, bandwidth ]
+
+  # Phase 3: Routing and Switching Health
+  - name: "Phase 3: Routing and Switching Monitoring"
+    block:
+    - name: Check routing table health
+      cisco.ios.ios_command:
+        commands:
+        - "show ip route summary"
+        - "show ip route | count"
+        - "show ip cef summary"
+      register: routing_health
+      when: platform in ['ios', 'iosxe']
+      tags: [ monitoring, routing ]
+
+    - name: Check OSPF neighbor status
+      cisco.ios.ios_command:
+        commands:
+        - "show ip ospf neighbor"
+        - "show ip ospf database"
+        - "show ip ospf interface brief"
+      register: ospf_status
+      when: cisco_routing_config.ospf is defined
+      tags: [ monitoring, ospf ]
+
+    - name: Check EIGRP neighbor status
+      cisco.ios.ios_command:
+        commands:
+        - "show ip eigrp neighbors"
+        - "show ip eigrp topology summary"
+        - "show ip eigrp interfaces"
+      register: eigrp_status
+      when: cisco_routing_config.eigrp is defined
+      tags: [ monitoring, eigrp ]
+
+    - name: Check BGP status (if applicable)
+      cisco.ios.ios_command:
+        commands:
+        - "show ip bgp summary"
+        - "show ip bgp neighbors"
+      register: bgp_status
+      ignore_errors: true
+      tags: [ monitoring, bgp ]
+
+    - name: Check spanning tree status
+      cisco.ios.ios_command:
+        commands:
+        - "show spanning-tree summary"
+        - "show spanning-tree root"
+        - "show spanning-tree inconsistentports"
+      register: stp_status
+      tags: [ monitoring, stp ]
+
+    - name: Check VLAN status
+      cisco.ios.ios_command:
+        commands:
+        - "show vlan brief"
+        - "show vlan id {{ item.vlan_id }}"
+      loop: "{{ cisco_vlan_config.vlans }}"
+      register: vlan_health
+      when: cisco_vlan_config.vlans is defined
+      tags: [ monitoring, vlans ]
+
+  # Phase 4: Security Monitoring
+  - name: "Phase 4: Security Feature Monitoring"
+    block:
+    - name: Check port security violations
+      cisco.ios.ios_command:
+        commands:
+        - "show port-security"
+        - "show port-security interface"
+        - "show errdisable recovery"
+      register: port_security_status
+      tags: [ monitoring, security, port_security ]
+
+    - name: Check access control list hit counts
+      cisco.ios.ios_command:
+        commands:
+        - "show access-lists | include matches"
+        - "show ip access-lists summary"
+      register: acl_hits
+      tags: [ monitoring, security, acl ]
+
+    - name: Monitor failed authentication attempts
+      cisco.ios.ios_command:
+        commands:
+        - "show logging | include Authentication"
+        - "show logging | include Login"
+        - "show users"
+      register: auth_monitoring
+      tags: [ monitoring, security, authentication ]
+
+    - name: Check DHCP snooping binding table
+      cisco.ios.ios_command:
+        commands:
+        - "show ip dhcp snooping binding"
+        - "show ip dhcp snooping statistics"
+      register: dhcp_snooping_status
+      ignore_errors: true
+      tags: [ monitoring, security, dhcp ]
+
+  # Phase 5: Performance Analysis
+  - name: "Phase 5: Performance Analysis and Optimization"
+    block:
+    - name: Analyze top CPU processes
+      cisco.ios.ios_command:
+        commands:
+        - "show processes cpu sorted | exclude 0.00%__0.00%__0.00%"
+      register: top_processes
+      tags: [ monitoring, performance, cpu ]
+
+    - name: Check for memory leaks
+      cisco.ios.ios_command:
+        commands:
+        - "show memory allocating-process totals"
+        - "show memory debug leaks"
+      register: memory_analysis
+      ignore_errors: true
+      tags: [ monitoring, performance, memory ]
+
+    - name: Monitor buffer utilization
+      cisco.ios.ios_command:
+        commands:
+        - "show buffers"
+        - "show buffers failures"
+      register: buffer_status
+      tags: [ monitoring, performance, buffers ]
+
+    - name: Check for packet drops and errors
+      cisco.ios.ios_command:
+        commands:
+        - "show interfaces | include drops|errors|overruns"
+        - "show controllers | include errors"
+      register: packet_analysis
+      tags: [ monitoring, performance, packets ]
+
+  # Phase 6: Hardware Monitoring
+  - name: "Phase 6: Hardware Component Monitoring"
+    block:
+    - name: Check module and line card status
+      cisco.ios.ios_command:
+        commands:
+        - "show module"
+        - "show inventory"
+        - "show diag"
+      register: hardware_status
+      ignore_errors: true
+      tags: [ monitoring, hardware ]
+
+    - name: Monitor power supply status
+      cisco.ios.ios_command:
+        commands:
+        - "show power status"
+        - "show power detail"
+        - "show power inline"
+      register: power_status
+      ignore_errors: true
+      tags: [ monitoring, hardware, power ]
+
+    - name: Check transceiver status
+      cisco.ios.ios_command:
+        commands:
+        - "show interfaces transceiver"
+        - "show interfaces {{ item.interface }} transceiver detail"
+      loop: "{{ cisco_monitoring_config.fiber_interfaces | default([]) }}"
+      register: transceiver_status
+      ignore_errors: true
+      tags: [ monitoring, hardware, transceivers ]
+
+  # Phase 7: Automated Maintenance Tasks
+  - name: "Phase 7: Automated Maintenance Operations"
+    block:
+    - name: Clear interface counters (if enabled)
+      cisco.ios.ios_command:
+        commands:
+        - "clear counters {{ item.interface }}"
+      loop: "{{ cisco_maintenance_config.clear_counters_interfaces | default([]) }}"
+      when: cisco_maintenance_config.clear_counters | default(false)
+      tags: [ maintenance, counters ]
+
+    - name: Clear ARP table entries (if needed)
+      cisco.ios.ios_command:
+        commands:
+        - "clear arp-cache"
+      when: cisco_maintenance_config.clear_arp | default(false)
+      tags: [ maintenance, arp ]
+
+    - name: Restart stuck processes (if configured)
+      cisco.ios.ios_command:
+        commands:
+        - "restart process {{ item.process_name }}"
+      loop: "{{ cisco_maintenance_config.restart_processes | default([]) }}"
+      when: cisco_maintenance_config.restart_processes is defined
+      tags: [ maintenance, processes ]
+
+    - name: Archive running configuration
+      cisco.ios.ios_config:
+        backup: true
+        backup_options:
+          filename: "{{ inventory_hostname }}_{{ ansible_date_time.epoch }}.cfg"
+          dir_path: "{{ playbook_dir }}/../backups/cisco/"
+      tags: [ maintenance, backup ]
+
+  # Phase 8: Log Analysis and Cleanup
+  - name: "Phase 8: Log Analysis and Management"
+    block:
+    - name: Analyze critical log entries
+      cisco.ios.ios_command:
+        commands:
+        - "show logging | include {{ item }}"
+      loop:
+      - "ERROR"
+      - "CRITICAL"
+      - "ALERT"
+      - "EMERGENCY"
+      - "%SYS-"
+      register: critical_logs
+      tags: [ monitoring, logs, critical ]
+
+    - name: Check log buffer utilization
+      cisco.ios.ios_command:
+        commands:
+        - "show logging summary"
+        - "show logging | include lines"
+      register: log_buffer_status
+      tags: [ monitoring, logs, buffer ]
+
+    - name: Clear old log entries (if configured)
+      cisco.ios.ios_command:
+        commands:
+        - "clear logging"
+      when: cisco_maintenance_config.clear_logs | default(false)
+      tags: [ maintenance, logs ]
+
+  # Phase 9: Performance Threshold Alerts
+  - name: "Phase 9: Performance Threshold Analysis"
+    block:
+    - name: Evaluate CPU thresholds
+      set_fact:
+        cpu_alert: true
+      when:
+      - cpu_status.stdout[0] is defined
+      - "(cpu_status.stdout[0] | regex_search('CPU utilization for five minutes: (\\d+)%', '\\1') | first | int) > (cisco_monitoring_thresholds.cpu_threshold | default(80))"
+      tags: [ monitoring, thresholds, cpu ]
+
+    - name: Evaluate memory thresholds
+      set_fact:
+        memory_alert: true
+      when:
+      - memory_status.stdout[0] is defined
+      - "(memory_status.stdout[0] | regex_search('Used: (\\d+)', '\\1') | first | int) > (cisco_monitoring_thresholds.memory_threshold | default(80))"
+      tags: [ monitoring, thresholds, memory ]
+
+    - name: Check interface error thresholds
+      set_fact:
+        interface_error_alert: true
+      when:
+      - interface_stats.stdout[1] is defined
+      - interface_stats.stdout[1] | regex_search('(\d+) input errors') | first | int > cisco_monitoring_thresholds.interface_error_threshold | default(100)
+      tags: [ monitoring, thresholds, interfaces ]
+
+  post_tasks:
+  # Phase 10: Comprehensive Reporting
+  - name: "Phase 10: Generate Comprehensive Monitoring Report"
+    block:
+    - name: Calculate interface utilization percentages
+      set_fact:
+        interface_utilization: "{{ interface_stats.stdout | default([]) }}"
+
+    - name: Generate detailed monitoring report
+      copy:
+        content: |
+          Cisco Network Device Monitoring Report
+          ====================================
+          Device: {{ inventory_hostname }}
+          Platform: {{ ansible_net_model | default('Unknown') }}
+          Software Version: {{ ansible_net_version | default('Unknown') }}
+          Monitoring Time: {{ ansible_date_time.iso8601 }}
+
+          === SYSTEM HEALTH STATUS ===
+          {% if cpu_status.stdout is defined and cpu_status.stdout | length > 0 %}
+          CPU Status:
+          {{ cpu_status.stdout[0] | regex_search('CPU utilization.*') }}
+
+          Top CPU Processes:
+          {{ top_processes.stdout[0] | default('No high CPU processes') }}
+          {% endif %}
+
+          {% if memory_status.stdout is defined and memory_status.stdout | length > 0 %}
+          Memory Status:
+          {{ memory_status.stdout[0] | regex_search('.*Total.*Used.*Free.*') }}
+          {% endif %}
+
+          System Uptime:
+          {{ system_status.stdout[0] | default('Unknown') if system_status.stdout is defined }}
+
+          {% if environmental_status.stdout is defined %}
+          Environmental Status:
+          {{ environmental_status.stdout[0] | default('Environmental data not available') }}
+          {% endif %}
+
+          === INTERFACE HEALTH ===
+          Interface Summary:
+          {{ interface_stats.stdout[0] | default('Interface data not available') if interface_stats.stdout is defined }}
+
+          Interface Errors:
+          {{ interface_stats.stdout[1] | default('No interface errors') if interface_stats.stdout is defined }}
+
+          {% if interface_flapping.stdout is defined %}
+          Interface Flapping Events:
+          {{ interface_flapping.stdout[0] | default('No flapping detected') }}
+          {% endif %}
+
+          === ROUTING HEALTH ===
+          {% if routing_health is defined and routing_health.stdout is defined %}
+          Routing Table Summary:
+          {{ routing_health.stdout[0] | default('Routing data not available') }}
+          {% endif %}
+
+          {% if ospf_status is defined and ospf_status.stdout is defined %}
+          OSPF Neighbor Status:
+          {{ ospf_status.stdout[0] | default('No OSPF neighbors') }}
+          {% endif %}
+
+          {% if eigrp_status is defined and eigrp_status.stdout is defined %}
+          EIGRP Neighbor Status:
+          {{ eigrp_status.stdout[0] | default('No EIGRP neighbors') }}
+          {% endif %}
+
+          {% if bgp_status is defined and bgp_status.stdout is defined %}
+          BGP Status:
+          {{ bgp_status.stdout[0] | default('BGP not configured') }}
+          {% endif %}
+
+          === SWITCHING HEALTH ===
+          {% if stp_status.stdout is defined %}
+          Spanning Tree Status:
+          {{ stp_status.stdout[0] | default('STP data not available') }}
+          {% endif %}
+
+          {% if vlan_health is defined %}
+          VLAN Health:
+          Total VLANs Monitored: {{ vlan_health.results | length }}
+          {% endif %}
+
+          === SECURITY MONITORING ===
+          {% if port_security_status.stdout is defined %}
+          Port Security Status:
+          {{ port_security_status.stdout[0] | default('Port security not configured') }}
+          {% endif %}
+
+          {% if auth_monitoring.stdout is defined %}
+          Authentication Monitoring:
+          {{ auth_monitoring.stdout[0] | default('No authentication events') }}
+          {% endif %}
+
+          {% if dhcp_snooping_status.stdout is defined %}
+          DHCP Snooping Status:
+          {{ dhcp_snooping_status.stdout[0] | default('DHCP snooping not configured') }}
+          {% endif %}
+
+          === PERFORMANCE ANALYSIS ===
+          {% if buffer_status.stdout is defined %}
+          Buffer Status:
+          {{ buffer_status.stdout[0] | regex_search('.*buffers.*') | default('Buffer data not available') }}
+          {% endif %}
+
+          {% if packet_analysis.stdout is defined %}
+          Packet Analysis:
+          {{ packet_analysis.stdout[0] | default('No packet issues detected') }}
+          {% endif %}
+
+          === HARDWARE STATUS ===
+          {% if hardware_status.stdout is defined %}
+          Hardware Status:
+          {{ hardware_status.stdout[0] | default('Hardware data not available') }}
+          {% endif %}
+
+          {% if power_status.stdout is defined %}
+          Power Status:
+          {{ power_status.stdout[0] | default('Power data not available') }}
+          {% endif %}
+
+          === CRITICAL ALERTS ===
+          {% if cpu_alert is defined %}
+          ⚠️  HIGH CPU UTILIZATION DETECTED
+          {% endif %}
+          {% if memory_alert is defined %}
+          ⚠️  HIGH MEMORY UTILIZATION DETECTED
+          {% endif %}
+          {% if interface_error_alert is defined %}
+          ⚠️  HIGH INTERFACE ERROR RATE DETECTED
+          {% endif %}
+
+          {% if critical_logs.results is defined %}
+          Critical Log Entries:
+          {% for log_result in critical_logs.results %}
+          {{ log_result.item }}: {{ log_result.stdout[0] | default('None') }}
+          {% endfor %}
+          {% endif %}
+
+          === MONITORING SUMMARY ===
+          Monitoring Status: {{ 'SUCCESS' if ansible_failed_task is not defined else 'FAILED' }}
+          Alerts Generated: {{ (cpu_alert is defined) | int + (memory_alert is defined) | int + (interface_error_alert is defined) | int }}
+          Report Generated: {{ ansible_date_time.iso8601 }}
+        dest: "{{ playbook_dir }}/../reports/cisco/{{ inventory_hostname }}_monitoring_report_{{ ansible_date_time.epoch }}.txt"
+      delegate_to: localhost
+      tags: [ reporting ]
+
+    - name: Send alert email for critical thresholds
+      mail:
+        to: "{{ cisco_monitoring_config.alert_email_recipients }}"
+        subject: "CRITICAL: Cisco Device Alert - {{ inventory_hostname }}"
+        body: |
+          Critical thresholds exceeded on {{ inventory_hostname }}:
+
+          {% if cpu_alert is defined %}
+          - HIGH CPU UTILIZATION
+          {% endif %}
+          {% if memory_alert is defined %}
+          - HIGH MEMORY UTILIZATION
+          {% endif %}
+          {% if interface_error_alert is defined %}
+          - HIGH INTERFACE ERROR RATE
+          {% endif %}
+
+          Please check the detailed monitoring report for more information.
+
+          Device: {{ inventory_hostname }}
+          Time: {{ ansible_date_time.iso8601 }}
+      when:
+      - cisco_monitoring_config.alert_email_recipients is defined
+      - (cpu_alert is defined) or (memory_alert is defined) or (interface_error_alert is defined)
+      delegate_to: localhost
+      tags: [ alerts, email ]
+
+# Example usage:
+# ansible-playbook cisco_monitoring_maintenance.yml --limit cisco_devices
+# ansible-playbook cisco_monitoring_maintenance.yml --tags monitoring,performance
+# ansible-playbook cisco_monitoring_maintenance.yml --tags maintenance --extra-vars "cisco_maintenance_config={'clear_counters': true}"

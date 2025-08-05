@@ -1,0 +1,375 @@
+---
+# Palo Alto Networks Specific Configuration Playbook
+# Comprehensive PAN-OS deployment using enterprise group_vars configuration
+# Supports: All PAN-OS firewall models with advanced security features
+
+- name: Deploy Palo Alto Networks Enterprise Configuration
+  hosts: palo_alto_devices
+  gather_facts: false
+  connection: local
+  vars:
+    panos_provider:
+      ip_address: "{{ ansible_host }}"
+      username: "{{ vault_panos_username }}"
+      password: "{{ vault_panos_password }}"
+      api_key: "{{ vault_panos_api_key | default(omit) }}"
+
+  tasks:
+    # Phase 1: Basic Interface Configuration
+    - name: "Phase 1: Configure Network Interfaces"
+      block:
+        - name: Configure management interfaces
+          paloaltonetworks.panos.panos_interface:
+            provider: "{{ panos_provider }}"
+            if_name: "{{ item.if_name }}"
+            mode: "{{ item.mode }}"
+            ip: "{{ item.ip | default('dhcp') }}"
+            zone_name: "{{ item.zone_name }}"
+            enable_dhcp: "{{ item.enable_dhcp | default(false) }}"
+            comment: "{{ item.comment }}"
+            commit: false
+          loop: "{{ panos_interface_config.management_interfaces }}"
+          tags: [interfaces, mgmt]
+
+        - name: Configure data interfaces
+          paloaltonetworks.panos.panos_interface:
+            provider: "{{ panos_provider }}"
+            if_name: "{{ item.if_name }}"
+            mode: "{{ item.mode }}"
+            zone_name: "{{ item.zone_name }}"
+            ip: "{{ item.ip }}"
+            comment: "{{ item.comment }}"
+            commit: false
+          loop: "{{ panos_interface_config.data_interfaces }}"
+          tags: [interfaces, data]
+
+    # Phase 2: Security Zone Configuration
+    - name: "Phase 2: Configure Security Zones"
+      block:
+        - name: Create security zones with protection profiles
+          paloaltonetworks.panos.panos_zone:
+            provider: "{{ panos_provider }}"
+            zone: "{{ item.zone_name }}"
+            mode: "{{ item.mode }}"
+            interface: "{{ item.interfaces }}"
+            zone_profile: "{{ item.zone_protection_profile }}"
+            enable_user_id: "{{ item.enable_user_identification }}"
+            log_setting: "{{ item.log_setting }}"
+            commit: false
+          loop: "{{ panos_security_zones }}"
+          tags: [zones]
+
+    # Phase 3: Address Objects and Groups
+    - name: "Phase 3: Configure Address Objects"
+      block:
+        - name: Create enterprise address objects
+          paloaltonetworks.panos.panos_address_object:
+            provider: "{{ panos_provider }}"
+            name: "{{ item.name }}"
+            value: "{{ item.value }}"
+            address_type: "{{ item.type }}"
+            description: "{{ item.description }}"
+            commit: false
+          loop: "{{ panos_address_objects }}"
+          tags: [addresses]
+
+    # Phase 4: Security Profiles Configuration
+    - name: "Phase 4: Configure Security Profiles"
+      block:
+        - name: Configure antivirus profiles
+          paloaltonetworks.panos.panos_antivirus:
+            provider: "{{ panos_provider }}"
+            name: "{{ item.name }}"
+            description: "{{ item.description }}"
+            http_action: "{{ item.decoder | selectattr('name', 'equalto', 'http') | map(attribute='action') | first | default('default') }}"
+            smtp_action: "{{ item.decoder | selectattr('name', 'equalto', 'smtp') | map(attribute='action') | first | default('default') }}"
+            pop3_action: "{{ item.decoder | selectattr('name', 'equalto', 'pop3') | map(attribute='action') | first | default('default') }}"
+            imap_action: "{{ item.decoder | selectattr('name', 'equalto', 'imap') | map(attribute='action') | first | default('default') }}"
+            ftp_action: "{{ item.decoder | selectattr('name', 'equalto', 'ftp') | map(attribute='action') | first | default('default') }}"
+            commit: false
+          loop: "{{ panos_security_profiles.antivirus_profiles }}"
+          tags: [security_profiles, antivirus]
+
+        - name: Configure anti-spyware profiles
+          paloaltonetworks.panos.panos_anti_spyware:
+            provider: "{{ panos_provider }}"
+            name: "{{ item.name }}"
+            description: "{{ item.description }}"
+            commit: false
+          loop: "{{ panos_security_profiles.anti_spyware_profiles }}"
+          tags: [security_profiles, anti_spyware]
+
+        - name: Configure vulnerability protection profiles
+          paloaltonetworks.panos.panos_vulnerability:
+            provider: "{{ panos_provider }}"
+            name: "{{ item.name }}"
+            description: "{{ item.description }}"
+            commit: false
+          loop: "{{ panos_security_profiles.vulnerability_profiles }}"
+          tags: [security_profiles, vulnerability]
+
+    # Phase 5: URL Filtering Configuration
+    - name: "Phase 5: Configure URL Filtering"
+      block:
+        - name: Create URL filtering profiles
+          paloaltonetworks.panos.panos_url_filtering:
+            provider: "{{ panos_provider }}"
+            name: "{{ item.name }}"
+            description: "{{ item.description }}"
+            allow_list: "{{ item.allow_categories }}"
+            block_list: "{{ item.block_categories }}"
+            alert_list: "{{ item.alert_categories }}"
+            credential_enforcement: "{{ item.credential_enforcement | default(false) }}"
+            commit: false
+          loop: "{{ panos_url_filtering.profiles }}"
+          tags: [url_filtering]
+
+    # Phase 6: Security Policy Rules
+    - name: "Phase 6: Configure Security Policies"
+      block:
+        - name: Create comprehensive security rules
+          paloaltonetworks.panos.panos_security_rule:
+            provider: "{{ panos_provider }}"
+            rule_name: "{{ item.rule_name }}"
+            source_zone: "{{ item.source_zone }}"
+            destination_zone: "{{ item.destination_zone }}"
+            source_ip: "{{ item.source_ip }}"
+            destination_ip: "{{ item.destination_ip }}"
+            application: "{{ item.application }}"
+            action: "{{ item.action }}"
+            log_setting: "{{ item.log_setting }}"
+            group_profile: "{{ item.profile_setting | default(omit) }}"
+            description: "{{ item.description }}"
+            commit: false
+          loop: "{{ panos_security_policies }}"
+          tags: [security_policies]
+
+    # Phase 7: NAT Policy Configuration
+    - name: "Phase 7: Configure NAT Policies"
+      block:
+        - name: Create NAT rules for enterprise traffic
+          paloaltonetworks.panos.panos_nat_rule:
+            provider: "{{ panos_provider }}"
+            rule_name: "{{ item.rule_name }}"
+            source_zone: "{{ item.source_zone }}"
+            destination_zone: "{{ item.destination_zone }}"
+            source_ip: "{{ item.source_ip }}"
+            destination_ip: "{{ item.destination_ip }}"
+            service: "{{ item.service }}"
+            nat_type: "{{ item.nat_type }}"
+            snat_type: "{{ item.snat_type | default(omit) }}"
+            snat_interface: "{{ item.snat_interface | default(omit) }}"
+            dnat_address: "{{ item.dnat_address | default(omit) }}"
+            description: "{{ item.description }}"
+            commit: false
+          loop: "{{ panos_nat_policies }}"
+          tags: [nat_policies]
+
+    # Phase 8: GlobalProtect VPN Configuration
+    - name: "Phase 8: Configure GlobalProtect VPN"
+      block:
+        - name: Configure GlobalProtect portals
+          paloaltonetworks.panos.panos_gp_portal:
+            provider: "{{ panos_provider }}"
+            name: "{{ item.name }}"
+            interface: "{{ item.interface }}"
+            ip_address: "{{ item.ip_address }}"
+            certificate_profile: "{{ item.certificate_profile }}"
+            commit: false
+          loop: "{{ panos_globalprotect.portals }}"
+          tags: [globalprotect, vpn]
+
+        - name: Configure GlobalProtect gateways
+          paloaltonetworks.panos.panos_gp_gateway:
+            provider: "{{ panos_provider }}"
+            name: "{{ item.name }}"
+            interface: "{{ item.interface }}"
+            ip_address: "{{ item.ip_address }}"
+            local_address: "{{ item.local_address }}"
+            tunnel_interface: "{{ item.tunnel_interface }}"
+            commit: false
+          loop: "{{ panos_globalprotect.gateways }}"
+          tags: [globalprotect, vpn]
+
+    # Phase 9: High Availability Configuration
+    - name: "Phase 9: Configure High Availability"
+      block:
+        - name: Set up HA configuration
+          paloaltonetworks.panos.panos_ha:
+            provider: "{{ panos_provider }}"
+            group_id: "{{ panos_ha_config.group_id }}"
+            mode: "{{ panos_ha_config.mode }}"
+            peer_ip: "{{ panos_ha_config.peer_ip }}"
+            backup_link: "{{ panos_ha_config.backup_link }}"
+            control_link: "{{ panos_ha_config.control_link }}"
+            session_sync: "{{ panos_ha_config.session_sync }}"
+            session_sync_network: "{{ panos_ha_config.session_sync_network }}"
+            commit: false
+          when: panos_ha_config is defined
+          tags: [ha]
+
+    # Phase 10: SNMP and Logging Configuration
+    - name: "Phase 10: Configure SNMP and Logging"
+      block:
+        - name: Configure SNMP settings
+          paloaltonetworks.panos.panos_snmp_profile:
+            provider: "{{ panos_provider }}"
+            snmp_profile: "{{ item.name }}"
+            version: "{{ panos_snmp_config.snmp_setup.snmp_version }}"
+            community: "{{ vault_snmp_community_ro | default(omit) }}"
+            location: "{{ panos_snmp_config.snmp_setup.location }}"
+            contact: "{{ panos_snmp_config.snmp_setup.contact }}"
+            commit: false
+          loop: "{{ panos_snmp_config.trap_settings.server_profiles }}"
+          tags: [snmp]
+
+        - name: Configure syslog server profiles
+          paloaltonetworks.panos.panos_syslog_profile:
+            provider: "{{ panos_provider }}"
+            name: "{{ item.name }}"
+            server: "{{ item.server }}"
+            protocol: "{{ item.protocol }}"
+            port: "{{ item.port }}"
+            format: "{{ item.format }}"
+            facility: "{{ item.facility }}"
+            commit: false
+          loop: "{{ panos_logging_config.log_settings.system.server_profiles }}"
+          tags: [logging]
+
+    # Phase 11: Administrator Account Configuration
+    - name: "Phase 11: Configure Administrator Accounts"
+      block:
+        - name: Create administrator accounts with RBAC
+          paloaltonetworks.panos.panos_administrator:
+            provider: "{{ panos_provider }}"
+            admin_username: "{{ item.username }}"
+            admin_password: "{{ item.password_hash }}"
+            role: "{{ item.role }}"
+            authentication_profile: "{{ item.authentication_profile }}"
+            client_certificate_only: "{{ item.client_certificate_only }}"
+            commit: false
+          loop: "{{ panos_admin_accounts.administrators }}"
+          no_log: true
+          tags: [admin_accounts]
+
+    # Phase 12: Certificate Management
+    - name: "Phase 12: Configure Certificates"
+      block:
+        - name: Generate device certificates
+          paloaltonetworks.panos.panos_certificate:
+            provider: "{{ panos_provider }}"
+            cert_name: "{{ item.name }}"
+            common_name: "{{ item.common_name }}"
+            country_code: "{{ item.country_code }}"
+            state: "{{ item.state }}"
+            locality: "{{ item.locality }}"
+            organization: "{{ item.organization }}"
+            organizational_unit: "{{ item.organizational_unit }}"
+            email: "{{ item.email }}"
+            commit: false
+          loop: "{{ panos_certificates.certificates }}"
+          tags: [certificates]
+
+    # Phase 13: Final Configuration Commit
+    - name: "Phase 13: Commit Configuration"
+      block:
+        - name: Commit all configuration changes
+          paloaltonetworks.panos.panos_commit:
+            provider: "{{ panos_provider }}"
+            sync: true
+            commit_all: true
+          tags: [commit]
+
+        - name: Verify configuration commit
+          paloaltonetworks.panos.panos_op:
+            provider: "{{ panos_provider }}"
+            cmd: "show jobs processed"
+          register: commit_status
+          tags: [commit, verify]
+
+    # Phase 14: Post-Deployment Validation
+    - name: "Phase 14: Post-Deployment Validation"
+      block:
+        - name: Verify interface status
+          paloaltonetworks.panos.panos_op:
+            provider: "{{ panos_provider }}"
+            cmd: "show interface all"
+          register: interface_status
+          tags: [validation]
+
+        - name: Verify security zones
+          paloaltonetworks.panos.panos_op:
+            provider: "{{ panos_provider }}"
+            cmd: "show zone all"
+          register: zone_status
+          tags: [validation]
+
+        - name: Verify security policies
+          paloaltonetworks.panos.panos_op:
+            provider: "{{ panos_provider }}"
+            cmd: "show running security-policy"
+          register: policy_status
+          tags: [validation]
+
+        - name: Verify GlobalProtect status
+          paloaltonetworks.panos.panos_op:
+            provider: "{{ panos_provider }}"
+            cmd: "show global-protect-gateway statistics"
+          register: gp_status
+          ignore_errors: true
+          tags: [validation, globalprotect]
+
+        - name: Verify HA status
+          paloaltonetworks.panos.panos_op:
+            provider: "{{ panos_provider }}"
+            cmd: "show high-availability state"
+          register: ha_status
+          ignore_errors: true
+          when: panos_ha_config is defined
+          tags: [validation, ha]
+
+  post_tasks:
+    - name: Generate Palo Alto deployment report
+      copy:
+        content: |
+          Palo Alto Networks Deployment Report
+          ===================================
+          Device: {{ inventory_hostname }}
+          Deployment Time: {{ ansible_date_time.iso8601 }}
+          
+          === INTERFACE STATUS ===
+          {{ interface_status.stdout | default('Not available') }}
+          
+          === SECURITY ZONES ===
+          {{ zone_status.stdout | default('Not available') }}
+          
+          === SECURITY POLICIES ===
+          {{ policy_status.stdout | default('Not available') }}
+          
+          {% if gp_status is defined and gp_status.stdout is defined %}
+          === GLOBALPROTECT STATUS ===
+          {{ gp_status.stdout }}
+          {% endif %}
+          
+          {% if ha_status is defined and ha_status.stdout is defined %}
+          === HIGH AVAILABILITY STATUS ===
+          {{ ha_status.stdout }}
+          {% endif %}
+          
+          === DEPLOYMENT SUMMARY ===
+          Total Interfaces: {{ panos_interface_config.management_interfaces | length + panos_interface_config.data_interfaces | length }}
+          Security Zones: {{ panos_security_zones | length }}
+          Address Objects: {{ panos_address_objects | length }}
+          Security Policies: {{ panos_security_policies | length }}
+          NAT Policies: {{ panos_nat_policies | length }}
+          Security Profiles: {{ panos_security_profiles.antivirus_profiles | length + panos_security_profiles.anti_spyware_profiles | length + panos_security_profiles.vulnerability_profiles | length }}
+          Administrator Accounts: {{ panos_admin_accounts.administrators | length }}
+          
+          Status: {{ 'SUCCESS' if ansible_failed_task is not defined else 'FAILED' }}
+        dest: "{{ playbook_dir }}/../reports/panos/{{ inventory_hostname }}_panos_deployment_{{ ansible_date_time.epoch }}.txt"
+      delegate_to: localhost
+
+# Example usage:
+# ansible-playbook panos_enterprise_config.yml --limit palo_alto_devices
+# ansible-playbook panos_enterprise_config.yml --tags interfaces,zones
+# ansible-playbook panos_enterprise_config.yml --tags security_policies --check

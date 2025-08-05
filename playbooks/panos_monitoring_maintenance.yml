@@ -1,0 +1,487 @@
+---
+# Palo Alto Networks Monitoring and Maintenance Playbook
+# Comprehensive PAN-OS monitoring, maintenance, and performance optimization
+# Leverages enterprise configuration from group_vars
+
+- name: Palo Alto Networks Monitoring and Maintenance
+  hosts: palo_alto_devices
+  gather_facts: false
+  connection: local
+  vars:
+    panos_provider:
+      ip_address: "{{ ansible_host }}"
+      username: "{{ vault_panos_username }}"
+      password: "{{ vault_panos_password }}"
+      api_key: "{{ vault_panos_api_key | default(omit) }}"
+
+  tasks:
+  # System Health Monitoring
+  - name: "Health Check: System Resources"
+    block:
+    - name: Check system information
+      paloaltonetworks.panos.panos_op:
+        provider: "{{ panos_provider }}"
+        cmd: "show system info"
+      register: system_info
+      tags: [ health_check, system ]
+
+    - name: Check system resources
+      paloaltonetworks.panos.panos_op:
+        provider: "{{ panos_provider }}"
+        cmd: "show system resources"
+      register: system_resources
+      tags: [ health_check, resources ]
+
+    - name: Check disk usage
+      paloaltonetworks.panos.panos_op:
+        provider: "{{ panos_provider }}"
+        cmd: "show system disk-space"
+      register: disk_usage
+      tags: [ health_check, storage ]
+
+    - name: Check system state
+      paloaltonetworks.panos.panos_op:
+        provider: "{{ panos_provider }}"
+        cmd: "show system state"
+      register: system_state
+      tags: [ health_check, state ]
+
+  # Interface and Network Monitoring
+  - name: "Health Check: Network Interfaces"
+    block:
+    - name: Check all interface status using group_vars configuration
+      paloaltonetworks.panos.panos_op:
+        provider: "{{ panos_provider }}"
+        cmd: "show interface {{ item.if_name }}"
+      register: interface_status
+      loop: "{{ panos_interface_config.management_interfaces + panos_interface_config.data_interfaces }}"
+      tags: [ health_check, interfaces ]
+
+    - name: Check interface counters for errors
+      paloaltonetworks.panos.panos_op:
+        provider: "{{ panos_provider }}"
+        cmd: "show counter interface all"
+      register: interface_counters
+      tags: [ health_check, interface_errors ]
+
+    - name: Check zone configuration
+      paloaltonetworks.panos.panos_op:
+        provider: "{{ panos_provider }}"
+        cmd: "show zone {{ item.zone_name }}"
+      register: zone_status
+      loop: "{{ panos_security_zones }}"
+      tags: [ health_check, zones ]
+
+  # Security Services Monitoring
+  - name: "Health Check: Security Services"
+    block:
+    - name: Check threat prevention status
+      paloaltonetworks.panos.panos_op:
+        provider: "{{ panos_provider }}"
+        cmd: "show system info"
+      register: threat_prevention_status
+      tags: [ health_check, security_services ]
+
+    - name: Check antivirus version
+      paloaltonetworks.panos.panos_op:
+        provider: "{{ panos_provider }}"
+        cmd: "show system software"
+      register: av_version
+      tags: [ health_check, antivirus ]
+
+    - name: Check WildFire status
+      paloaltonetworks.panos.panos_op:
+        provider: "{{ panos_provider }}"
+        cmd: "show wildfire status"
+      register: wildfire_status
+      tags: [ health_check, wildfire ]
+
+    - name: Check URL filtering database version
+      paloaltonetworks.panos.panos_op:
+        provider: "{{ panos_provider }}"
+        cmd: "show system software"
+      register: url_db_version
+      tags: [ health_check, url_filtering ]
+
+  # High Availability Monitoring
+  - name: "Health Check: High Availability"
+    block:
+    - name: Check HA status and configuration
+      paloaltonetworks.panos.panos_op:
+        provider: "{{ panos_provider }}"
+        cmd: "show high-availability state"
+      register: ha_state
+      when: panos_ha_config is defined
+      tags: [ health_check, ha ]
+
+    - name: Check HA link status
+      paloaltonetworks.panos.panos_op:
+        provider: "{{ panos_provider }}"
+        cmd: "show high-availability link-monitoring"
+      register: ha_link_status
+      when: panos_ha_config is defined
+      tags: [ health_check, ha_links ]
+
+    - name: Check HA path monitoring
+      paloaltonetworks.panos.panos_op:
+        provider: "{{ panos_provider }}"
+        cmd: "show high-availability path-monitoring"
+      register: ha_path_status
+      when: panos_ha_config is defined
+      tags: [ health_check, ha_paths ]
+
+  # GlobalProtect Monitoring
+  - name: "Health Check: GlobalProtect Services"
+    block:
+    - name: Check GlobalProtect gateway statistics
+      paloaltonetworks.panos.panos_op:
+        provider: "{{ panos_provider }}"
+        cmd: "show global-protect-gateway statistics"
+      register: gp_gateway_stats
+      when: panos_globalprotect is defined
+      tags: [ health_check, globalprotect ]
+
+    - name: Check GlobalProtect portal statistics
+      paloaltonetworks.panos.panos_op:
+        provider: "{{ panos_provider }}"
+        cmd: "show global-protect-portal statistics"
+      register: gp_portal_stats
+      when: panos_globalprotect is defined
+      tags: [ health_check, globalprotect ]
+
+    - name: Check active GlobalProtect users
+      paloaltonetworks.panos.panos_op:
+        provider: "{{ panos_provider }}"
+        cmd: "show global-protect-gateway current-user"
+      register: gp_active_users
+      when: panos_globalprotect is defined
+      tags: [ health_check, globalprotect ]
+
+  # Log and SNMP Monitoring
+  - name: "Health Check: Logging and SNMP"
+    block:
+    - name: Check syslog server connectivity using group_vars servers
+      paloaltonetworks.panos.panos_op:
+        provider: "{{ panos_provider }}"
+        cmd: "test syslog-ng server {{ item.server }}"
+      register: syslog_connectivity
+      loop: "{{ panos_logging_config.log_settings.system.server_profiles }}"
+      ignore_errors: true
+      tags: [ health_check, logging ]
+
+    - name: Check SNMP configuration status
+      paloaltonetworks.panos.panos_op:
+        provider: "{{ panos_provider }}"
+        cmd: "show snmp system"
+      register: snmp_status
+      tags: [ health_check, snmp ]
+
+  # Performance Monitoring
+  - name: "Performance Monitoring: Session and Throughput"
+    block:
+    - name: Check current session utilization
+      paloaltonetworks.panos.panos_op:
+        provider: "{{ panos_provider }}"
+        cmd: "show session info"
+      register: session_info
+      tags: [ performance, sessions ]
+
+    - name: Check throughput statistics
+      paloaltonetworks.panos.panos_op:
+        provider: "{{ panos_provider }}"
+        cmd: "show system statistics"
+      register: throughput_stats
+      tags: [ performance, throughput ]
+
+    - name: Check top applications by bandwidth
+      paloaltonetworks.panos.panos_op:
+        provider: "{{ panos_provider }}"
+        cmd: "show running resource-monitor"
+      register: top_applications
+      tags: [ performance, applications ]
+
+    - name: Check dataplane CPU utilization
+      paloaltonetworks.panos.panos_op:
+        provider: "{{ panos_provider }}"
+        cmd: "show system resources"
+      register: cpu_utilization
+      tags: [ performance, cpu ]
+
+  # Security Policy Analysis
+  - name: "Security Analysis: Policy and Rule Usage"
+    block:
+    - name: Check security rule hit counts
+      paloaltonetworks.panos.panos_op:
+        provider: "{{ panos_provider }}"
+        cmd: "show rule-hit-count vsys vsys1 rules all"
+      register: rule_hit_counts
+      tags: [ security_analysis, policy_usage ]
+
+    - name: Check top blocked applications
+      paloaltonetworks.panos.panos_op:
+        provider: "{{ panos_provider }}"
+        cmd: "show log traffic recent equal application ( action eq deny )"
+      register: blocked_apps
+      ignore_errors: true
+      tags: [ security_analysis, blocked_traffic ]
+
+    - name: Check threat activity summary
+      paloaltonetworks.panos.panos_op:
+        provider: "{{ panos_provider }}"
+        cmd: "show log threat recent"
+      register: threat_activity
+      ignore_errors: true
+      tags: [ security_analysis, threats ]
+
+  # Configuration Maintenance
+  - name: "Maintenance: Configuration Management"
+    block:
+    - name: Check configuration changes
+      paloaltonetworks.panos.panos_op:
+        provider: "{{ panos_provider }}"
+        cmd: "show system info"
+      register: config_version
+      tags: [ maintenance, configuration ]
+
+    - name: Backup current configuration
+      paloaltonetworks.panos.panos_op:
+        provider: "{{ panos_provider }}"
+        cmd: "save config to {{ inventory_hostname }}-backup-{{ ansible_date_time.epoch }}.cfg"
+      when: backup_config | default(false)
+      tags: [ maintenance, backup ]
+
+    - name: Check for unused address objects
+      paloaltonetworks.panos.panos_op:
+        provider: "{{ panos_provider }}"
+        cmd: "show object address unused"
+      register: unused_addresses
+      tags: [ maintenance, cleanup ]
+
+    - name: Check for unused service objects
+      paloaltonetworks.panos.panos_op:
+        provider: "{{ panos_provider }}"
+        cmd: "show object service unused"
+      register: unused_services
+      tags: [ maintenance, cleanup ]
+
+  # Certificate and License Monitoring
+  - name: "Maintenance: Certificates and Licenses"
+    block:
+    - name: Check certificate expiration using group_vars certificates
+      paloaltonetworks.panos.panos_op:
+        provider: "{{ panos_provider }}"
+        cmd: "show certificate {{ item.name }}"
+      register: cert_status
+      loop: "{{ panos_certificates.certificates }}"
+      tags: [ maintenance, certificates ]
+
+    - name: Check license information
+      paloaltonetworks.panos.panos_op:
+        provider: "{{ panos_provider }}"
+        cmd: "request license info"
+      register: license_info
+      tags: [ maintenance, licenses ]
+
+    - name: Check support license expiration
+      paloaltonetworks.panos.panos_op:
+        provider: "{{ panos_provider }}"
+        cmd: "show system info"
+      register: support_info
+      tags: [ maintenance, support ]
+
+  # System Optimization
+  - name: "Optimization: Performance Tuning"
+    block:
+    - name: Optimize session table settings
+      paloaltonetworks.panos.panos_config_element:
+        provider: "{{ panos_provider }}"
+        xpath: "/config/devices/entry/deviceconfig/system"
+        element: |
+          <max-sessions>{{ max_sessions | default(262144) }}</max-sessions>
+          <tcp-reject-non-syn>yes</tcp-reject-non-syn>
+        commit: false
+      when: optimize_performance | default(false)
+      tags: [ optimization, sessions ]
+
+    - name: Configure log rate limiting
+      paloaltonetworks.panos.panos_config_element:
+        provider: "{{ panos_provider }}"
+        xpath: "/config/devices/entry/deviceconfig/system"
+        element: |
+          <log-export-scheduler>yes</log-export-scheduler>
+          <log-high-dp-load>yes</log-high-dp-load>
+        commit: false
+      when: optimize_performance | default(false)
+      tags: [ optimization, logging ]
+
+  # Generate Health Report
+  - name: "Reporting: Generate Comprehensive Health Report"
+    block:
+    - name: Compile health metrics
+      set_fact:
+        panos_health_summary:
+          device: "{{ inventory_hostname }}"
+          timestamp: "{{ ansible_date_time.iso8601 }}"
+          system_health: "{{ 'HEALTHY' if system_resources is succeeded else 'DEGRADED' }}"
+          interface_health: "{{ 'HEALTHY' if interface_status is succeeded else 'DEGRADED' }}"
+          security_services: "{{ 'ACTIVE' if threat_prevention_status is succeeded else 'DEGRADED' }}"
+          ha_status: "{{ 'ACTIVE' if ha_state is succeeded and panos_ha_config is defined else 'N/A' }}"
+          gp_status: "{{ 'ACTIVE' if gp_gateway_stats is succeeded and panos_globalprotect is defined else 'N/A' }}"
+          overall_status: "{{ 'HEALTHY' if (system_resources is succeeded and interface_status is succeeded and threat_prevention_status is succeeded) else 'NEEDS ATTENTION' }}"
+
+  post_tasks:
+  - name: Create comprehensive monitoring report
+    copy:
+      content: |
+        Palo Alto Networks Monitoring and Maintenance Report
+        ===================================================
+        Device: {{ inventory_hostname }}
+        Report Generated: {{ ansible_date_time.iso8601 }}
+        Overall Health: {{ panos_health_summary.overall_status }}
+
+        === SYSTEM RESOURCES ===
+        System Health: {{ panos_health_summary.system_health }}
+        {% if system_info is defined and system_info.stdout is defined %}
+        System Information:
+        {{ system_info.stdout }}
+        {% endif %}
+
+        {% if system_resources is defined and system_resources.stdout is defined %}
+        Resource Utilization:
+        {{ system_resources.stdout }}
+        {% endif %}
+
+        {% if disk_usage is defined and disk_usage.stdout is defined %}
+        Disk Usage:
+        {{ disk_usage.stdout }}
+        {% endif %}
+
+        === INTERFACE STATUS ===
+        Interface Health: {{ panos_health_summary.interface_health }}
+        Total Interfaces Monitored: {{ panos_interface_config.management_interfaces | length + panos_interface_config.data_interfaces | length }}
+
+        {% if interface_counters is defined and interface_counters.stdout is defined %}
+        Interface Error Summary:
+        {{ interface_counters.stdout }}
+        {% endif %}
+
+        === SECURITY SERVICES ===
+        Security Services: {{ panos_health_summary.security_services }}
+
+        {% if av_version is defined and av_version.stdout is defined %}
+        Antivirus Status:
+        {{ av_version.stdout }}
+        {% endif %}
+
+        {% if wildfire_status is defined and wildfire_status.stdout is defined %}
+        WildFire Status:
+        {{ wildfire_status.stdout }}
+        {% endif %}
+
+        === HIGH AVAILABILITY ===
+        HA Status: {{ panos_health_summary.ha_status }}
+        {% if ha_state is defined and ha_state.stdout is defined %}
+        HA Configuration:
+        {{ ha_state.stdout }}
+        {% endif %}
+
+        === GLOBALPROTECT ===
+        GlobalProtect Status: {{ panos_health_summary.gp_status }}
+        {% if gp_active_users is defined and gp_active_users.stdout is defined %}
+        Active GP Users:
+        {{ gp_active_users.stdout }}
+        {% endif %}
+
+        === PERFORMANCE METRICS ===
+        {% if session_info is defined and session_info.stdout is defined %}
+        Session Utilization:
+        {{ session_info.stdout }}
+        {% endif %}
+
+        {% if throughput_stats is defined and throughput_stats.stdout is defined %}
+        Throughput Statistics:
+        {{ throughput_stats.stdout }}
+        {% endif %}
+
+        {% if cpu_utilization is defined and cpu_utilization.stdout is defined %}
+        CPU Utilization:
+        {{ cpu_utilization.stdout }}
+        {% endif %}
+
+        === SECURITY ANALYSIS ===
+        {% if rule_hit_counts is defined and rule_hit_counts.stdout is defined %}
+        Policy Rule Usage:
+        {{ rule_hit_counts.stdout }}
+        {% endif %}
+
+        {% if threat_activity is defined and threat_activity.stdout is defined %}
+        Recent Threat Activity:
+        {{ threat_activity.stdout }}
+        {% endif %}
+
+        === MAINTENANCE STATUS ===
+        Configuration Zones: {{ panos_security_zones | length }}
+        Address Objects: {{ panos_address_objects | length }}
+        Security Policies: {{ panos_security_policies | length }}
+        NAT Policies: {{ panos_nat_policies | length }}
+
+        {% if unused_addresses is defined and unused_addresses.stdout is defined %}
+        Unused Address Objects:
+        {{ unused_addresses.stdout }}
+        {% endif %}
+
+        {% if unused_services is defined and unused_services.stdout is defined %}
+        Unused Service Objects:
+        {{ unused_services.stdout }}
+        {% endif %}
+
+        === CERTIFICATES AND LICENSES ===
+        Device Certificates: {{ panos_certificates.certificates | length }}
+
+        {% if license_info is defined and license_info.stdout is defined %}
+        License Information:
+        {{ license_info.stdout }}
+        {% endif %}
+
+        === RECOMMENDATIONS ===
+        {% if panos_health_summary.overall_status == 'NEEDS ATTENTION' %}
+        ⚠️  System requires attention:
+        - Review failed health checks above
+        - Check resource utilization thresholds
+        - Verify security service functionality
+        - Consider maintenance window for issues
+        {% else %}
+        ✅ System is operating normally:
+        - Continue regular monitoring schedule
+        - Review performance trends weekly
+        - Update threat intelligence regularly
+        - Schedule next maintenance window
+        {% endif %}
+
+        {% if optimize_performance | default(false) %}
+        - Performance optimization applied
+        - Monitor session utilization after changes
+        {% endif %}
+
+        {% if backup_config | default(false) %}
+        - Configuration backup completed
+        - Backup stored as: {{ inventory_hostname }}-backup-{{ ansible_date_time.epoch }}.cfg
+        {% endif %}
+      dest: "{{ playbook_dir }}/../reports/panos/{{ inventory_hostname }}_monitoring_{{ ansible_date_time.epoch }}.txt"
+    delegate_to: localhost
+
+# Example usage:
+# Full monitoring and maintenance:
+# ansible-playbook panos_monitoring_maintenance.yml --limit palo_alto_devices
+
+# Health check only:
+# ansible-playbook panos_monitoring_maintenance.yml --tags health_check
+
+# Performance monitoring only:
+# ansible-playbook panos_monitoring_maintenance.yml --tags performance
+
+# With configuration backup:
+# ansible-playbook panos_monitoring_maintenance.yml -e "backup_config=true"
+
+# With performance optimization:
+# ansible-playbook panos_monitoring_maintenance.yml -e "optimize_performance=true"

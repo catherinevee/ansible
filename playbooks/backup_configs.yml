@@ -1,0 +1,84 @@
+---
+# Backup network device configurations
+- name: Backup network device configurations
+  hosts: all
+  gather_facts: false
+  vars:
+    backup_dir: "{{ playbook_dir }}/../backups/{{ ansible_date_time.date }}"
+    timestamp: "{{ ansible_date_time.epoch }}"
+
+  tasks:
+  - name: Create backup directory
+    ansible.builtin.file:
+      path: "{{ backup_dir }}"
+      state: directory
+      mode: '0755'
+    delegate_to: localhost
+    run_once: true
+    # Creates timestamped backup directory on control node
+
+  - name: Backup Cisco device configurations
+    cisco.ios.ios_config:
+      backup: true
+      backup_options:
+        filename: "{{ inventory_hostname }}_{{ timestamp }}.cfg"
+        dir_path: "{{ backup_dir }}"
+    when: ansible_network_os == "ios"
+    register: cisco_backup_result
+    # Uses native backup functionality for Cisco devices
+
+  - name: Backup Juniper device configurations
+    junipernetworks.junos.junos_config:
+      backup: true
+      backup_options:
+        filename: "{{ inventory_hostname }}_{{ timestamp }}.xml"
+        dir_path: "{{ backup_dir }}"
+    when: ansible_network_os == "junos"
+    register: juniper_backup_result
+    # XML format backup for Juniper devices
+
+  - name: Backup Arista device configurations
+    arista.eos.eos_config:
+      backup: true
+      backup_options:
+        filename: "{{ inventory_hostname }}_{{ timestamp }}.cfg"
+        dir_path: "{{ backup_dir }}"
+    when: ansible_network_os == "eos"
+    register: arista_backup_result
+    # Native EOS backup functionality
+
+  - name: Backup Palo Alto configuration
+    paloaltonetworks.panos.panos_op:
+      cmd: "show config running"
+      provider: "{{ panos_provider }}"
+    when: "'palo_alto' in group_names"
+    register: panos_config
+    # Operational command to retrieve configuration
+
+  - name: Save Palo Alto configuration to file
+    ansible.builtin.copy:
+      content: "{{ panos_config.stdout }}"
+      dest: "{{ backup_dir }}/{{ inventory_hostname }}_{{ timestamp }}.xml"
+      mode: '0644'
+    when:
+    - "'palo_alto' in group_names"
+    - panos_config is defined
+    delegate_to: localhost
+    # Manual save for PAN-OS devices
+
+  - name: Backup Fortinet configuration
+    fortinet.fortios.fortios_monitor:
+      selector: "system_config_backup"
+      params:
+        scope: "global"
+    when: "'fortinet' in group_names"
+    register: fortinet_backup
+    # System backup via API
+
+  - name: Display backup completion summary
+    ansible.builtin.debug:
+      msg:
+      - "Backup completed for: {{ inventory_hostname }}"
+      - "Backup location: {{ backup_dir }}"
+      - "Timestamp: {{ ansible_date_time.iso8601 }}"
+    # Summary information for each device

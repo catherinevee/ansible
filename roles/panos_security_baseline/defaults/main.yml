@@ -1,0 +1,80 @@
+---
+# Default variables for PAN-OS security baseline
+panos_security_zones:
+- name: "trust"
+  mode: "layer3"
+  interface: "ethernet1/1"
+- name: "untrust"
+  mode: "layer3"
+  interface: "ethernet1/2"
+- name: "dmz"
+  mode: "layer3"
+  interface: "ethernet1/3"
+
+panos_address_objects:
+- name: "RFC1918_10"
+  value: "10.0.0.0/8"
+  type: "ip-netmask"
+  description: "RFC1918 Private Networks"
+- name: "RFC1918_172"
+  value: "172.16.0.0/12"
+  type: "ip-netmask"
+  description: "RFC1918 Private Networks"
+- name: "RFC1918_192"
+  value: "192.168.0.0/16"
+  type: "ip-netmask"
+  description: "RFC1918 Private Networks"
+
+panos_service_objects:
+- name: "HTTPS_Custom"
+  protocol: "tcp"
+  port: "8443"
+  description: "Custom HTTPS Port"
+- name: "Database_Port"
+  protocol: "tcp"
+  port: "3306"
+  description: "MySQL Database Port"
+
+panos_baseline_security_rules:
+- rule_name: "Allow_Outbound_Web"
+  source_zone: "trust"
+  destination_zone: "untrust"
+  source_address: "any"
+  destination_address: "any"
+  application: [ "web-browsing", "ssl" ]
+  service: "application-default"
+  action: "allow"
+  log_end: true
+  description: "Allow outbound web traffic"
+
+- rule_name: "Allow_Internal_Communication"
+  source_zone: "trust"
+  destination_zone: "trust"
+  source_address: "any"
+  destination_address: "any"
+  application: "any"
+  service: "any"
+  action: "allow"
+  log_end: false
+  description: "Allow internal zone communication"
+
+- rule_name: "Block_All_Default"
+  source_zone: "any"
+  destination_zone: "any"
+  source_address: "any"
+  destination_address: "any"
+  application: "any"
+  service: "any"
+  action: "deny"
+  log_start: true
+  log_end: true
+  description: "Default deny rule"
+
+panos_url_filtering_profiles:
+- name: "Standard_URL_Filter"
+  dynamic_url: true
+  action: "block"
+
+panos_vulnerability_profiles:
+- name: "Standard_Vulnerability_Profile"
+  description: "Standard vulnerability protection profile"

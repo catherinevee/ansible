@@ -1,0 +1,87 @@
+---
+# Security Hardening Tasks for Master Orchestration
+# Multi-vendor security hardening implementation
+
+- name: Apply Cisco IOS/IOS-XE security hardening
+  block:
+  - name: Configure password policies
+    cisco.ios.ios_config:
+      lines:
+      - "service password-encryption"
+      - "security passwords min-length 12"
+      - "login block-for 300 attempts 3 within 60"
+    when: ansible_network_os == 'ios'
+
+  - name: Configure SSH hardening
+    cisco.ios.ios_config:
+      lines:
+      - "ip ssh version 2"
+      - "ip ssh time-out 60"
+      - "ip ssh authentication-retries 3"
+      - "line vty 0 15"
+      - "transport input ssh"
+      - "exec-timeout 10 0"
+    when: ansible_network_os == 'ios'
+
+  - name: Configure SNMP v3
+    cisco.ios.ios_config:
+      lines:
+      - "no snmp-server community public"
+      - "no snmp-server community private"
+      - "snmp-server group {{ snmp_group | default('NETOPS') }} v3 priv"
+      - "snmp-server user {{ snmp_user | default('netadmin') }} {{ snmp_group | default('NETOPS') }} v3 auth sha {{ snmp_auth_password }} priv aes 128 {{ snmp_priv_password }}"
+    when:
+    - ansible_network_os == 'ios'
+    - snmp_auth_password is defined
+    - snmp_priv_password is defined
+
+- name: Apply Arista EOS security hardening
+  block:
+  - name: Configure user authentication
+    arista.eos.eos_config:
+      lines:
+      - "aaa authentication login default local"
+      - "aaa authorization exec default local"
+      - "service password-encryption aes"
+    when: ansible_network_os == 'eos'
+
+  - name: Configure SSH security
+    arista.eos.eos_config:
+      lines:
+      - "management ssh"
+      - "ip ssh client-alive interval 300"
+      - "ip ssh client-alive count-max 3"
+    when: ansible_network_os == 'eos'
+
+- name: Apply Juniper JunOS security hardening
+  block:
+  - name: Configure authentication policies
+    junipernetworks.junos.junos_config:
+      lines:
+      - "set system login class super-user-local permissions all"
+      - "set system services ssh protocol-version v2"
+      - "set system services ssh connection-limit 10"
+      - "set system services ssh rate-limit 5"
+    when: ansible_network_os == 'junos'
+
+- name: Apply Palo Alto PAN-OS security hardening
+  block:
+  - name: Configure management security
+    paloaltonetworks.panos.panos_config_element:
+      xpath: "/config/devices/entry/deviceconfig/system/permitted-ip"
+      element: "<entry name='management-subnet'>{{ management_subnet | default('10.0.0.0/8') }}</entry>"
+    when: ansible_network_os == 'panos'
+
+- name: Apply Fortinet FortiOS security hardening
+  block:
+  - name: Configure admin security settings
+    fortinet.fortios.fortios_system_global:
+      system_global:
+        admin_lockout_duration: 300
+        admin_lockout_threshold: 3
+        strong_crypto: enable
+    when: ansible_network_os == 'fortios'
+
+- name: Log security hardening completion
+  debug:
+    msg: "Security hardening applied for {{ inventory_hostname }} ({{ ansible_network_os }})"

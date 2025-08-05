@@ -1,0 +1,153 @@
+---
+# Cisco IOS/IOS-XE security hardening configuration
+- name: Disable unused services on Cisco devices
+  cisco.ios.ios_config:
+    lines:
+    - "no service pad"
+    - "no service udp-small-servers"
+    - "no service tcp-small-servers"
+    - "no service finger"
+    - "no ip http server"
+    - "no ip http secure-server"
+    - "no ip source-route"
+    - "no ip gratuitous-arps"
+    - "no ip redirects"
+    - "no ip proxy-arp"
+    - "no cdp run"
+    - "no lldp run"
+  notify: save_configuration
+  # Disable unnecessary services that could pose security risks
+
+- name: Configure secure password policies
+  cisco.ios.ios_config:
+    lines:
+    - "security passwords min-length {{ password_min_length | default('8') }}"
+    - "security authentication failure rate {{ auth_failure_rate | default('3') }} log"
+    - "login block-for {{ login_block_time | default('300') }} attempts {{ max_login_attempts | default('3') }} within {{ login_attempt_window | default('60') }}"
+    - "login quiet-time {{ login_quiet_time | default('600') }}"
+    - "login delay {{ login_delay | default('3') }}"
+  notify: save_configuration
+  # Configure strong password policies and login protections
+
+- name: Enable enhanced security features
+  cisco.ios.ios_config:
+    lines:
+    - "service password-encryption"
+    - "service timestamps debug datetime msec localtime show-timezone"
+    - "service timestamps log datetime msec localtime show-timezone"
+    - "service sequence-numbers"
+    - "no service dhcp"
+    - "no ip bootp server"
+    - "security authentication failure rate 10 log"
+  notify: save_configuration
+  # Enable comprehensive security features
+
+- name: Configure secure SSH settings
+  cisco.ios.ios_config:
+    lines:
+    - "ip ssh version 2"
+    - "ip ssh time-out {{ ssh_timeout | default('60') }}"
+    - "ip ssh authentication-retries {{ ssh_auth_retries | default('2') }}"
+    - "ip ssh logging events"
+    - "crypto key generate rsa general-keys modulus {{ rsa_key_size | default('2048') }}"
+  notify: save_configuration
+  # Configure secure SSH with strong encryption
+
+- name: Secure console and VTY lines
+  cisco.ios.ios_config:
+    lines:
+    - "exec-timeout {{ exec_timeout_minutes | default('5') }} {{ exec_timeout_seconds | default('0') }}"
+    - "login local"
+    - "transport input ssh"
+    - "logging synchronous"
+    - "history size {{ command_history_size | default('20') }}"
+    parents: "line vty 0 15"
+  notify: save_configuration
+  # Secure remote access lines
+
+- name: Configure console line security
+  cisco.ios.ios_config:
+    lines:
+    - "exec-timeout {{ console_timeout | default('10') }} 0"
+    - "login local"
+    - "logging synchronous"
+    parents: "line con 0"
+  notify: save_configuration
+  # Secure console access
+
+- name: Configure AAA authentication
+  cisco.ios.ios_config:
+    lines:
+    - "aaa new-model"
+    - "aaa authentication login default local"
+    - "aaa authentication enable default enable"
+    - "aaa authorization exec default local"
+    - "aaa authorization commands 15 default local"
+    - "aaa accounting exec default start-stop local"
+    - "aaa accounting commands 15 default start-stop local"
+  when: enable_aaa | default(true)
+  notify: save_configuration
+  # Configure comprehensive AAA framework
+
+- name: Configure control plane protection
+  cisco.ios.ios_config:
+    lines:
+    - "control-plane"
+    - "service-policy input {{ control_plane_policy | default('CONTROL_PLANE_POLICY') }}"
+  when: enable_control_plane_protection | default(true)
+  notify: save_configuration
+  # Protect the control plane from attacks
+
+- name: Disable unused interfaces
+  cisco.ios.ios_interfaces:
+    config:
+    - name: "{{ item }}"
+      enabled: false
+      description: "UNUSED - Administratively Shutdown for Security"
+    state: merged
+  loop: "{{ unused_interfaces | default([]) }}"
+  when: shutdown_unused_interfaces | default(true)
+  # Shutdown unused interfaces to reduce attack surface
+
+- name: Configure secure SNMP (if enabled)
+  cisco.ios.ios_config:
+    lines:
+    - "no snmp-server community public"
+    - "no snmp-server community private"
+    - "snmp-server group {{ snmpv3_group }} v3 auth"
+    - "snmp-server user {{ snmpv3_user }} {{ snmpv3_group }} v3 auth {{ snmpv3_auth_protocol }} {{ snmpv3_auth_key }} priv {{ snmpv3_priv_protocol }} {{ snmpv3_priv_key }}"
+    - "access-list {{ snmp_acl_number | default('99') }} permit {{ snmp_management_network }}"
+    - "snmp-server community {{ secure_snmp_community }} RO {{ snmp_acl_number | default('99') }}"
+  when:
+  - enable_snmp | default(false)
+  - snmpv3_user is defined
+  notify: save_configuration
+  # Configure secure SNMP with v3 and access control
+
+- name: Configure NTP security
+  cisco.ios.ios_config:
+    lines:
+    - "ntp authenticate"
+    - "ntp authentication-key {{ ntp_key_id | default('1') }} md5 {{ ntp_auth_key }}"
+    - "ntp trusted-key {{ ntp_key_id | default('1') }}"
+    - "ntp server {{ item }} key {{ ntp_key_id | default('1') }}"
+    loop: "{{ ntp_servers }}"
+  when:
+  - enable_ntp_auth | default(true)
+  - ntp_auth_key is defined
+  notify: save_configuration
+  # Configure authenticated NTP for time synchronization
+
+- name: Configure logging for security events
+  cisco.ios.ios_config:
+    lines:
+    - "logging on"
+    - "logging buffered {{ log_buffer_size | default('16384') }} {{ log_level | default('informational') }}"
+    - "logging console critical"
+    - "logging monitor debugging"
+    - "logging trap informational"
+    - "logging facility {{ log_facility | default('local0') }}"
+    - "logging source-interface {{ logging_source_interface | default('Loopback0') }}"
+    loop: "{{ syslog_servers }}"
+  notify: save_configuration
+  # Configure comprehensive security logging

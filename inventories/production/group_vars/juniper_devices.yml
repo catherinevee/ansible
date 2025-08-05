@@ -1,0 +1,235 @@
+---
+# Juniper device-specific variables
+ansible_network_os: junos
+ansible_connection: netconf
+ansible_user: "{{ vault_juniper_username }}"
+ansible_password: "{{ vault_juniper_password }}"
+ansible_ssh_common_args: '-o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no'
+
+# Juniper NETCONF settings
+juniper_netconf_config:
+  port: 830
+  timeout: 120
+  look_for_keys: false
+  allow_agent: false
+
+# Junos-specific settings
+junos_config_format: text
+junos_commit_timeout: 60
+junos_commit_synchronize: true
+
+# Standard interface configurations
+juniper_interfaces:
+- name: "ge-0/0/0"
+  description: "WAN Interface"
+  unit: "0"
+  family:
+    inet:
+      address: "192.168.100.2/30"
+- name: "ge-0/0/1"
+  description: "LAN Interface"
+  unit: "0"
+  family:
+    inet:
+      address: "10.0.1.2/24"
+
+# Standard interface configurations for Juniper routers
+juniper_standard_interfaces:
+  wan_interfaces:
+  - name: ge-0/0/0
+    description: "WAN Connection"
+    unit: 0
+    family: inet
+    mtu: 1500
+  - name: ge-0/0/1
+    description: "LAN Connection"
+    unit: 0
+    family: inet
+    mtu: 1500
+  core_interfaces:
+  - name: xe-0/0/0
+    description: "Core Connection"
+    unit: 0
+    family: inet
+    mtu: 9192
+  - name: xe-0/0/1
+    description: "Core Connection"
+    unit: 0
+    family: inet
+    mtu: 9192
+
+# BGP configuration
+juniper_bgp_config:
+  local_asn: "{{ bgp_asn | default('65100') }}"
+  router_id: "{{ ansible_host }}"
+  graceful_restart: true
+  multipath:
+    multiple_as: true
+  import_policy: "BGP-IMPORT"
+  export_policy: "BGP-EXPORT"
+  neighbors:
+  - address: "192.168.100.1"
+    peer_asn: "65000"
+    description: "ISP BGP Peer"
+
+# OSPF configuration for internal routing
+juniper_ospf_config:
+  router_id: "{{ ansible_host }}"
+  area: "{{ ospf_area | default('0.0.0.0') }}"
+  reference_bandwidth: 100g
+  spf_options:
+    delay: 200
+    holddown: 5000
+    rapid_runs: 3
+
+# MPLS configuration for service provider
+juniper_mpls_config:
+  lsp_cleanup_timer: 20
+  interface_all: true
+  protocols:
+    rsvp:
+      interface_all: true
+    ldp:
+      interface_all: true
+
+# Security policies for SRX devices
+juniper_security_policies:
+- from_zone: "trust"
+  to_zone: "untrust"
+  policy_name: "trust-to-untrust"
+  match:
+    source_address: "any"
+    destination_address: "any"
+    application: "any"
+  then:
+    permit: true
+- from_zone: "dmz"
+  to_zone: "trust"
+  policy_name: "dmz-to-trust"
+  match:
+    source_address: "any"
+    destination_address: "any"
+    application: "junos-ssh"
+  then:
+    permit: true
+
+# Security configuration for Juniper devices
+juniper_security_config:
+  authentication_order:
+  - radius
+  - password
+  root_authentication:
+    encrypted_password: "{{ vault_juniper_root_password }}"
+  login:
+    users:
+    - name: admin
+      class: super-user
+      authentication:
+        encrypted_password: "{{ vault_juniper_admin_password }}"
+
+# Static routes
+juniper_static_routes:
+- destination: "0.0.0.0/0"
+  next_hop: "192.168.100.1"
+
+# Quality of Service configuration
+juniper_qos_config:
+  forwarding_classes:
+  - name: best-effort
+    queue_num: 0
+  - name: expedited-forwarding
+    queue_num: 1
+  - name: assured-forwarding
+    queue_num: 2
+  - name: network-control
+    queue_num: 3
+  schedulers:
+  - name: be-scheduler
+    transmit_rate: 25
+    buffer_size: 25
+    priority: low
+  - name: ef-scheduler
+    transmit_rate: 25
+    buffer_size: 25
+    priority: high
+
+# Firewall filters for security
+juniper_firewall_filters:
+- name: PROTECT-RE
+  terms:
+  - name: ACCEPT-SSH
+    from:
+      protocol: tcp
+      destination_port: 22
+    then: accept
+  - name: ACCEPT-NETCONF
+    from:
+      protocol: tcp
+      destination_port: 830
+    then: accept
+  - name: ACCEPT-SNMP
+    from:
+      protocol: udp
+      destination_port: 161
+    then: accept
+  - name: DENY-ALL
+    then: reject
+
+# NTP configuration
+juniper_ntp_config:
+  servers:
+  - "0.pool.ntp.org"
+  - "1.pool.ntp.org"
+  - "{{ ntp_server_primary | default('10.0.1.10') }}"
+  - "{{ ntp_server_secondary | default('10.0.1.11') }}"
+  timezone: "{{ site_timezone | default('UTC') }}"
+
+# SNMP configuration
+juniper_snmp_config:
+  description: "{{ inventory_hostname }} - {{ device_role }}"
+  location: "{{ site }}"
+  contact: "{{ snmp_contact | default('network-ops@company.com') }}"
+  communities:
+  - name: "{{ vault_snmp_community_ro }}"
+    authorization: read-only
+  trap_options:
+    source_address: "{{ ansible_host }}"
+  trap_groups:
+  - name: monitoring-servers
+    targets:
+    - "{{ monitoring_server | default('10.0.1.100') }}"
+
+# Logging configuration
+juniper_logging_config:
+  hosts:
+  - host: "{{ syslog_server | default('10.0.1.101') }}"
+    facility: any
+    level: info
+  files:
+  - name: messages
+    size: 10m
+    files: 5
+    facility: any
+    level: notice
+  - name: security
+    size: 10m
+    files: 5
+    facility: authorization
+    level: info
+
+# Route policies
+juniper_route_policies:
+- name: BGP-IMPORT
+  terms:
+  - name: ACCEPT-DIRECT
+    from:
+      protocol: direct
+    then:
+      accept: true
+- name: BGP-EXPORT
+  terms:
+  - name: ACCEPT-STATIC
+    from:
+      protocol: static
+    then:
+      accept: true

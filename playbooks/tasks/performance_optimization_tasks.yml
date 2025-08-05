@@ -1,0 +1,243 @@
+---
+# Performance Optimization Tasks for Master Orchestration
+# Multi-vendor performance tuning and optimization
+
+- name: Apply Cisco IOS/IOS-XE performance optimizations
+  block:
+  - name: Configure CEF optimization
+    cisco.ios.ios_config:
+      lines:
+      - "ip cef"
+      - "ip cef load-sharing algorithm universal"
+      - "ip cef optimize neighbor resolution"
+    when: ansible_network_os == 'ios'
+
+  - name: Configure buffer optimization
+    cisco.ios.ios_config:
+      lines:
+      - "buffers small permanent {{ small_buffers | default(104) }}"
+      - "buffers middle permanent {{ middle_buffers | default(25) }}"
+      - "buffers big permanent {{ big_buffers | default(50) }}"
+      - "buffers large permanent {{ large_buffers | default(10) }}"
+      - "buffers huge permanent {{ huge_buffers | default(4) }}"
+    when:
+    - ansible_network_os == 'ios'
+    - optimize_buffers | default(false)
+
+  - name: Configure TCP optimization
+    cisco.ios.ios_config:
+      lines:
+      - "ip tcp window-size {{ tcp_window_size | default(65535) }}"
+      - "ip tcp selective-ack"
+      - "ip tcp timestamp"
+      - "ip tcp chunk-size {{ tcp_chunk_size | default(4096) }}"
+    when:
+    - ansible_network_os == 'ios'
+    - optimize_tcp | default(false)
+
+  - name: Configure hardware acceleration
+    cisco.ios.ios_config:
+      lines:
+      - "mls aging fast"
+      - "mls flow ip interface-full"
+      - "mls flow ipx interface-full"
+    when:
+    - ansible_network_os == 'ios'
+    - "'catalyst' in ansible_net_model | lower"
+    - enable_hardware_acceleration | default(false)
+
+- name: Apply Arista EOS performance optimizations
+  block:
+  - name: Configure hardware optimization
+    arista.eos.eos_config:
+      lines:
+      - "hardware forwarding-table partition flexible exact-match {{ exact_match_entries | default(16384) }} lem {{ lem_entries | default(8192) }}"
+      - "hardware counter feature"
+    when:
+    - ansible_network_os == 'eos'
+    - optimize_hardware_tables | default(false)
+
+  - name: Configure buffer and queue optimization
+    arista.eos.eos_config:
+      lines:
+      - "hardware access-list tcam profile {{ tcam_profile | default('l3-l4-l2') }}"
+      - "qos trust dscp"
+      - "qos cos {{ default_cos | default(0) }}"
+    when:
+    - ansible_network_os == 'eos'
+    - optimize_qos | default(false)
+
+  - name: Configure ECMP optimization
+    arista.eos.eos_config:
+      lines:
+      - "ip load-sharing method {{ load_sharing_method | default('consistent') }}"
+      - "hardware forwarding-table partition flexible"
+    when:
+    - ansible_network_os == 'eos'
+    - optimize_load_balancing | default(false)
+
+- name: Apply Juniper JunOS performance optimizations
+  block:
+  - name: Configure forwarding optimization
+    junipernetworks.junos.junos_config:
+      lines:
+      - "set chassis forwarding-options hash-key family inet layer-3"
+      - "set chassis forwarding-options hash-key family inet layer-4"
+      - "set chassis forwarding-options enhanced-hash-key"
+      commit: true
+    when:
+    - ansible_network_os == 'junos'
+    - optimize_forwarding | default(false)
+
+  - name: Configure sampling optimization
+    junipernetworks.junos.junos_config:
+      lines:
+      - "set chassis forwarding-options sampling instance SAMPLING family inet output flow-server {{ flow_server }} port {{ flow_port | default(9995) }}"
+      - "set chassis forwarding-options sampling instance SAMPLING family inet rate {{ sampling_rate | default(1000) }}"
+      commit: true
+    when:
+    - ansible_network_os == 'junos'
+    - optimize_sampling | default(false)
+    - flow_server is defined
+
+  - name: Configure CoS optimization
+    junipernetworks.junos.junos_config:
+      lines:
+      - "set class-of-service forwarding-classes class {{ item.name }} queue-num {{ item.queue }}"
+      - "set class-of-service forwarding-classes class {{ item.name }} priority {{ item.priority }}"
+      commit: true
+    loop: "{{ cos_classes | default([]) }}"
+    when:
+    - ansible_network_os == 'junos'
+    - optimize_cos | default(false)
+
+- name: Apply Palo Alto PAN-OS performance optimizations
+  block:
+  - name: Configure session optimization
+    paloaltonetworks.panos.panos_config_element:
+      xpath: "/config/devices/entry/deviceconfig/system"
+      element: |
+        <max-sessions>{{ max_sessions | default(262144) }}</max-sessions>
+        <tcp-reject-non-syn>yes</tcp-reject-non-syn>
+        <icmp-unreachable-rate>100</icmp-unreachable-rate>
+    when:
+    - ansible_network_os == 'panos'
+    - optimize_sessions | default(false)
+
+  - name: Configure threat detection optimization
+    paloaltonetworks.panos.panos_config_element:
+      xpath: "/config/devices/entry/deviceconfig/setting/management"
+      element: |
+        <max-rows-in-csv-export>1048576</max-rows-in-csv-export>
+        <auto-mac-detect>yes</auto-mac-detect>
+    when:
+    - ansible_network_os == 'panos'
+    - optimize_threat_detection | default(false)
+
+- name: Apply Fortinet FortiOS performance optimizations
+  block:
+  - name: Configure system performance settings
+    fortinet.fortios.fortios_system_global:
+      system_global:
+        admin_concurrent: enable
+        admin_lockout_duration: 60
+        admin_lockout_threshold: 3
+        cpu_use_threshold: 90
+        memory_use_threshold_extreme: 95
+        memory_use_threshold_red: 88
+        memory_use_threshold_green: 82
+    when:
+    - ansible_network_os == 'fortios'
+    - optimize_system_performance | default(false)
+
+  - name: Configure network performance settings
+    fortinet.fortios.fortios_system_ntp:
+      system_ntp:
+        ntpsync: enable
+        type: fortiguard
+        syncinterval: 60
+    when:
+    - ansible_network_os == 'fortios'
+    - optimize_network_performance | default(false)
+
+- name: Configure interface-specific optimizations
+  block:
+  - name: Optimize high-speed interfaces - Cisco
+    cisco.ios.ios_config:
+      lines:
+      - "interface {{ item.interface }}"
+      - "load-interval {{ item.load_interval | default(30) }}"
+      - "carrier-delay msec {{ item.carrier_delay | default(0) }}"
+      - "hold-queue {{ item.hold_queue_out | default(4096) }} out"
+      - "hold-queue {{ item.hold_queue_in | default(300) }} in"
+      parents: "interface {{ item.interface }}"
+    loop: "{{ high_speed_interfaces | default([]) }}"
+    when: ansible_network_os == 'ios'
+
+  - name: Optimize high-speed interfaces - Arista
+    arista.eos.eos_config:
+      lines:
+      - "interface {{ item.interface }}"
+      - "load-interval {{ item.load_interval | default(5) }}"
+      - "qos trust cos"
+      parents: "interface {{ item.interface }}"
+    loop: "{{ high_speed_interfaces | default([]) }}"
+    when: ansible_network_os == 'eos'
+
+- name: Verify performance optimizations
+  block:
+  - name: Check CPU utilization
+    ansible.netcommon.cli_command:
+      command: "{{ platform_cpu_command[ansible_network_os] | default('show processes cpu') }}"
+    register: cpu_utilization
+    vars:
+      platform_cpu_command:
+        ios: "show processes cpu sorted"
+        eos: "show processes top"
+        junos: "show system processes"
+        panos: "show system resources"
+        fortios: "get system performance status"
+
+  - name: Check memory utilization
+    ansible.netcommon.cli_command:
+      command: "{{ platform_memory_command[ansible_network_os] | default('show memory summary') }}"
+    register: memory_utilization
+    vars:
+      platform_memory_command:
+        ios: "show memory summary"
+        eos: "show version"
+        junos: "show system memory"
+        panos: "show system resources"
+        fortios: "get system status"
+
+- name: Generate performance baseline
+  block:
+  - name: Create performance report
+    copy:
+      content: |
+        Performance Optimization Report: {{ inventory_hostname }}
+        ==========================================================
+        Timestamp: {{ ansible_date_time.iso8601 }}
+        Platform: {{ ansible_network_os | upper }}
+        Model: {{ ansible_net_model | default('Unknown') }}
+
+        CPU Utilization:
+        {{ cpu_utilization.stdout | default('Not available') }}
+
+        Memory Utilization:
+        {{ memory_utilization.stdout | default('Not available') }}
+
+        Optimizations Applied:
+        {% if optimize_buffers | default(false) %}- Buffer optimization{% endif %}
+        {% if optimize_tcp | default(false) %}- TCP optimization{% endif %}
+        {% if optimize_hardware_tables | default(false) %}- Hardware table optimization{% endif %}
+        {% if optimize_qos | default(false) %}- QoS optimization{% endif %}
+        {% if optimize_forwarding | default(false) %}- Forwarding optimization{% endif %}
+        {% if optimize_sessions | default(false) %}- Session optimization{% endif %}
+
+      dest: "{{ playbook_dir }}/../reports/performance/{{ inventory_hostname }}_performance_{{ ansible_date_time.epoch }}.txt"
+    delegate_to: localhost
+
+- name: Log performance optimization completion
+  debug:
+    msg: "Performance optimizations applied for {{ inventory_hostname }} ({{ ansible_network_os }})"

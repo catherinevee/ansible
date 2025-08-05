@@ -1,0 +1,655 @@
+---
+# Juniper Data Center EVPN-VXLAN Spine-Leaf Configuration
+# Supports: QFX5100, QFX5200, QFX10000 series switches
+# Features: EVPN-VXLAN overlay, BGP spine-leaf underlay, multi-tenancy
+
+- name: Deploy Juniper Data Center EVPN-VXLAN Configuration
+  hosts: juniper_datacenter
+  gather_facts: false
+  connection: netconf
+  vars:
+    ansible_network_os: junos
+    ansible_user: "{{ vault_juniper_username }}"
+    ansible_password: "{{ vault_juniper_password }}"
+    timeout: 300
+
+  tasks:
+  # Phase 1: Base System Configuration for Data Center
+  - name: "Phase 1: Configure Data Center Base System"
+    block:
+    - name: Configure system settings for data center
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set system host-name {{ juniper_dc_config.hostname }}"
+        - "set system domain-name {{ juniper_dc_config.domain_name }}"
+        - "set system time-zone {{ juniper_dc_config.timezone }}"
+        - "set system root-authentication encrypted-password {{ vault_juniper_root_password }}"
+        comment: "Data center system configuration"
+      no_log: true
+      tags: [ system, datacenter ]
+
+    - name: Configure data center services
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set system services ssh root-login allow"
+        - "set system services ssh protocol-version v2"
+        - "set system services netconf ssh"
+        - "set system services netconf rfc-compliant"
+        - "set system services rest http port 8080"
+        - "set system services rest https port 8443"
+        - "set system services rest enable-explorer"
+        comment: "Data center services configuration"
+      tags: [ system, services, datacenter ]
+
+    - name: Configure chassis aggregated devices
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set chassis aggregated-devices ethernet device-count {{ juniper_dc_config.ae_device_count | default(128) }}"
+        comment: "Chassis AE device configuration"
+      tags: [ chassis, ae ]
+
+  # Phase 2: Underlay Network Configuration (BGP Spine-Leaf)
+  - name: "Phase 2: Configure Underlay BGP Spine-Leaf Network"
+    block:
+    - name: Configure underlay interfaces for spine switches
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set interfaces {{ item.interface }} unit 0 family inet address {{ item.ip_address }}/{{ item.prefix_length }}"
+        - "set interfaces {{ item.interface }} description '{{ item.description }}'"
+        - "set interfaces {{ item.interface }} mtu {{ item.mtu | default(9216) }}"
+        comment: "Spine underlay interface configuration"
+      loop: "{{ juniper_dc_config.spine_underlay_interfaces }}"
+      when:
+      - juniper_dc_config.spine_underlay_interfaces is defined
+      - juniper_dc_role == 'spine'
+      tags: [ underlay, interfaces, spine ]
+
+    - name: Configure underlay interfaces for leaf switches
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set interfaces {{ item.interface }} unit 0 family inet address {{ item.ip_address }}/{{ item.prefix_length }}"
+        - "set interfaces {{ item.interface }} description '{{ item.description }}'"
+        - "set interfaces {{ item.interface }} mtu {{ item.mtu | default(9216) }}"
+        comment: "Leaf underlay interface configuration"
+      loop: "{{ juniper_dc_config.leaf_underlay_interfaces }}"
+      when:
+      - juniper_dc_config.leaf_underlay_interfaces is defined
+      - juniper_dc_role == 'leaf'
+      tags: [ underlay, interfaces, leaf ]
+
+    - name: Configure loopback interfaces
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set interfaces lo0 unit 0 family inet address {{ juniper_dc_config.loopback_ip }}/32"
+        - "set interfaces lo0 unit 0 description 'Router ID and VTEP Source'"
+        comment: "Loopback interface configuration"
+      tags: [ loopback, underlay ]
+
+    - name: Configure BGP for underlay (spine role)
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set routing-options router-id {{ juniper_dc_config.loopback_ip }}"
+        - "set routing-options autonomous-system {{ juniper_dc_config.underlay_asn }}"
+        - "set protocols bgp group UNDERLAY type external"
+        - "set protocols bgp group UNDERLAY mtu-discovery"
+        - "set protocols bgp group UNDERLAY import UNDERLAY-IMPORT"
+        - "set protocols bgp group UNDERLAY export UNDERLAY-EXPORT"
+        - "set protocols bgp group UNDERLAY multipath multiple-as"
+        comment: "BGP underlay configuration for spine"
+      when: juniper_dc_role == 'spine'
+      tags: [ bgp, underlay, spine ]
+
+    - name: Configure BGP underlay neighbors for spine
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set protocols bgp group UNDERLAY neighbor {{ item.neighbor_ip }} description '{{ item.description }}'"
+        - "set protocols bgp group UNDERLAY neighbor {{ item.neighbor_ip }} peer-as {{ item.peer_asn }}"
+        comment: "BGP underlay neighbor configuration for spine"
+      loop: "{{ juniper_dc_config.spine_bgp_neighbors }}"
+      when:
+      - juniper_dc_config.spine_bgp_neighbors is defined
+      - juniper_dc_role == 'spine'
+      tags: [ bgp, neighbors, spine ]
+
+    - name: Configure BGP for underlay (leaf role)
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set routing-options router-id {{ juniper_dc_config.loopback_ip }}"
+        - "set routing-options autonomous-system {{ juniper_dc_config.leaf_asn }}"
+        - "set protocols bgp group UNDERLAY type external"
+        - "set protocols bgp group UNDERLAY mtu-discovery"
+        - "set protocols bgp group UNDERLAY import UNDERLAY-IMPORT"
+        - "set protocols bgp group UNDERLAY export UNDERLAY-EXPORT"
+        - "set protocols bgp group UNDERLAY multipath multiple-as"
+        comment: "BGP underlay configuration for leaf"
+      when: juniper_dc_role == 'leaf'
+      tags: [ bgp, underlay, leaf ]
+
+    - name: Configure BGP underlay neighbors for leaf
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set protocols bgp group UNDERLAY neighbor {{ item.neighbor_ip }} description '{{ item.description }}'"
+        - "set protocols bgp group UNDERLAY neighbor {{ item.neighbor_ip }} peer-as {{ item.peer_asn }}"
+        comment: "BGP underlay neighbor configuration for leaf"
+      loop: "{{ juniper_dc_config.leaf_bgp_neighbors }}"
+      when:
+      - juniper_dc_config.leaf_bgp_neighbors is defined
+      - juniper_dc_role == 'leaf'
+      tags: [ bgp, neighbors, leaf ]
+
+  # Phase 3: EVPN Overlay Configuration
+  - name: "Phase 3: Configure EVPN Overlay Network"
+    block:
+    - name: Configure BGP EVPN for spine switches
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set protocols bgp group EVPN-RR type internal"
+        - "set protocols bgp group EVPN-RR local-address {{ juniper_dc_config.loopback_ip }}"
+        - "set protocols bgp group EVPN-RR family evpn signaling"
+        - "set protocols bgp group EVPN-RR cluster {{ juniper_dc_config.rr_cluster_id }}"
+        comment: "BGP EVPN route reflector configuration"
+      when: juniper_dc_role == 'spine'
+      tags: [ bgp, evpn, spine, route_reflector ]
+
+    - name: Configure EVPN route reflector clients
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set protocols bgp group EVPN-RR neighbor {{ item.neighbor_ip }} description '{{ item.description }}'"
+        comment: "EVPN route reflector client configuration"
+      loop: "{{ juniper_dc_config.evpn_rr_clients }}"
+      when:
+      - juniper_dc_config.evpn_rr_clients is defined
+      - juniper_dc_role == 'spine'
+      tags: [ bgp, evpn, clients, spine ]
+
+    - name: Configure BGP EVPN for leaf switches
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set protocols bgp group EVPN-OVERLAY type internal"
+        - "set protocols bgp group EVPN-OVERLAY local-address {{ juniper_dc_config.loopback_ip }}"
+        - "set protocols bgp group EVPN-OVERLAY family evpn signaling"
+        comment: "BGP EVPN leaf configuration"
+      when: juniper_dc_role == 'leaf'
+      tags: [ bgp, evpn, leaf ]
+
+    - name: Configure EVPN overlay neighbors for leaf
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set protocols bgp group EVPN-OVERLAY neighbor {{ item.rr_ip }} description 'Route Reflector {{ item.description }}'"
+        comment: "EVPN overlay neighbor configuration"
+      loop: "{{ juniper_dc_config.evpn_route_reflectors }}"
+      when:
+      - juniper_dc_config.evpn_route_reflectors is defined
+      - juniper_dc_role == 'leaf'
+      tags: [ bgp, evpn, neighbors, leaf ]
+
+  # Phase 4: VXLAN and Switch Options Configuration
+  - name: "Phase 4: Configure VXLAN and Switch Options"
+    block:
+    - name: Configure VTEP source interface
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set switch-options vtep-source-interface lo0.0"
+        - "set switch-options route-distinguisher {{ juniper_dc_config.loopback_ip }}:{{ juniper_dc_config.switch_rd_suffix }}"
+        - "set switch-options vrf-target target:{{ juniper_dc_config.switch_vrf_target }}"
+        comment: "VTEP and switch options configuration"
+      when: juniper_dc_role == 'leaf'
+      tags: [ vxlan, vtep, leaf ]
+
+    - name: Configure VXLANs with VNI mapping
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set vlans {{ item.vlan_name }} vlan-id {{ item.vlan_id }}"
+        - "set vlans {{ item.vlan_name }} vxlan vni {{ item.vni }}"
+        comment: "VXLAN VNI mapping configuration"
+      loop: "{{ juniper_dc_config.vxlan_vlans }}"
+      when:
+      - juniper_dc_config.vxlan_vlans is defined
+      - juniper_dc_role == 'leaf'
+      tags: [ vxlan, vlans, vni ]
+
+    - name: Configure EVPN instances for VXLANs
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set protocols evpn vni {{ item.vni }} vrf-target export target:{{ item.rt_export }}"
+        - "set protocols evpn vni {{ item.vni }} vrf-target import target:{{ item.rt_import }}"
+        comment: "EVPN VNI configuration"
+      loop: "{{ juniper_dc_config.evpn_vnis }}"
+      when:
+      - juniper_dc_config.evpn_vnis is defined
+      - juniper_dc_role == 'leaf'
+      tags: [ evpn, vni, leaf ]
+
+  # Phase 5: Multi-Tenancy VRF Configuration
+  - name: "Phase 5: Configure Multi-Tenant VRFs"
+    block:
+    - name: Configure tenant VRFs
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set routing-instances {{ item.vrf_name }} instance-type vrf"
+        - "set routing-instances {{ item.vrf_name }} interface {{ item.interface }}"
+        - "set routing-instances {{ item.vrf_name }} route-distinguisher {{ juniper_dc_config.loopback_ip }}:{{ item.rd_suffix }}"
+        - "set routing-instances {{ item.vrf_name }} vrf-target target:{{ item.rt_import }}"
+        - "set routing-instances {{ item.vrf_name }} vrf-target target:{{ item.rt_export }}"
+        - "set routing-instances {{ item.vrf_name }} protocols evpn"
+        comment: "Tenant VRF configuration"
+      loop: "{{ juniper_dc_config.tenant_vrfs }}"
+      when:
+      - juniper_dc_config.tenant_vrfs is defined
+      - juniper_dc_role == 'leaf'
+      tags: [ vrf, tenants, multitenant ]
+
+    - name: Configure IRB interfaces for tenant VRFs
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set interfaces irb unit {{ item.irb_unit }} family inet address {{ item.gateway_ip }}/{{ item.subnet_mask }}"
+        - "set interfaces irb unit {{ item.irb_unit }} description 'Gateway for {{ item.tenant_name }}'"
+        - "set interfaces irb unit {{ item.irb_unit }} mac {{ item.virtual_gateway_mac | default('00:1c:73:00:00:99') }}"
+        comment: "Tenant IRB interface configuration"
+      loop: "{{ juniper_dc_config.tenant_gateways }}"
+      when:
+      - juniper_dc_config.tenant_gateways is defined
+      - juniper_dc_role == 'leaf'
+      tags: [ irb, gateways, tenants ]
+
+    - name: Configure EVPN instance for tenant VRFs
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set protocols evpn vni {{ item.l3_vni }} vrf-target export target:{{ item.rt_export }}"
+        - "set protocols evpn vni {{ item.l3_vni }} vrf-target import target:{{ item.rt_import }}"
+        comment: "Tenant L3 VNI configuration"
+      loop: "{{ juniper_dc_config.tenant_l3_vnis }}"
+      when:
+      - juniper_dc_config.tenant_l3_vnis is defined
+      - juniper_dc_role == 'leaf'
+      tags: [ evpn, l3_vni, tenants ]
+
+  # Phase 6: Server-Facing Interface Configuration
+  - name: "Phase 6: Configure Server-Facing Interfaces"
+    block:
+    - name: Configure server access interfaces
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set interfaces {{ item.interface }} description '{{ item.description }}'"
+        - "set interfaces {{ item.interface }} unit 0 family ethernet-switching interface-mode access"
+        - "set interfaces {{ item.interface }} unit 0 family ethernet-switching vlan members {{ item.access_vlan }}"
+        comment: "Server access interface configuration"
+      loop: "{{ juniper_dc_config.server_access_ports }}"
+      when:
+      - juniper_dc_config.server_access_ports is defined
+      - juniper_dc_role == 'leaf'
+      tags: [ servers, access_ports, leaf ]
+
+    - name: Configure server trunk interfaces
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set interfaces {{ item.interface }} description '{{ item.description }}'"
+        - "set interfaces {{ item.interface }} unit 0 family ethernet-switching interface-mode trunk"
+        - "set interfaces {{ item.interface }} unit 0 family ethernet-switching vlan members {{ item.allowed_vlans | join(' ') }}"
+        - "set interfaces {{ item.interface }} unit 0 family ethernet-switching native-vlan-id {{ item.native_vlan }}"
+        comment: "Server trunk interface configuration"
+      loop: "{{ juniper_dc_config.server_trunk_ports }}"
+      when:
+      - juniper_dc_config.server_trunk_ports is defined
+      - juniper_dc_role == 'leaf'
+      tags: [ servers, trunk_ports, leaf ]
+
+    - name: Configure server LAG interfaces
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set interfaces {{ item.lag_interface }} description '{{ item.description }}'"
+        - "set interfaces {{ item.lag_interface }} aggregated-ether-options lacp {{ item.lacp_mode | default('active') }}"
+        - "set interfaces {{ item.lag_interface }} aggregated-ether-options lacp periodic {{ item.lacp_periodic | default('fast') }}"
+        - "set interfaces {{ item.lag_interface }} aggregated-ether-options minimum-links {{ item.minimum_links | default(1) }}"
+        comment: "Server LAG interface configuration"
+      loop: "{{ juniper_dc_config.server_lag_interfaces }}"
+      when:
+      - juniper_dc_config.server_lag_interfaces is defined
+      - juniper_dc_role == 'leaf'
+      tags: [ servers, lag, lacp ]
+
+    - name: Configure LAG member interfaces for servers
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set interfaces {{ item.1 }} gigether-options 802.3ad {{ item.0.lag_interface }}"
+        - "set interfaces {{ item.1 }} description 'Member of {{ item.0.lag_interface }} - {{ item.0.description }}'"
+        comment: "Server LAG member configuration"
+      loop: "{{ juniper_dc_config.server_lag_interfaces | subelements('member_interfaces') }}"
+      when:
+      - juniper_dc_config.server_lag_interfaces is defined
+      - juniper_dc_role == 'leaf'
+      tags: [ servers, lag_members ]
+
+    - name: Configure LAG switching for servers
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set interfaces {{ item.lag_interface }} unit 0 family ethernet-switching interface-mode {{ item.switching_mode }}"
+        - "set interfaces {{ item.lag_interface }} unit 0 family ethernet-switching vlan members {{ item.vlan_members | join(' ') if item.switching_mode == 'trunk' else item.access_vlan }}"
+        - "set interfaces {{ item.lag_interface }} unit 0 family ethernet-switching native-vlan-id {{ item.native_vlan | default(omit) }}"
+        comment: "Server LAG switching configuration"
+      loop: "{{ juniper_dc_config.server_lag_interfaces }}"
+      when:
+      - juniper_dc_config.server_lag_interfaces is defined
+      - item.switching_mode is defined
+      - juniper_dc_role == 'leaf'
+      tags: [ servers, lag_switching ]
+
+  # Phase 7: Fabric Interconnect Configuration
+  - name: "Phase 7: Configure Fabric Interconnect (MLAG Alternative)"
+    block:
+    - name: Configure Virtual Chassis Fabric for leaf pairs
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set virtual-chassis preprovisioned"
+        - "set virtual-chassis member {{ item.member_id }} role {{ item.role }}"
+        - "set virtual-chassis member {{ item.member_id }} serial-number {{ item.serial_number }}"
+        comment: "Virtual Chassis Fabric configuration"
+      loop: "{{ juniper_dc_config.vcf_members }}"
+      when:
+      - juniper_dc_config.vcf_members is defined
+      - juniper_dc_config.enable_vcf | default(false)
+      - juniper_dc_role == 'leaf'
+      tags: [ vcf, fabric, leaf_pairs ]
+
+    - name: Configure VCF fabric interfaces
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set interfaces {{ item.interface }} description 'VCF Fabric Link'"
+        comment: "VCF fabric interface configuration"
+      loop: "{{ juniper_dc_config.vcf_fabric_interfaces }}"
+      when:
+      - juniper_dc_config.vcf_fabric_interfaces is defined
+      - juniper_dc_config.enable_vcf | default(false)
+      - juniper_dc_role == 'leaf'
+      tags: [ vcf, fabric_interfaces ]
+
+  # Phase 8: Data Center QoS Configuration
+  - name: "Phase 8: Configure Data Center QoS"
+    block:
+    - name: Configure data center forwarding classes
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set class-of-service forwarding-classes class {{ item.name }} queue-num {{ item.queue_num }}"
+        comment: "Data center forwarding class configuration"
+      loop: "{{ juniper_dc_qos.forwarding_classes }}"
+      when: juniper_dc_qos.forwarding_classes is defined
+      tags: [ qos, forwarding_classes, datacenter ]
+
+    - name: Configure data center schedulers
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set class-of-service schedulers {{ item.name }} transmit-rate {{ item.transmit_rate }}"
+        - "set class-of-service schedulers {{ item.name }} buffer-size {{ item.buffer_size }}"
+        - "set class-of-service schedulers {{ item.name }} priority {{ item.priority }}"
+        - "set class-of-service schedulers {{ item.name }} drop-profile-map loss-priority low protocol-map {{ item.drop_profile }}"
+        comment: "Data center scheduler configuration"
+      loop: "{{ juniper_dc_qos.schedulers }}"
+      when: juniper_dc_qos.schedulers is defined
+      tags: [ qos, schedulers, datacenter ]
+
+    - name: Configure DSCP classifiers for data center
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set class-of-service classifiers dscp {{ item.classifier_name }} forwarding-class {{ item.forwarding_class }} loss-priority {{ item.loss_priority }} code-points {{ item.dscp_values | join(' ') }}"
+        comment: "DSCP classifier configuration"
+      loop: "{{ juniper_dc_qos.dscp_classifiers }}"
+      when: juniper_dc_qos.dscp_classifiers is defined
+      tags: [ qos, dscp, classifiers ]
+
+    - name: Apply QoS to data center interfaces
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set class-of-service interfaces {{ item.interface }} scheduler-map {{ item.scheduler_map }}"
+        - "set class-of-service interfaces {{ item.interface }} unit 0 classifiers dscp {{ item.dscp_classifier }}"
+        - "set class-of-service interfaces {{ item.interface }} unit 0 rewrite-rules dscp {{ item.dscp_rewrite }}"
+        comment: "Interface QoS application"
+      loop: "{{ juniper_dc_qos.interface_qos }}"
+      when: juniper_dc_qos.interface_qos is defined
+      tags: [ qos, interfaces, application ]
+
+  # Phase 9: Route Policies for Data Center
+  - name: "Phase 9: Configure Data Center Route Policies"
+    block:
+    - name: Configure underlay import policy
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set policy-options policy-statement UNDERLAY-IMPORT term DIRECT from protocol direct"
+        - "set policy-options policy-statement UNDERLAY-IMPORT term DIRECT then accept"
+        - "set policy-options policy-statement UNDERLAY-IMPORT term LOOPBACK from route-filter {{ juniper_dc_config.loopback_subnet }}/{{ juniper_dc_config.loopback_prefix_len }} orlonger"
+        - "set policy-options policy-statement UNDERLAY-IMPORT term LOOPBACK then accept"
+        - "set policy-options policy-statement UNDERLAY-IMPORT term REJECT then reject"
+        comment: "Underlay import policy"
+      tags: [ policy, underlay, import ]
+
+    - name: Configure underlay export policy
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set policy-options policy-statement UNDERLAY-EXPORT term DIRECT from protocol direct"
+        - "set policy-options policy-statement UNDERLAY-EXPORT term DIRECT from route-filter {{ juniper_dc_config.underlay_subnet }}/{{ juniper_dc_config.underlay_prefix_len }} orlonger"
+        - "set policy-options policy-statement UNDERLAY-EXPORT term DIRECT then accept"
+        - "set policy-options policy-statement UNDERLAY-EXPORT term LOOPBACK from route-filter {{ juniper_dc_config.loopback_subnet }}/{{ juniper_dc_config.loopback_prefix_len }} orlonger"
+        - "set policy-options policy-statement UNDERLAY-EXPORT term LOOPBACK then accept"
+        - "set policy-options policy-statement UNDERLAY-EXPORT term REJECT then reject"
+        comment: "Underlay export policy"
+      tags: [ policy, underlay, export ]
+
+    - name: Configure EVPN policies
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set policy-options policy-statement EVPN-IMPORT term VNI from community {{ item.community_name }}"
+        - "set policy-options policy-statement EVPN-IMPORT term VNI then accept"
+        comment: "EVPN import policy"
+      loop: "{{ juniper_dc_config.evpn_communities }}"
+      when: juniper_dc_config.evpn_communities is defined
+      tags: [ policy, evpn, import ]
+
+    - name: Configure BGP community definitions
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set policy-options community {{ item.name }} members target:{{ item.target }}"
+        comment: "BGP community configuration"
+      loop: "{{ juniper_dc_config.bgp_communities }}"
+      when: juniper_dc_config.bgp_communities is defined
+      tags: [ policy, community, bgp ]
+
+  # Phase 10: Storm Control and Security
+  - name: "Phase 10: Configure Storm Control and Security"
+    block:
+    - name: Configure storm control on server interfaces
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set ethernet-switching-options storm-control interface {{ item.interface }} bandwidth {{ item.bandwidth_limit }}"
+        - "set ethernet-switching-options storm-control interface {{ item.interface }} burst-size {{ item.burst_size }}"
+        - "set ethernet-switching-options storm-control interface {{ item.interface }} no-broadcast"
+        - "set ethernet-switching-options storm-control interface {{ item.interface }} no-multicast"
+        - "set ethernet-switching-options storm-control interface {{ item.interface }} no-unknown-unicast"
+        comment: "Storm control configuration"
+      loop: "{{ juniper_dc_config.storm_control_interfaces }}"
+      when:
+      - juniper_dc_config.storm_control_interfaces is defined
+      - juniper_dc_role == 'leaf'
+      tags: [ storm_control, security, leaf ]
+
+    - name: Configure MAC learning limits
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set ethernet-switching-options secure-access-port interface {{ item.interface }} mac-limit {{ item.mac_limit }}"
+        - "set ethernet-switching-options secure-access-port interface {{ item.interface }} mac-limit-action {{ item.limit_action | default('shutdown') }}"
+        comment: "MAC learning limit configuration"
+      loop: "{{ juniper_dc_config.mac_limit_interfaces }}"
+      when:
+      - juniper_dc_config.mac_limit_interfaces is defined
+      - juniper_dc_role == 'leaf'
+      tags: [ mac_limit, security, leaf ]
+
+    - name: Configure DHCP snooping
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set ethernet-switching-options secure-access-port vlan {{ item.vlan_name }} dhcp-trusted-port {{ item.trusted_interface }}"
+        comment: "DHCP snooping configuration"
+      loop: "{{ juniper_dc_config.dhcp_snooping }}"
+      when:
+      - juniper_dc_config.dhcp_snooping is defined
+      - juniper_dc_role == 'leaf'
+      tags: [ dhcp_snooping, security, leaf ]
+
+  post_tasks:
+  # Phase 11: Data Center Verification and Monitoring
+  - name: "Phase 11: Post-Deployment Data Center Verification"
+    block:
+    - name: Commit configuration with confirm
+      junipernetworks.junos.junos_config:
+        comment: "Data center EVPN-VXLAN deployment - {{ ansible_date_time.iso8601 }}"
+        confirm: 15
+      tags: [ commit, verification ]
+
+    - name: Gather data center facts
+      junipernetworks.junos.junos_facts:
+        gather_subset:
+        - all
+      register: dc_facts
+      tags: [ verification, facts ]
+
+    - name: Verify underlay BGP status
+      junipernetworks.junos.junos_command:
+        commands:
+        - "show bgp summary"
+        - "show route protocol bgp"
+        - "show route table inet.0"
+        display: text
+      register: underlay_bgp_status
+      tags: [ verification, underlay, bgp ]
+
+    - name: Verify EVPN overlay status
+      junipernetworks.junos.junos_command:
+        commands:
+        - "show bgp summary table bgp.evpn.0"
+        - "show evpn database"
+        - "show evpn mac-table"
+        display: text
+      register: evpn_status
+      tags: [ verification, evpn, overlay ]
+
+    - name: Verify VXLAN tunnel status
+      junipernetworks.junos.junos_command:
+        commands:
+        - "show interfaces vtep"
+        - "show bridge domain"
+        - "show ethernet-switching table"
+        display: text
+      register: vxlan_status
+      ignore_errors: true
+      when: juniper_dc_role == 'leaf'
+      tags: [ verification, vxlan, tunnels ]
+
+    - name: Verify fabric connectivity
+      junipernetworks.junos.junos_command:
+        commands:
+        - "show virtual-chassis status"
+        - "show virtual-chassis vc-port"
+        display: text
+      register: fabric_status
+      ignore_errors: true
+      when:
+      - juniper_dc_config.enable_vcf | default(false)
+      - juniper_dc_role == 'leaf'
+      tags: [ verification, fabric, vcf ]
+
+    - name: Generate data center deployment report
+      copy:
+        content: |
+          Juniper Data Center EVPN-VXLAN Deployment Report
+          ===============================================
+          Device: {{ inventory_hostname }}
+          Role: {{ juniper_dc_role | upper }}
+          Platform: {{ dc_facts.ansible_facts.ansible_net_model | default('Juniper QFX') }}
+          Software Version: {{ dc_facts.ansible_facts.ansible_net_version | default('Unknown') }}
+          Serial Number: {{ dc_facts.ansible_facts.ansible_net_serialnum | default('Unknown') }}
+          Deployment Time: {{ ansible_date_time.iso8601 }}
+
+          === DEVICE INFORMATION ===
+          Hostname: {{ dc_facts.ansible_facts.ansible_net_hostname | default('Unknown') }}
+          Model: {{ dc_facts.ansible_facts.ansible_net_model | default('Unknown') }}
+          Version: {{ dc_facts.ansible_facts.ansible_net_version | default('Unknown') }}
+          Loopback IP: {{ juniper_dc_config.loopback_ip }}
+
+          === UNDERLAY BGP STATUS ===
+          BGP Summary:
+          {{ underlay_bgp_status.stdout[0] | default('BGP status not available') }}
+
+          BGP Routes:
+          {{ underlay_bgp_status.stdout[1] | default('BGP routes not available') }}
+
+          Route Table:
+          {{ underlay_bgp_status.stdout[2] | default('Route table not available') }}
+
+          === EVPN OVERLAY STATUS ===
+          EVPN BGP Summary:
+          {{ evpn_status.stdout[0] | default('EVPN BGP not available') }}
+
+          EVPN Database:
+          {{ evpn_status.stdout[1] | default('EVPN database not available') }}
+
+          EVPN MAC Table:
+          {{ evpn_status.stdout[2] | default('EVPN MAC table not available') }}
+
+          {% if vxlan_status is defined and vxlan_status.stdout is defined %}
+          === VXLAN STATUS ===
+          VTEP Interfaces:
+          {{ vxlan_status.stdout[0] | default('VTEP interfaces not available') }}
+
+          Bridge Domains:
+          {{ vxlan_status.stdout[1] | default('Bridge domains not available') }}
+
+          Ethernet Switching Table:
+          {{ vxlan_status.stdout[2] | default('Switching table not available') }}
+          {% endif %}
+
+          {% if fabric_status is defined and fabric_status.stdout is defined %}
+          === FABRIC STATUS ===
+          Virtual Chassis Status:
+          {{ fabric_status.stdout[0] | default('Virtual Chassis not configured') }}
+
+          VC Port Status:
+          {{ fabric_status.stdout[1] | default('VC ports not available') }}
+          {% endif %}
+
+          === CONFIGURATION SUMMARY ===
+          Underlay Interfaces: {{ (juniper_dc_config.spine_underlay_interfaces | default([])) | length + (juniper_dc_config.leaf_underlay_interfaces | default([])) | length }}
+          VXLANs Configured: {{ (juniper_dc_config.vxlan_vlans | default([])) | length }}
+          EVPN VNIs: {{ (juniper_dc_config.evpn_vnis | default([])) | length }}
+          Tenant VRFs: {{ (juniper_dc_config.tenant_vrfs | default([])) | length }}
+          Server Access Ports: {{ (juniper_dc_config.server_access_ports | default([])) | length }}
+          Server Trunk Ports: {{ (juniper_dc_config.server_trunk_ports | default([])) | length }}
+          Server LAG Interfaces: {{ (juniper_dc_config.server_lag_interfaces | default([])) | length }}
+          BGP Underlay Neighbors: {{ (juniper_dc_config.spine_bgp_neighbors | default([])) | length + (juniper_dc_config.leaf_bgp_neighbors | default([])) | length }}
+          EVPN Route Reflectors: {{ (juniper_dc_config.evpn_route_reflectors | default([])) | length }}
+
+          Features Configured:
+          - BGP Underlay: {{ 'Yes' if juniper_dc_config.underlay_asn is defined else 'No' }}
+          - EVPN Overlay: {{ 'Yes' if juniper_dc_config.evpn_vnis is defined else 'No' }}
+          - VXLAN: {{ 'Yes' if juniper_dc_config.vxlan_vlans is defined else 'No' }}
+          - Multi-Tenancy: {{ 'Yes' if juniper_dc_config.tenant_vrfs is defined else 'No' }}
+          - Virtual Chassis Fabric: {{ 'Yes' if juniper_dc_config.enable_vcf | default(false) else 'No' }}
+          - Storm Control: {{ 'Yes' if juniper_dc_config.storm_control_interfaces is defined else 'No' }}
+          - QoS: {{ 'Yes' if juniper_dc_qos is defined else 'No' }}
+
+          Role-Specific Features:
+          {% if juniper_dc_role == 'spine' %}
+          - Route Reflector: Yes
+          - EVPN Clients: {{ (juniper_dc_config.evpn_rr_clients | default([])) | length }}
+          {% elif juniper_dc_role == 'leaf' %}
+          - VTEP: Yes
+          - Server Interfaces: {{ (juniper_dc_config.server_access_ports | default([])) | length + (juniper_dc_config.server_trunk_ports | default([])) | length }}
+          - Tenant Gateways: {{ (juniper_dc_config.tenant_gateways | default([])) | length }}
+          {% endif %}
+
+          Status: {{ 'SUCCESS' if ansible_failed_task is not defined else 'FAILED' }}
+        dest: "{{ playbook_dir }}/../reports/juniper/{{ inventory_hostname }}_dc_evpn_deployment_{{ ansible_date_time.epoch }}.txt"
+      delegate_to: localhost
+      tags: [ reporting ]
+
+# Example usage:
+# ansible-playbook juniper_datacenter_evpn.yml --limit juniper_datacenter
+# ansible-playbook juniper_datacenter_evpn.yml --tags underlay,overlay
+# ansible-playbook juniper_datacenter_evpn.yml --extra-vars "juniper_dc_role=spine" --check

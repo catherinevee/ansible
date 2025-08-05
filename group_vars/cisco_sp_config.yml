@@ -1,0 +1,452 @@
+---
+# ====================================================================
+# CISCO SERVICE PROVIDER eBGP AND MPLS-VPN CONFIGURATION VARIABLES
+# ====================================================================
+# Comprehensive configuration variables for Cisco Service Provider
+# networks with eBGP peering, MPLS-VPN services, and advanced features
+# ====================================================================
+
+# ====================================
+# SERVICE PROVIDER GLOBAL SETTINGS
+# ====================================
+service_provider_config:
+  autonomous_system: "65000"
+  router_id_source: "Loopback0"
+  mpls_enabled: true
+  traffic_engineering_enabled: true
+  carrier_ethernet_enabled: true
+  vpls_enabled: true
+  ipv6_enabled: true
+
+# ====================================
+# eBGP CUSTOMER PEERING
+# ====================================
+ebgp_customers:
+- neighbor_ip: "192.168.100.2"
+  customer_asn: "65001"
+  description: "Enterprise Customer A - Main Site"
+  md5_password: "{{ vault_customer_a_bgp_password }}"
+  keepalive: 30
+  holdtime: 90
+  max_routes: 500
+  threshold: 75
+  interface: "GigabitEthernet0/1"
+  service_level: "premium"
+
+- neighbor_ip: "192.168.100.6"
+  customer_asn: "65002"
+  description: "Enterprise Customer B - Headquarters"
+  md5_password: "{{ vault_customer_b_bgp_password }}"
+  keepalive: 30
+  holdtime: 90
+  max_routes: 1000
+  threshold: 80
+  interface: "GigabitEthernet0/2"
+  service_level: "premium"
+
+- neighbor_ip: "192.168.100.10"
+  customer_asn: "65003"
+  description: "SMB Customer C - Branch Office"
+  md5_password: "{{ vault_customer_c_bgp_password }}"
+  keepalive: 60
+  holdtime: 180
+  max_routes: 100
+  threshold: 75
+  interface: "GigabitEthernet0/3"
+  service_level: "standard"
+
+# ====================================
+# eBGP PROVIDER PEERING
+# ====================================
+ebgp_providers:
+- neighbor_ip: "203.0.113.1"
+  provider_asn: "1299" # Telia Carrier
+  description: "Telia Carrier - Primary Transit"
+  md5_password: "{{ vault_telia_bgp_password }}"
+  keepalive: 10
+  holdtime: 30
+  max_routes: 800000
+  threshold: 75
+  ttl_hops: 1
+  interface: "TenGigabitEthernet0/0/0"
+  backup_link: false
+
+- neighbor_ip: "203.0.113.5"
+  provider_asn: "174" # Cogent
+  description: "Cogent - Secondary Transit"
+  md5_password: "{{ vault_cogent_bgp_password }}"
+  keepalive: 10
+  holdtime: 30
+  max_routes: 800000
+  threshold: 75
+  ttl_hops: 1
+  interface: "TenGigabitEthernet0/0/1"
+  backup_link: true
+
+- neighbor_ip: "203.0.113.9"
+  provider_asn: "6939" # Hurricane Electric
+  description: "Hurricane Electric - IPv6 Transit"
+  md5_password: "{{ vault_he_bgp_password }}"
+  keepalive: 30
+  holdtime: 90
+  max_routes: 100000
+  threshold: 75
+  ttl_hops: 1
+  interface: "TenGigabitEthernet0/0/2"
+  ipv6_only: true
+
+# ====================================
+# iBGP ROUTE REFLECTOR CONFIGURATION
+# ====================================
+ibgp_rr_clients:
+- neighbor_ip: "10.0.0.11"
+  description: "PE-01 Route Reflector Client"
+  device_type: "pe"
+- neighbor_ip: "10.0.0.12"
+  description: "PE-02 Route Reflector Client"
+  device_type: "pe"
+- neighbor_ip: "10.0.0.13"
+  description: "PE-03 Route Reflector Client"
+  device_type: "pe"
+- neighbor_ip: "10.0.0.21"
+  description: "ASBR-01 Route Reflector Client"
+  device_type: "asbr"
+
+ibgp_vpnv4_neighbors:
+- neighbor_ip: "10.0.0.11"
+  description: "PE-01 VPNv4 Peering"
+- neighbor_ip: "10.0.0.12"
+  description: "PE-02 VPNv4 Peering"
+- neighbor_ip: "10.0.0.13"
+  description: "PE-03 VPNv4 Peering"
+
+ibgp_vpnv6_neighbors:
+- neighbor_ip: "10.0.0.11"
+  description: "PE-01 VPNv6 Peering"
+- neighbor_ip: "10.0.0.12"
+  description: "PE-02 VPNv6 Peering"
+
+# ====================================
+# CUSTOMER VRF CONFIGURATION
+# ====================================
+customer_vrfs:
+- vrf_name: "CUSTOMER-A"
+  route_distinguisher: "65000:1001"
+  route_target_export: "65000:1001"
+  route_target_import: "65000:1001"
+  description: "Enterprise Customer A VPN"
+
+- vrf_name: "CUSTOMER-B"
+  route_distinguisher: "65000:1002"
+  route_target_export: "65000:1002"
+  route_target_import: "65000:1002"
+  description: "Enterprise Customer B VPN"
+
+- vrf_name: "CUSTOMER-C"
+  route_distinguisher: "65000:1003"
+  route_target_export: "65000:1003"
+  route_target_import: "65000:1003"
+  description: "SMB Customer C VPN"
+
+customer_vrf_peering:
+- vrf_name: "CUSTOMER-A"
+  customer_ip: "192.168.1.2"
+  customer_asn: "65001"
+  import_policy: "CUST-A-IN"
+  export_policy: "CUST-A-OUT"
+  max_routes: 500
+
+- vrf_name: "CUSTOMER-B"
+  customer_ip: "192.168.2.2"
+  customer_asn: "65002"
+  import_policy: "CUST-B-IN"
+  export_policy: "CUST-B-OUT"
+  max_routes: 1000
+
+- vrf_name: "CUSTOMER-C"
+  customer_ip: "192.168.3.2"
+  customer_asn: "65003"
+  import_policy: "CUST-C-IN"
+  export_policy: "CUST-C-OUT"
+  max_routes: 100
+
+# ====================================
+# ROUTE POLICY CONFIGURATION
+# ====================================
+bgp_as_path_lists:
+- list_number: 10
+  action: "permit"
+  regex: "^65[0-9]+$"
+  description: "Customer ASNs"
+- list_number: 15
+  action: "permit"
+  regex: "^(1299|174|6939)$"
+  description: "Trusted Provider ASNs"
+- list_number: 20
+  action: "deny"
+  regex: "_65000_"
+  description: "Prevent own ASN in path"
+- list_number: 25
+  action: "permit"
+  regex: "^[0-9]+_[0-9]+_[0-9]+$"
+  description: "AS-Path length limit"
+
+bgp_community_lists:
+- list_number: 100
+  action: "permit"
+  community: "65000:100"
+  description: "Customer traffic"
+- list_number: 200
+  action: "permit"
+  community: "65000:200"
+  description: "Provider routes"
+- list_number: 300
+  action: "permit"
+  community: "65000:300"
+  description: "Local preference high"
+- list_number: 400
+  action: "permit"
+  community: "65000:400"
+  description: "No-export to customers"
+
+service_provider_route_maps:
+# Customer Inbound Policies
+- name: "CUST-A-IN"
+  action: "permit"
+  sequence: 10
+  match_criteria: "as-path 10"
+  set_action: "community 65000:100"
+- name: "CUST-A-IN"
+  action: "permit"
+  sequence: 20
+  match_criteria: "ip address prefix-list CUST-A-PREFIXES"
+  set_action: "local-preference 200"
+
+# Customer Outbound Policies
+- name: "CUST-A-OUT"
+  action: "deny"
+  sequence: 10
+  match_criteria: "community 65000:400"
+  set_action: ""
+- name: "CUST-A-OUT"
+  action: "permit"
+  sequence: 20
+  match_criteria: "community 65000:100"
+  set_action: "as-path prepend 65000"
+
+# Provider Inbound Policies
+- name: "PROVIDER-IN"
+  action: "permit"
+  sequence: 10
+  match_criteria: "as-path 15"
+  set_action: "community 65000:200 local-preference 100"
+- name: "PROVIDER-IN"
+  action: "deny"
+  sequence: 20
+  match_criteria: "community 65515:666"
+  set_action: ""
+
+# Provider Outbound Policies
+- name: "PROVIDER-OUT"
+  action: "permit"
+  sequence: 10
+  match_criteria: "community 65000:100"
+  set_action: "community none"
+- name: "PROVIDER-OUT"
+  action: "deny"
+  sequence: 20
+  match_criteria: "ip address prefix-list INTERNAL-ONLY"
+  set_action: ""
+
+ebgp_policy_applications:
+- neighbor_ip: "192.168.100.2"
+  inbound_policy: "CUST-A-IN"
+  outbound_policy: "CUST-A-OUT"
+- neighbor_ip: "203.0.113.1"
+  inbound_policy: "PROVIDER-IN"
+  outbound_policy: "PROVIDER-OUT"
+
+# ====================================
+# MPLS TRAFFIC ENGINEERING
+# ====================================
+mpls_te_interfaces:
+- interface: "TenGigabitEthernet0/1/0"
+  bandwidth: 10000000
+  attributes: "0x0"
+  description: "Core link to P-01"
+- interface: "TenGigabitEthernet0/1/1"
+  bandwidth: 10000000
+  attributes: "0x0"
+  description: "Core link to P-02"
+- interface: "GigabitEthernet0/2/0"
+  bandwidth: 1000000
+  attributes: "0x10"
+  description: "Backup link to PE-02"
+
+# ====================================
+# QOS SERVICE CLASSES
+# ====================================
+sp_qos_classes:
+- class_name: "VOICE-PREMIUM"
+  policy_name: "SP-VOICE-POLICY"
+  dscp_values: "ef"
+  bandwidth: "percent 30"
+  priority: "level 1"
+
+- class_name: "VIDEO-BUSINESS"
+  policy_name: "SP-VIDEO-POLICY"
+  dscp_values: "af41 af42 af43"
+  bandwidth: "percent 25"
+  priority: ""
+
+- class_name: "DATA-CRITICAL"
+  policy_name: "SP-DATA-POLICY"
+  dscp_values: "af31 af32 af33"
+  bandwidth: "percent 20"
+  priority: ""
+
+- class_name: "BEST-EFFORT"
+  policy_name: "SP-DEFAULT-POLICY"
+  dscp_values: "default"
+  bandwidth: "percent 25"
+  priority: ""
+
+customer_qos_interfaces:
+- interface: "GigabitEthernet0/1"
+  input_policy: "CUST-A-IN-QOS"
+  output_policy: "CUST-A-OUT-QOS"
+- interface: "GigabitEthernet0/2"
+  input_policy: "CUST-B-IN-QOS"
+  output_policy: "CUST-B-OUT-QOS"
+
+# ====================================
+# CARRIER ETHERNET SERVICES
+# ====================================
+ethernet_virtual_circuits:
+- interface: "GigabitEthernet0/1.100"
+  outer_vlan: 100
+  inner_vlan: 200
+  remote_pe_ip: "10.0.0.12"
+  vc_id: 1001
+  mtu: 1500
+  pw_class: "ETHERNET-PW"
+  customer: "Customer-A"
+  service_type: "E-Line"
+
+- interface: "GigabitEthernet0/2.200"
+  outer_vlan: 200
+  inner_vlan: 300
+  remote_pe_ip: "10.0.0.13"
+  vc_id: 1002
+  mtu: 1500
+  pw_class: "ETHERNET-PW"
+  customer: "Customer-B"
+  service_type: "E-Line"
+
+vpls_instances:
+- vfi_name: "CUSTOMER-A-VPLS"
+  vpn_id: 2001
+  remote_pe_ip: "10.0.0.12"
+  interface: "GigabitEthernet0/1.101"
+  customer: "Customer-A"
+  service_type: "E-LAN"
+
+- vfi_name: "CUSTOMER-B-VPLS"
+  vpn_id: 2002
+  remote_pe_ip: "10.0.0.13"
+  interface: "GigabitEthernet0/2.201"
+  customer: "Customer-B"
+  service_type: "E-LAN"
+
+# ====================================
+# MONITORING AND MANAGEMENT
+# ====================================
+snmp_nms_servers:
+- nms_server: "10.100.1.10"
+  version: "2c"
+  community: "{{ vault_snmp_community_ro }}"
+  description: "Primary NMS"
+- nms_server: "10.100.1.11"
+  version: "3"
+  community: "{{ vault_snmp_community_rw }}"
+  description: "Secondary NMS"
+
+# BGP Dampening Parameters
+dampening_config:
+  half_life: 15
+  reuse_threshold: 750
+  suppress_threshold: 2000
+  max_suppress_time: 60
+
+# ====================================
+# SECURITY CONFIGURATION
+# ====================================
+secured_bgp_neighbors:
+- neighbor_ip: "203.0.113.1"
+  ttl_hops: 1
+  md5_password: "{{ vault_telia_bgp_password }}"
+  update_source: "TenGigabitEthernet0/0/0"
+- neighbor_ip: "203.0.113.5"
+  ttl_hops: 1
+  md5_password: "{{ vault_cogent_bgp_password }}"
+  update_source: "TenGigabitEthernet0/0/1"
+
+infrastructure_acls:
+- acl_name: "INFRASTRUCTURE-PROTECT"
+  rule: "permit tcp 10.100.0.0 0.0.255.255 any eq 22"
+- acl_name: "INFRASTRUCTURE-PROTECT"
+  rule: "permit tcp 10.100.0.0 0.0.255.255 any eq 443"
+- acl_name: "INFRASTRUCTURE-PROTECT"
+  rule: "permit udp 10.100.0.0 0.0.255.255 any eq 161"
+- acl_name: "INFRASTRUCTURE-PROTECT"
+  rule: "permit icmp 10.100.0.0 0.0.255.255 any"
+- acl_name: "INFRASTRUCTURE-PROTECT"
+  rule: "deny ip any any log"
+
+# ====================================
+# DEVICE ROLE ASSIGNMENTS
+# ====================================
+device_roles:
+  pe_routers:
+  - "PE-01"
+  - "PE-02"
+  - "PE-03"
+  p_routers:
+  - "P-01"
+  - "P-02"
+  route_reflectors:
+  - "RR-01"
+  - "RR-02"
+  asbr_routers:
+  - "ASBR-01"
+  - "ASBR-02"
+
+# ====================================
+# FABRIC ADDRESSING
+# ====================================
+loopback_addressing:
+  PE-01:
+    loopback0: "10.0.0.11/32"
+    loopback1: "10.1.0.11/32"
+  PE-02:
+    loopback0: "10.0.0.12/32"
+    loopback1: "10.1.0.12/32"
+  RR-01:
+    loopback0: "10.0.0.1/32"
+  ASBR-01:
+    loopback0: "10.0.0.21/32"
+
+# ====================================
+# SERVICE LEVEL AGREEMENTS
+# ====================================
+customer_slas:
+  premium:
+    availability: "99.95%"
+    rtt_target: "< 10ms"
+    packet_loss: "< 0.01%"
+    jitter: "< 1ms"
+  standard:
+    availability: "99.9%"
+    rtt_target: "< 20ms"
+    packet_loss: "< 0.1%"
+    jitter: "< 5ms"

@@ -1,0 +1,372 @@
+---
+# Network Security Hardening Playbook
+# Implements enterprise security best practices across all network devices
+- name: Network Security Hardening
+  hosts: all
+  gather_facts: true
+  vars:
+    report_timestamp: "{{ ansible_date_time.iso8601 }}"
+    hardening_level: "{{ level | default('standard') }}" # standard, high, maximum
+    security_audit: "{{ audit | default(false) }}"
+
+  tasks:
+  - name: Create security hardening report directory
+    file:
+      path: "{{ playbook_dir }}/../reports/security_hardening"
+      state: directory
+    delegate_to: localhost
+    run_once: true
+
+  - name: Initialize security hardening report
+    template:
+      src: "{{ playbook_dir }}/../templates/deployment_summary.j2"
+      dest: "{{ playbook_dir }}/../reports/security_hardening/security_hardening_{{ report_timestamp | regex_replace(':', '-') }}.txt"
+    vars:
+      deployment_type: "Security Hardening"
+      deployment_scope: "{{ hardening_level | upper }} Level"
+    delegate_to: localhost
+    run_once: true
+
+  # Cisco Security Hardening
+  - name: Apply Cisco security hardening
+    block:
+    - name: Configure password policies
+      cisco.ios.ios_config:
+        lines:
+        - "service password-encryption"
+        - "security passwords min-length {{ cisco_security.min_password_length | default(12) }}"
+        - "security authentication failure rate {{ cisco_security.failure_rate | default(3) }} log"
+        - "login block-for {{ cisco_security.block_time | default(300) }} attempts {{ cisco_security.max_attempts | default(3) }} within {{ cisco_security.within_time | default(60) }}"
+        - "login quiet-mode access-class {{ cisco_security.quiet_access_class | default('ADMIN_ACCESS') }}"
+        - "login delay {{ cisco_security.login_delay | default(1) }}"
+        - "login on-failure log"
+        - "login on-success log"
+
+    - name: Configure SSH security settings
+      cisco.ios.ios_config:
+        lines:
+        - "ip ssh version 2"
+        - "ip ssh time-out {{ cisco_security.ssh_timeout | default(60) }}"
+        - "ip ssh authentication-retries {{ cisco_security.ssh_retries | default(3) }}"
+        - "ip ssh source-interface {{ cisco_security.ssh_source_interface | default('Loopback0') }}"
+        - "ip ssh rsa keypair-name {{ cisco_security.ssh_keypair | default('SSH_KEY') }}"
+        match: line
+
+    - name: Disable unnecessary services
+      cisco.ios.ios_config:
+        lines:
+        - "no service tcp-small-servers"
+        - "no service udp-small-servers"
+        - "no service finger"
+        - "no ip http server"
+        - "no ip http secure-server"
+        - "no service config"
+        - "no service pad"
+        - "no ip bootp server"
+        - "no ip source-route"
+        - "no ip gratuitous-arps"
+        - "no cdp run"
+        match: line
+      when: hardening_level in ['high', 'maximum']
+
+    - name: Configure AAA authentication
+      cisco.ios.ios_config:
+        lines:
+        - "aaa new-model"
+        - "aaa authentication login default group {{ cisco_security.aaa_group | default('radius') }} local"
+        - "aaa authentication enable default group {{ cisco_security.aaa_group | default('radius') }} enable"
+        - "aaa authorization exec default group {{ cisco_security.aaa_group | default('radius') }} local"
+        - "aaa accounting exec default start-stop group {{ cisco_security.aaa_group | default('radius') }}"
+        - "aaa accounting commands 15 default start-stop group {{ cisco_security.aaa_group | default('radius') }}"
+        match: line
+
+    - name: Configure console and VTY security
+      cisco.ios.ios_config:
+        lines:
+        - "line console 0"
+        - "exec-timeout {{ cisco_security.console_timeout | default('5 0') }}"
+        - "logging synchronous"
+        - "login authentication default"
+        - "line vty 0 15"
+        - "access-class {{ cisco_security.vty_access_class | default('VTY_ACCESS') }} in"
+        - "exec-timeout {{ cisco_security.vty_timeout | default('10 0') }}"
+        - "logging synchronous"
+        - "login authentication default"
+        - "transport input ssh"
+        match: line
+
+    - name: Configure SNMP security
+      cisco.ios.ios_config:
+        lines:
+        - "no snmp-server community public"
+        - "no snmp-server community private"
+        - "snmp-server group {{ cisco_security.snmp_group | default('NETADMIN') }} v3 priv"
+        - "snmp-server user {{ cisco_security.snmp_user | default('netadmin') }} {{ cisco_security.snmp_group | default('NETADMIN') }} v3 auth sha {{ vault_snmp_auth_key }} priv aes 128 {{ vault_snmp_priv_key }}"
+        - "snmp-server host {{ cisco_security.snmp_server }} version 3 priv {{ cisco_security.snmp_user | default('netadmin') }}"
+        match: line
+
+    - name: Configure logging security
+      cisco.ios.ios_config:
+        lines:
+        - "logging enable"
+        - "logging buffered {{ cisco_security.log_buffer_size | default(64000) }} informational"
+        - "logging console critical"
+        - "logging monitor informational"
+        - "logging trap informational"
+        - "logging facility local0"
+        - "logging source-interface {{ cisco_security.log_source_interface | default('Loopback0') }}"
+        - "logging host {{ syslog_servers[0] }} transport udp port 514"
+        - "service timestamps log datetime msec localtime show-timezone"
+        - "service timestamps debug datetime msec localtime show-timezone"
+        match: line
+
+    - name: Configure banner messages
+      cisco.ios.ios_banner:
+        banner: motd
+        text: |
+          **************************************************************************
+          *                           WARNING NOTICE                              *
+          **************************************************************************
+          * This system is for authorized use only. All activity is monitored    *
+          * and logged. Unauthorized access is prohibited and will be prosecuted  *
+          * to the full extent of the law.                                        *
+          **************************************************************************
+
+    - name: Configure NTP security
+      cisco.ios.ios_config:
+        lines:
+        - "ntp authenticate"
+        - "ntp authentication-key {{ cisco_security.ntp_key_id | default(1) }} md5 {{ vault_ntp_key }}"
+        - "ntp trusted-key {{ cisco_security.ntp_key_id | default(1) }}"
+        - "ntp server {{ item }} key {{ cisco_security.ntp_key_id | default(1) }}"
+        match: line
+      loop: "{{ ntp_servers }}"
+
+    when:
+    - "'cisco' in group_names"
+    - ansible_network_os == "ios"
+
+  # Arista Security Hardening
+  - name: Apply Arista security hardening
+    block:
+    - name: Configure Arista AAA and user security
+      arista.eos.eos_config:
+        lines:
+        - "aaa authentication login default group {{ arista_security.aaa_group | default('radius') }} local"
+        - "aaa authorization exec default group {{ arista_security.aaa_group | default('radius') }} local"
+        - "aaa accounting exec default start-stop group {{ arista_security.aaa_group | default('radius') }}"
+        - "username admin privilege 15 role network-admin secret sha512 {{ vault_arista_admin_hash }}"
+        - "username readonly privilege 1 role network-operator secret sha512 {{ vault_arista_readonly_hash }}"
+
+    - name: Configure SSH and management security
+      arista.eos.eos_config:
+        lines:
+        - "management ssh"
+        - "ip ssh client-alive-interval {{ arista_security.ssh_keepalive | default(30) }}"
+        - "ip ssh client-alive-count-max {{ arista_security.ssh_max_keepalive | default(3) }}"
+        - "ip ssh connection limit {{ arista_security.ssh_connection_limit | default(10) }}"
+        - "management console"
+        - "idle-timeout {{ arista_security.console_timeout | default(5) }}"
+
+    - name: Configure API security
+      arista.eos.eos_config:
+        lines:
+        - "management api http-commands"
+        - "protocol https ssl profile {{ arista_security.ssl_profile | default('eAPI') }}"
+        - "no protocol http"
+        - "vrf {{ arista_security.mgmt_vrf | default('MGMT') }}"
+        - "cors allowed-origin {{ arista_security.cors_origin | default('none') }}"
+
+    - name: Configure SNMP v3 security
+      arista.eos.eos_config:
+        lines:
+        - "snmp-server group {{ arista_security.snmp_group | default('network-admin') }} v3 priv"
+        - "snmp-server user {{ arista_security.snmp_user | default('netadmin') }} {{ arista_security.snmp_group | default('network-admin') }} v3 auth sha {{ vault_snmp_auth_key }} priv aes {{ vault_snmp_priv_key }}"
+        - "snmp-server host {{ arista_security.snmp_server }} version 3 priv {{ arista_security.snmp_user | default('netadmin') }}"
+
+    - name: Configure logging and monitoring
+      arista.eos.eos_config:
+        lines:
+        - "logging host {{ syslog_servers[0] }} {{ arista_security.syslog_port | default(514) }}"
+        - "logging format timestamp traditional year"
+        - "logging level all {{ arista_security.log_level | default('informational') }}"
+        - "logging source-interface {{ arista_security.log_source | default('Management1') }}"
+
+    when:
+    - "'arista' in group_names"
+    - ansible_network_os == "eos"
+
+  # Juniper Security Hardening
+  - name: Apply Juniper security hardening
+    block:
+    - name: Configure Juniper system security
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set system login class network-admin permissions all"
+        - "set system login class read-only permissions [ view view-configuration ]"
+        - "set system login user admin class network-admin authentication encrypted-password {{ vault_juniper_admin_hash }}"
+        - "set system login user readonly class read-only authentication encrypted-password {{ vault_juniper_readonly_hash }}"
+        - "set system root-authentication encrypted-password {{ vault_juniper_root_hash }}"
+
+    - name: Configure SSH and access security
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set system services ssh protocol-version v2"
+        - "set system services ssh connection-limit {{ juniper_security.ssh_connection_limit | default(10) }}"
+        - "set system services ssh rate-limit {{ juniper_security.ssh_rate_limit | default(5) }}"
+        - "set system services ssh client-alive-count-max {{ juniper_security.ssh_keepalive_max | default(3) }}"
+        - "set system services ssh client-alive-interval {{ juniper_security.ssh_keepalive | default(30) }}"
+
+    - name: Configure SNMP v3 security
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set snmp v3 usm local-engine user {{ juniper_security.snmp_user | default('netadmin') }} authentication-sha authentication-password {{ vault_snmp_auth_key }}"
+        - "set snmp v3 usm local-engine user {{ juniper_security.snmp_user | default('netadmin') }} privacy-aes128 privacy-password {{ vault_snmp_priv_key }}"
+        - "set snmp v3 vacm security-to-group security-model usm security-name {{ juniper_security.snmp_user | default('netadmin') }} group network-admin"
+        - "set snmp v3 vacm access group network-admin default-context-prefix security-model any security-level privacy read-view all write-view all notify-view all"
+
+    - name: Configure firewall filters for management protection
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set firewall family inet filter PROTECT_RE term ALLOW_SSH from protocol tcp"
+        - "set firewall family inet filter PROTECT_RE term ALLOW_SSH from destination-port 22"
+        - "set firewall family inet filter PROTECT_RE term ALLOW_SSH from source-prefix-list MGMT_NETWORKS"
+        - "set firewall family inet filter PROTECT_RE term ALLOW_SSH then accept"
+        - "set firewall family inet filter PROTECT_RE term ALLOW_SNMP from protocol udp"
+        - "set firewall family inet filter PROTECT_RE term ALLOW_SNMP from destination-port 161"
+        - "set firewall family inet filter PROTECT_RE term ALLOW_SNMP from source-prefix-list MGMT_NETWORKS"
+        - "set firewall family inet filter PROTECT_RE term ALLOW_SNMP then accept"
+        - "set firewall family inet filter PROTECT_RE term DENY_ALL then log"
+        - "set firewall family inet filter PROTECT_RE term DENY_ALL then reject"
+
+    - name: Configure system logging
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set system syslog host {{ syslog_servers[0] }} any info"
+        - "set system syslog host {{ syslog_servers[0] }} authorization info"
+        - "set system syslog host {{ syslog_servers[0] }} interactive-commands info"
+        - "set system syslog host {{ syslog_servers[0] }} structured-data"
+
+    when:
+    - "'juniper' in group_names"
+    - ansible_network_os == "junos"
+
+  # Palo Alto Security Configuration
+  - name: Apply Palo Alto advanced security settings
+    block:
+    - name: Configure Palo Alto password policies
+      paloaltonetworks.panos.panos_config_element:
+        xpath: "/config/mgt-config/password-complexity"
+        element: |
+          <enabled>yes</enabled>
+          <minimum-length>{{ panos_security.min_password_length | default(12) }}</minimum-length>
+          <minimum-uppercase-letters>{{ panos_security.min_uppercase | default(1) }}</minimum-uppercase-letters>
+          <minimum-lowercase-letters>{{ panos_security.min_lowercase | default(1) }}</minimum-lowercase-letters>
+          <minimum-numeric-letters>{{ panos_security.min_numeric | default(1) }}</minimum-numeric-letters>
+          <minimum-special-characters>{{ panos_security.min_special | default(1) }}</minimum-special-characters>
+          <block-repeated-characters>{{ panos_security.block_repeated | default(3) }}</block-repeated-characters>
+          <password-history-count>{{ panos_security.password_history | default(12) }}</password-history-count>
+
+    - name: Configure session timeout settings
+      paloaltonetworks.panos.panos_config_element:
+        xpath: "/config/mgt-config/idle-timeout"
+        element: "{{ panos_security.idle_timeout | default(10) }}"
+
+    - name: Configure failed authentication lockout
+      paloaltonetworks.panos.panos_config_element:
+        xpath: "/config/mgt-config/authentication-profile"
+        element: |
+          <lockout>
+            <failed-attempts>{{ panos_security.max_failed_attempts | default(5) }}</failed-attempts>
+            <lockout-time>{{ panos_security.lockout_time | default(30) }}</lockout-time>
+          </lockout>
+
+    - name: Configure management interface access
+      paloaltonetworks.panos.panos_config_element:
+        xpath: "/config/devices/entry[@name='localhost.localdomain']/network/interface/ethernet/entry[@name='ethernet1/1']/layer3/interface-management-profile"
+        element: "{{ panos_security.mgmt_profile | default('allow-mgmt') }}"
+
+    when:
+    - "'palo_alto' in group_names"
+    - ansible_connection == "local"
+
+  # Security Validation and Audit
+  - name: Perform security validation
+    block:
+    - name: Check Cisco security configuration
+      cisco.ios.ios_command:
+        commands:
+        - "show running-config | include service password-encryption"
+        - "show running-config | include login block-for"
+        - "show running-config | include ip ssh version"
+        - "show running-config | include aaa new-model"
+        - "show users"
+        - "show login failures"
+      register: cisco_security_status
+      when: ansible_network_os == "ios"
+
+    - name: Check Arista security configuration
+      arista.eos.eos_command:
+        commands:
+        - "show running-config section aaa"
+        - "show running-config section management"
+        - "show users"
+        - "show logging"
+      register: arista_security_status
+      when: ansible_network_os == "eos"
+
+    - name: Check Juniper security configuration
+      junipernetworks.junos.junos_command:
+        commands:
+        - "show configuration system login"
+        - "show configuration system services"
+        - "show configuration snmp"
+        - "show system users"
+      register: juniper_security_status
+      when: ansible_network_os == "junos"
+
+    - name: Validate Palo Alto security settings
+      paloaltonetworks.panos.panos_op:
+        cmd: |
+          <show>
+            <system>
+              <info/>
+            </system>
+          </show>
+      register: panos_security_status
+      when: ansible_connection == "local" and "'palo_alto' in group_names"
+
+    when: security_audit or hardening_level == 'maximum'
+
+  # Generate Security Report
+  - name: Generate security hardening report
+    template:
+      src: "{{ playbook_dir }}/../templates/deployment_summary.j2"
+      dest: "{{ playbook_dir }}/../reports/security_hardening/{{ inventory_hostname }}_security_{{ report_timestamp | regex_replace(':', '-') }}.txt"
+    vars:
+      deployment_type: "Security Hardening"
+      device_status: "{{ 'SUCCESS' if ansible_failed_task is not defined else 'FAILED' }}"
+      hardening_applied: "{{ hardening_level }}"
+      security_validation: "{{ cisco_security_status | default(arista_security_status) | default(juniper_security_status) | default(panos_security_status) | default({}) }}"
+    delegate_to: localhost
+
+  handlers:
+  - name: Save configuration
+    cisco.ios.ios_config:
+      save_when: modified
+    when: ansible_network_os == "ios"
+
+  - name: Save Arista configuration
+    arista.eos.eos_config:
+      save_when: modified
+    when: ansible_network_os == "eos"
+
+  - name: Commit Juniper configuration
+    junipernetworks.junos.junos_config:
+      confirm_commit: true
+    when: ansible_network_os == "junos"
+
+  - name: Commit Palo Alto configuration
+    paloaltonetworks.panos.panos_commit:
+      sync: true
+    when: ansible_connection == "local" and "'palo_alto' in group_names"

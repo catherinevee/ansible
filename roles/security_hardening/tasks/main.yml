@@ -1,0 +1,26 @@
+---
+# Comprehensive security hardening for network devices
+- name: Apply security hardening baseline
+  include_tasks: "{{ ansible_network_os }}_hardening.yml"
+  when: ansible_network_os is defined
+  # Apply OS-specific security hardening
+
+- name: Configure common security settings
+  include_tasks: common_security.yml
+  # Apply universal security configurations
+
+- name: Implement access control policies
+  include_tasks: access_control.yml
+  # Configure authentication and authorization
+
+- name: Enable security logging and monitoring
+  include_tasks: security_monitoring.yml
+  # Configure security event logging
+
+- name: Apply cryptographic hardening
+  include_tasks: crypto_hardening.yml
+  # Configure secure cryptographic settings
+
+- name: Validate security configuration
+  include_tasks: security_validation.yml
+  # Verify security hardening implementation

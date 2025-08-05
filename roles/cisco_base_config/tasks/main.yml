@@ -1,0 +1,100 @@
+---
+# Cisco base configuration role tasks
+- name: Set hostname
+  cisco.ios.ios_system:
+    hostname: "{{ device_hostname | default(inventory_hostname) }}"
+    state: present
+  notify: save_configuration
+  # Idempotent hostname configuration
+
+- name: Configure global settings
+  cisco.ios.ios_system:
+    domain_name: "{{ domain_name | default('local') }}"
+    name_servers: "{{ dns_servers }}"
+    state: present
+  notify: save_configuration
+  # DNS and domain configuration
+
+- name: Configure NTP servers
+  cisco.ios.ios_ntp_global:
+    servers:
+    - address: "{{ item }}"
+      prefer: "{{ true if item == ntp_servers[0] else false }}"
+    state: merged
+  loop: "{{ ntp_servers }}"
+  notify: save_configuration
+  # NTP synchronization for accurate logging
+
+- name: Enable service password encryption
+  cisco.ios.ios_config:
+    lines:
+    - service password-encryption
+    - service timestamps debug datetime localtime
+    - service timestamps log datetime localtime
+  notify: save_configuration
+  # Security and logging enhancements
+
+- name: Configure console and VTY access
+  cisco.ios.ios_config:
+    lines:
+    - login local
+    - transport input ssh
+    parents: "line vty 0 15"
+  notify: save_configuration
+  # Secure remote access configuration
+
+- name: Configure console line
+  cisco.ios.ios_config:
+    lines:
+    - logging synchronous
+    - exec-timeout {{ console_timeout | default('5 0') }}
+    parents: "line con 0"
+  notify: save_configuration
+  # Console line optimization
+
+- name: Configure banner message
+  cisco.ios.ios_banner:
+    banner: motd
+    text: "{{ motd_banner | default('Authorized access only. All activity is monitored.') }}"
+    state: present
+  notify: save_configuration
+  # Legal/security banner
+
+- name: Configure SNMP community
+  cisco.ios.ios_config:
+    lines:
+    - snmp-server community {{ snmp_community }} RO
+    - snmp-server location {{ device_location | default('Unknown') }}
+    - snmp-server contact {{ snmp_contact | default('Network Admin') }}
+  notify: save_configuration
+  when: snmp_community is defined
+  # SNMP monitoring configuration
+
+- name: Configure logging
+  cisco.ios.ios_config:
+    lines:
+    - logging {{ item }}
+    loop: "{{ syslog_servers }}"
+  notify: save_configuration
+  when: syslog_servers is defined
+  # Centralized logging configuration
+
+- name: Enable AAA new-model
+  cisco.ios.ios_config:
+    lines:
+    - aaa new-model
+    - aaa authentication login default local
+    - aaa authorization exec default local
+  notify: save_configuration
+  when: enable_aaa | default(true)
+  # Authentication, Authorization, and Accounting
+
+- name: Create local admin user
+  cisco.ios.ios_user:
+    name: "{{ admin_username | default('admin') }}"
+    configured_password: "{{ admin_password }}"
+    privilege: 15
+    state: present
+  notify: save_configuration
+  when: admin_password is defined
+  # Local administrative user

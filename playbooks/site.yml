@@ -1,0 +1,62 @@
+---
+# Main orchestration playbook for network deployment workflows
+- name: Network Infrastructure Deployment and Validation
+  hosts: localhost
+  gather_facts: false
+  vars:
+    deployment_timestamp: "{{ ansible_date_time.iso8601 }}"
+
+  tasks:
+  - name: Display deployment information
+    ansible.builtin.debug:
+      msg:
+      - "Network Automation Deployment"
+      - "Timestamp: {{ deployment_timestamp }}"
+      - "Environment: {{ target_environment | default('production') }}"
+
+# Configuration backup before changes
+- import_playbook: backup_configs.yml
+  vars:
+    backup_reason: "Pre-deployment backup - {{ deployment_timestamp }}"
+
+# VLAN and network infrastructure deployment
+- import_playbook: deploy_vlans.yml
+  when: deploy_vlans | default(true)
+
+# Security policies and firewall rules
+- import_playbook: deploy_security_policies.yml
+  when: deploy_security_policies | default(true)
+
+# Post-deployment validation
+- import_playbook: network_health_check.yml
+
+# Generate deployment report
+- name: Deployment Summary and Reporting
+  hosts: localhost
+  gather_facts: false
+
+  tasks:
+  - name: Generate deployment summary report
+    ansible.builtin.template:
+      src: "deployment_summary.j2"
+      dest: "{{ playbook_dir }}/../reports/deployment_summary_{{ ansible_date_time.date }}.txt"
+      mode: '0644'
+    vars:
+      deployment_info:
+        timestamp: "{{ deployment_timestamp }}"
+        environment: "{{ target_environment | default('production') }}"
+        playbooks_executed:
+        - backup_configs.yml
+        - deploy_vlans.yml
+        - deploy_security_policies.yml
+        - network_health_check.yml
+    delegate_to: localhost
+
+  - name: Display completion message
+    ansible.builtin.debug:
+      msg:
+      - "=== Deployment Complete ==="
+      - "All network automation tasks completed successfully"
+      - "Review reports directory for detailed results"
+      - "Backup files available in backups directory"
+      - "=============================="

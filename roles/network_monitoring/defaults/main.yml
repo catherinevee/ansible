@@ -1,0 +1,153 @@
+---
+# Default variables for network monitoring role
+enable_snmp_monitoring: true
+enable_centralized_logging: true
+enable_flow_monitoring: true
+enable_discovery_protocols: true
+enable_performance_monitoring: true
+enable_health_monitoring: true
+
+# SNMP Configuration
+snmp_version: "2c" # Options: 1, 2c, 3
+snmp_ro_community: "{{ vault_snmp_ro_community | default('public') }}"
+snmp_rw_community: "{{ vault_snmp_rw_community | default('private') }}"
+snmp_location: "Network Infrastructure"
+snmp_contact: "Network Operations Center"
+snmp_acl: "SNMP_ACCESS" # ACL to restrict SNMP access
+
+# SNMP Servers (NMS/Monitoring systems)
+snmp_servers:
+- "192.168.1.100" # Primary monitoring server
+- "192.168.1.101" # Secondary monitoring server
+
+# SNMPv3 Users (when snmp_version is '3')
+snmpv3_users:
+- username: "monitoring_user"
+  group: "monitoring_group"
+  auth_protocol: "sha"
+  auth_password: "{{ vault_snmpv3_auth_password }}"
+  priv_protocol: "aes"
+  priv_password: "{{ vault_snmpv3_priv_password }}"
+  security_level: "authPriv"
+
+# Syslog Configuration
+syslog_servers:
+- server: "192.168.1.110"
+  port: 514
+  transport: "udp"
+  severity: "informational"
+  facility: "local0"
+  source_interface: "Loopback0"
+- server: "192.168.1.111"
+  port: 514
+  transport: "tcp"
+  severity: "warning"
+  facility: "local1"
+  source_interface: "Loopback0"
+
+# Syslog Buffer Settings
+syslog_buffer_size: 16384
+syslog_buffer_severity: "informational"
+syslog_console_severity: "critical"
+syslog_monitor_severity: "debugging"
+syslog_rate_limit: 100
+syslog_format: "default"
+
+# NetFlow/sFlow Configuration
+flow_monitoring:
+  netflow:
+    version: 9 # Options: 5, 9, 10 (IPFIX)
+    collectors:
+    - server: "192.168.1.120"
+      port: 2055
+      transport: "udp"
+    - server: "192.168.1.121"
+      port: 2055
+      transport: "udp"
+    export_timeout:
+      inactive: 15
+      active: 1800
+    sampling_rate: 1000 # 1 in 1000 packets
+
+  sflow:
+    collectors:
+    - server: "192.168.1.125"
+      port: 6343
+      transport: "udp"
+    sampling_rate: 4096
+    polling_interval: 20
+
+# Discovery Protocols
+discovery_protocols:
+  lldp:
+    enabled: true
+    holdtime: 120
+    timer: 30
+    tlv_select:
+    - "system-name"
+    - "system-description"
+    - "port-description"
+    - "system-capabilities"
+    - "management-address"
+
+  cdp:
+    enabled: true # For Cisco devices
+    holdtime: 180
+    timer: 60
+
+# Performance Monitoring Thresholds
+performance_thresholds:
+  interface_utilization:
+    warning: 70 # Percentage
+    critical: 85
+
+  cpu_utilization:
+    warning: 75
+    critical: 90
+
+  memory_utilization:
+    warning: 80
+    critical: 95
+
+  temperature:
+    warning: 70 # Celsius
+    critical: 80
+
+# Health Check Configuration
+health_checks:
+  ping_targets:
+  - "8.8.8.8" # Google DNS
+  - "1.1.1.1" # Cloudflare DNS
+  - "192.168.1.1" # Default gateway
+
+  ntp_servers:
+  - "192.168.1.254"
+  - "192.168.1.253"
+
+  dns_servers:
+  - "192.168.1.10"
+  - "192.168.1.11"
+
+# Interface monitoring configuration
+interface_monitoring:
+  monitor_all_interfaces: false
+  specific_interfaces:
+  - "GigabitEthernet0/0/1"
+  - "GigabitEthernet0/0/2"
+  - "TenGigabitEthernet0/0/1"
+
+  ignore_interfaces:
+  - "Null0"
+  - "Loopback"
+  - "Vlan1"
+
+# Management Interface Configuration
+management_interface: "{{ ansible_network_os == 'ios' | ternary('Loopback0', 'Management1') }}"
+management_vrf: "{{ management_vrf_name | default('default') }}"
+
+# Monitoring Data Retention
+monitoring_retention:
+  flow_data_days: 30
+  syslog_data_days: 90
+  snmp_data_days: 365
+  performance_data_days: 180

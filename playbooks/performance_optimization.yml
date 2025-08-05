@@ -1,0 +1,404 @@
+---
+# Network Performance Optimization Playbook
+# Optimizes network performance across all device types and vendors
+- name: Network Performance Optimization
+  hosts: all
+  gather_facts: true
+  vars:
+    report_timestamp: "{{ ansible_date_time.iso8601 }}"
+    optimization_level: "{{ level | default('standard') }}" # basic, standard, aggressive
+    performance_baseline: "{{ baseline | default(false) }}"
+    apply_changes: "{{ apply | default(false) }}"
+
+  tasks:
+  - name: Create performance optimization report directory
+    file:
+      path: "{{ playbook_dir }}/../reports/performance_optimization"
+      state: directory
+    delegate_to: localhost
+    run_once: true
+
+  - name: Initialize performance optimization report
+    template:
+      src: "{{ playbook_dir }}/../templates/deployment_summary.j2"
+      dest: "{{ playbook_dir }}/../reports/performance_optimization/performance_optimization_{{ report_timestamp | regex_replace(':', '-') }}.txt"
+    vars:
+      deployment_type: "Performance Optimization"
+      deployment_scope: "{{ optimization_level | upper }} Level"
+    delegate_to: localhost
+    run_once: true
+
+  # Performance Baseline Collection
+  - name: Collect performance baseline
+    block:
+    - name: Collect Cisco performance metrics
+      cisco.ios.ios_command:
+        commands:
+        - "show processes cpu sorted"
+        - "show memory summary"
+        - "show interfaces summary"
+        - "show ip route summary"
+        - "show spanning-tree summary"
+        - "show buffers"
+        - "show tcp brief"
+        - "show platform hardware throughput level"
+      register: cisco_baseline
+      when: ansible_network_os == "ios"
+
+    - name: Collect Arista performance metrics
+      arista.eos.eos_command:
+        commands:
+        - "show processes top"
+        - "show system memory"
+        - "show interfaces counters"
+        - "show ip route summary"
+        - "show spanning-tree summary"
+        - "show hardware counter cpu"
+        - "show platform sand l3 summary"
+      register: arista_baseline
+      when: ansible_network_os == "eos"
+
+    - name: Collect Juniper performance metrics
+      junipernetworks.junos.junos_command:
+        commands:
+        - "show chassis routing-engine"
+        - "show system memory"
+        - "show interfaces terse"
+        - "show route summary"
+        - "show chassis forwarding"
+        - "show pfe statistics traffic"
+      register: juniper_baseline
+      when: ansible_network_os == "junos"
+
+    - name: Collect Palo Alto performance metrics
+      paloaltonetworks.panos.panos_op:
+        cmd: |
+          <show>
+            <system>
+              <resources/>
+            </system>
+          </show>
+      register: panos_baseline
+      when: ansible_connection == "local" and "'palo_alto' in group_names"
+
+    when: performance_baseline
+
+  # Cisco Performance Optimization
+  - name: Cisco performance optimization
+    block:
+    - name: Optimize Cisco CPU and memory settings
+      cisco.ios.ios_config:
+        lines:
+        - "process cpu threshold type total rising {{ cisco_perf.cpu_threshold_rising | default(80) }} interval {{ cisco_perf.cpu_interval | default(5) }}"
+        - "process cpu threshold type total falling {{ cisco_perf.cpu_threshold_falling | default(60) }} interval {{ cisco_perf.cpu_interval | default(5) }}"
+        - "process cpu threshold type process rising {{ cisco_perf.process_threshold | default(80) }} interval {{ cisco_perf.process_interval | default(5) }}"
+        - "memory free low-watermark processor {{ cisco_perf.memory_low_watermark | default(5) }}"
+        - "memory reserve critical {{ cisco_perf.memory_reserve | default(4096) }}"
+        match: line
+
+    - name: Optimize Cisco interface performance
+      cisco.ios.ios_config:
+        lines:
+        - "interface {{ item.interface }}"
+        - "load-interval {{ item.load_interval | default(30) }}"
+        - "carrier-delay {{ item.carrier_delay | default(2) }}"
+        - "hold-queue {{ item.hold_queue_out | default(1000) }} out"
+        - "hold-queue {{ item.hold_queue_in | default(1000) }} in"
+        - "tx-ring-limit {{ item.tx_ring_limit | default(256) }}"
+        parents: []
+      loop: "{{ cisco_perf.optimized_interfaces | default([]) }}"
+      when: optimization_level in ['standard', 'aggressive']
+
+    - name: Configure Cisco CEF optimization
+      cisco.ios.ios_config:
+        lines:
+        - "ip cef optimize neighbor resolution"
+        - "ip cef load-sharing algorithm {{ cisco_perf.cef_algorithm | default('universal') }}"
+        - "ip cef accounting load-balance-hash"
+        - "ip cef accounting non-recursive"
+        match: line
+      when: optimization_level in ['standard', 'aggressive']
+
+    - name: Optimize Cisco switching performance
+      cisco.ios.ios_config:
+        lines:
+        - "mls aging normal {{ cisco_perf.mls_aging_normal | default(300) }}"
+        - "mls aging fast {{ cisco_perf.mls_aging_fast | default(64) }} threshold {{ cisco_perf.mls_threshold | default(128) }}"
+        - "mls flow ip destination"
+        - "mls flow ip source-destination"
+        match: line
+      when:
+      - optimization_level == 'aggressive'
+      - device_role in ['switch', 'core_switch', 'distribution_switch']
+
+    - name: Configure Cisco buffer optimization
+      cisco.ios.ios_config:
+        lines:
+        - "buffers huge size {{ cisco_perf.huge_buffers_size | default(65024) }}"
+        - "buffers huge max {{ cisco_perf.huge_buffers_max | default(150) }}"
+        - "buffers huge min {{ cisco_perf.huge_buffers_min | default(10) }}"
+        - "buffers huge initial {{ cisco_perf.huge_buffers_initial | default(50) }}"
+        - "buffers big size {{ cisco_perf.big_buffers_size | default(4520) }}"
+        - "buffers big max {{ cisco_perf.big_buffers_max | default(150) }}"
+        match: line
+      when: optimization_level == 'aggressive'
+
+    - name: Optimize Cisco spanning tree
+      cisco.ios.ios_config:
+        lines:
+        - "spanning-tree mode {{ cisco_perf.stp_mode | default('rapid-pvst') }}"
+        - "spanning-tree loopguard default"
+        - "spanning-tree portfast bpduguard default"
+        - "spanning-tree extend system-id"
+        match: line
+      when: device_role in ['switch', 'access_switch']
+
+    when:
+    - "'cisco' in group_names"
+    - ansible_network_os == "ios"
+    - apply_changes
+
+  # Arista Performance Optimization
+  - name: Arista performance optimization
+    block:
+    - name: Configure Arista hardware optimization
+      arista.eos.eos_config:
+        lines:
+        - "hardware counter feature {{ item }}"
+        match: line
+      loop:
+      - "acl"
+      - "flow-spec"
+      - "interface"
+      - "route"
+      when: optimization_level in ['standard', 'aggressive']
+
+    - name: Optimize Arista TCAM utilization
+      arista.eos.eos_config:
+        lines:
+        - "hardware tcam"
+        - "system profile {{ arista_perf.tcam_profile | default('default') }}"
+        - "profile {{ arista_perf.tcam_profile | default('default') }} forwarding-table unified"
+      when: optimization_level == 'aggressive'
+
+    - name: Configure Arista buffer optimization
+      arista.eos.eos_config:
+        lines:
+        - "interface {{ item.interface }}"
+        - "tx-queue {{ item.queue | default(7) }}"
+        - "priority-flow-control mode {{ item.pfc_mode | default('auto') }}"
+        - "shape rate {{ item.shape_rate | default('100 percent') }}"
+        parents: []
+      loop: "{{ arista_perf.optimized_interfaces | default([]) }}"
+      when: optimization_level in ['standard', 'aggressive']
+
+    - name: Optimize Arista MLAG performance
+      arista.eos.eos_config:
+        lines:
+        - "mlag configuration"
+        - "heartbeat-interval {{ arista_perf.mlag_heartbeat | default(2500) }}"
+        - "local-interface {{ arista_perf.mlag_interface | default('Vlan4094') }}"
+        - "reload-delay mlag {{ arista_perf.mlag_reload_delay | default(300) }}"
+        - "reload-delay non-mlag {{ arista_perf.mlag_non_mlag_delay | default(330) }}"
+      when:
+      - optimization_level in ['standard', 'aggressive']
+      - arista_perf.mlag_enabled | default(false)
+
+    - name: Configure Arista BGP optimization
+      arista.eos.eos_config:
+        lines:
+        - "router bgp {{ arista_perf.bgp_asn }}"
+        - "update wait-install"
+        - "maximum-paths {{ arista_perf.bgp_max_paths | default(32) }}"
+        - "bgp additional-paths receive"
+        - "bgp additional-paths send any"
+        - "bgp bestpath tie-break router-id"
+        match: line
+      when:
+      - optimization_level == 'aggressive'
+      - arista_perf.bgp_asn is defined
+
+    when:
+    - "'arista' in group_names"
+    - ansible_network_os == "eos"
+    - apply_changes
+
+  # Juniper Performance Optimization
+  - name: Juniper performance optimization
+    block:
+    - name: Configure Juniper forwarding optimization
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set chassis forwarding-options hash-key family inet layer-3"
+        - "set chassis forwarding-options hash-key family inet layer-4"
+        - "set chassis forwarding-options load-balance indexed-load-balance"
+        - "set chassis forwarding-options enhanced-hash-key"
+        comment: "Optimize forwarding performance"
+      when: optimization_level in ['standard', 'aggressive']
+
+    - name: Optimize Juniper PFE performance
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set chassis fpc {{ item.fpc }} pic {{ item.pic }} adaptive-services service-package extension-provider"
+        - "set chassis fpc {{ item.fpc }} pic {{ item.pic }} number-of-ports {{ item.ports | default(4) }}"
+        comment: "Optimize PFE performance"
+      loop: "{{ juniper_perf.pfe_optimization | default([]) }}"
+      when: optimization_level == 'aggressive'
+
+    - name: Configure Juniper interface optimization
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set interfaces {{ item.interface }} hold-time up {{ item.hold_up | default(2000) }}"
+        - "set interfaces {{ item.interface }} hold-time down {{ item.hold_down | default(0) }}"
+        - "set interfaces {{ item.interface }} damping"
+        - "set interfaces {{ item.interface }} accounting"
+        comment: "Optimize interface performance"
+      loop: "{{ juniper_perf.optimized_interfaces | default([]) }}"
+      when: optimization_level in ['standard', 'aggressive']
+
+    - name: Optimize Juniper MPLS performance
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set protocols mpls optimize-timer {{ juniper_perf.mpls_timer | default(180) }}"
+        - "set protocols mpls statistics file {{ juniper_perf.mpls_stats_file | default('mpls-stats.log') }}"
+        - "set protocols mpls statistics interval {{ juniper_perf.mpls_stats_interval | default(300) }}"
+        - "set protocols mpls no-cspf"
+        comment: "Optimize MPLS performance"
+      when:
+      - optimization_level == 'aggressive'
+      - juniper_perf.mpls_enabled | default(false)
+
+    - name: Configure Juniper BGP optimization
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set protocols bgp group {{ item.group }} multipath"
+        - "set protocols bgp group {{ item.group }} multihop"
+        - "set protocols bgp group {{ item.group }} hold-time {{ item.hold_time | default(90) }}"
+        - "set protocols bgp group {{ item.group }} keepalive {{ item.keepalive | default(30) }}"
+        comment: "Optimize BGP performance"
+      loop: "{{ juniper_perf.bgp_groups | default([]) }}"
+      when: optimization_level in ['standard', 'aggressive']
+
+    when:
+    - "'juniper' in group_names"
+    - ansible_network_os == "junos"
+    - apply_changes
+
+  # Palo Alto Performance Optimization
+  - name: Palo Alto performance optimization
+    block:
+    - name: Configure Palo Alto session optimization
+      paloaltonetworks.panos.panos_config_element:
+        xpath: "/config/devices/entry[@name='localhost.localdomain']/deviceconfig/setting/session"
+        element: |
+          <max-session>{{ panos_perf.max_sessions | default(131072) }}</max-session>
+          <tcp-reject-non-syn>{{ panos_perf.tcp_reject_non_syn | default('yes') }}</tcp-reject-non-syn>
+          <rematch-default-rule>{{ panos_perf.rematch_default | default('yes') }}</rematch-default-rule>
+
+    - name: Configure Palo Alto content inspection optimization
+      paloaltonetworks.panos.panos_config_element:
+        xpath: "/config/devices/entry[@name='localhost.localdomain']/deviceconfig/setting/content-inspection"
+        element: |
+          <ssl-decrypt-enable>{{ panos_perf.ssl_decrypt | default('yes') }}</ssl-decrypt-enable>
+          <ssl-decrypt-max-sessions>{{ panos_perf.ssl_max_sessions | default(4096) }}</ssl-decrypt-max-sessions>
+
+    - name: Optimize Palo Alto threat prevention
+      paloaltonetworks.panos.panos_config_element:
+        xpath: "/config/devices/entry[@name='localhost.localdomain']/deviceconfig/setting/wildfire"
+        element: |
+          <file-size-limit>{{ panos_perf.wildfire_file_limit | default(10) }}</file-size-limit>
+          <report-grayware-file>{{ panos_perf.report_grayware | default('yes') }}</report-grayware-file>
+
+    - name: Configure Palo Alto hardware optimization
+      paloaltonetworks.panos.panos_config_element:
+        xpath: "/config/devices/entry[@name='localhost.localdomain']/deviceconfig/setting/management"
+        element: |
+          <max-rows-in-csv-export>{{ panos_perf.csv_export_rows | default(65536) }}</max-rows-in-csv-export>
+          <max-rows-in-pdf-export>{{ panos_perf.pdf_export_rows | default(2000) }}</max-rows-in-pdf-export>
+
+    when:
+    - "'palo_alto' in group_names"
+    - ansible_connection == "local"
+    - apply_changes
+
+  # Performance Validation
+  - name: Post-optimization performance validation
+    block:
+    - name: Validate Cisco performance improvements
+      cisco.ios.ios_command:
+        commands:
+        - "show processes cpu sorted | include CPU utilization"
+        - "show memory summary"
+        - "show interfaces | include rate"
+        - "show ip cef summary"
+      register: cisco_post_optimization
+      when: ansible_network_os == "ios"
+
+    - name: Validate Arista performance improvements
+      arista.eos.eos_command:
+        commands:
+        - "show processes top once"
+        - "show system memory"
+        - "show interfaces counters rates"
+        - "show hardware counter feature"
+      register: arista_post_optimization
+      when: ansible_network_os == "eos"
+
+    - name: Validate Juniper performance improvements
+      junipernetworks.junos.junos_command:
+        commands:
+        - "show chassis routing-engine"
+        - "show system processes summary"
+        - "show interfaces statistics"
+        - "show pfe statistics traffic"
+      register: juniper_post_optimization
+      when: ansible_network_os == "junos"
+
+    - name: Validate Palo Alto performance improvements
+      paloaltonetworks.panos.panos_op:
+        cmd: |
+          <show>
+            <system>
+              <resources/>
+            </system>
+          </show>
+      register: panos_post_optimization
+      when: ansible_connection == "local" and "'palo_alto' in group_names"
+
+    when: apply_changes
+
+  # Generate Performance Report
+  - name: Generate performance optimization report
+    template:
+      src: "{{ playbook_dir }}/../templates/deployment_summary.j2"
+      dest: "{{ playbook_dir }}/../reports/performance_optimization/{{ inventory_hostname }}_performance_{{ report_timestamp | regex_replace(':', '-') }}.txt"
+    vars:
+      deployment_type: "Performance Optimization"
+      device_status: "{{ 'SUCCESS' if ansible_failed_task is not defined else 'FAILED' }}"
+      optimization_applied: "{{ optimization_level }}"
+      changes_applied: "{{ apply_changes }}"
+      baseline_collected: "{{ performance_baseline }}"
+      pre_optimization: "{{ cisco_baseline | default(arista_baseline) | default(juniper_baseline) | default(panos_baseline) | default({}) }}"
+      post_optimization: "{{ cisco_post_optimization | default(arista_post_optimization) | default(juniper_post_optimization) | default(panos_post_optimization) | default({}) }}"
+    delegate_to: localhost
+
+  handlers:
+  - name: Save optimized configuration
+    cisco.ios.ios_config:
+      save_when: modified
+    when: ansible_network_os == "ios"
+
+  - name: Save Arista optimized configuration
+    arista.eos.eos_config:
+      save_when: modified
+    when: ansible_network_os == "eos"
+
+  - name: Commit Juniper optimized configuration
+    junipernetworks.junos.junos_config:
+      confirm_commit: true
+    when: ansible_network_os == "junos"
+
+  - name: Commit Palo Alto optimized configuration
+    paloaltonetworks.panos.panos_commit:
+      sync: true
+    when: ansible_connection == "local" and "'palo_alto' in group_names"

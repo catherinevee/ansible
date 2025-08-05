@@ -1,0 +1,47 @@
+---
+# Device-specific variables for sw-core-01
+device_hostname: "SW-CORE-01"
+device_location: "Datacenter Rack A1"
+
+# Core switch specific VLANs
+core_vlans:
+- id: 1
+  name: "Management"
+  ip_address: "192.168.1.10/24"
+- id: 10
+  name: "Users"
+  ip_address: "10.1.1.1/16"
+- id: 20
+  name: "Voice"
+  ip_address: "10.2.1.1/16"
+- id: 30
+  name: "Servers"
+  ip_address: "10.3.1.1/16"
+- id: 40
+  name: "DMZ"
+  ip_address: "10.4.1.1/24"
+
+# Trunk port configurations
+trunk_interfaces:
+- name: "GigabitEthernet1/0/23"
+  description: "Trunk to sw-access-01"
+  vlans: "1,10,20,30,40"
+- name: "GigabitEthernet1/0/24"
+  description: "Trunk to Router"
+  vlans: "1,10,20,30,40"
+
+# STP configuration
+stp_config:
+  mode: "rapid-pvst"
+  priority: 4096 # Lower priority for root bridge
+
+# HSRP configuration
+hsrp_groups:
+- vlan: 10
+  group: 10
+  priority: 110
+  virtual_ip: "10.1.1.254"
+- vlan: 20
+  group: 20
+  priority: 110
+  virtual_ip: "10.2.1.254"

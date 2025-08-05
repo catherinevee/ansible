@@ -1,0 +1,133 @@
+---
+# Routing Deployment Tasks for Master Orchestration
+# Multi-vendor routing protocol configuration
+
+- name: Deploy Cisco IOS/IOS-XE routing protocols
+  block:
+  - name: Configure OSPF
+    cisco.ios.ios_config:
+      lines:
+      - "router ospf {{ ospf_process_id | default(1) }}"
+      - "router-id {{ ospf_router_id | default(ansible_host) }}"
+      - "network {{ item.network }} {{ item.wildcard }} area {{ item.area }}"
+      parents: "router ospf {{ ospf_process_id | default(1) }}"
+    loop: "{{ ospf_networks | default([]) }}"
+    when:
+    - ansible_network_os == 'ios'
+    - enable_ospf | default(false)
+
+  - name: Configure BGP
+    cisco.ios.ios_config:
+      lines:
+      - "router bgp {{ bgp_asn }}"
+      - "router-id {{ bgp_router_id | default(ansible_host) }}"
+      - "neighbor {{ item.neighbor }} remote-as {{ item.remote_as }}"
+      - "neighbor {{ item.neighbor }} description {{ item.description | default('BGP Peer') }}"
+      parents: "router bgp {{ bgp_asn }}"
+    loop: "{{ bgp_neighbors | default([]) }}"
+    when:
+    - ansible_network_os == 'ios'
+    - enable_bgp | default(false)
+    - bgp_asn is defined
+
+- name: Deploy Arista EOS routing protocols
+  block:
+  - name: Configure OSPF on EOS
+    arista.eos.eos_config:
+      lines:
+      - "router ospf {{ ospf_process_id | default(1) }}"
+      - "router-id {{ ospf_router_id | default(ansible_host) }}"
+      - "network {{ item.network }}/{{ item.prefix_length }} area {{ item.area }}"
+      parents: "router ospf {{ ospf_process_id | default(1) }}"
+    loop: "{{ ospf_networks | default([]) }}"
+    when:
+    - ansible_network_os == 'eos'
+    - enable_ospf | default(false)
+
+  - name: Configure BGP on EOS
+    arista.eos.eos_config:
+      lines:
+      - "router bgp {{ bgp_asn }}"
+      - "router-id {{ bgp_router_id | default(ansible_host) }}"
+      - "neighbor {{ item.neighbor }} remote-as {{ item.remote_as }}"
+      - "neighbor {{ item.neighbor }} description {{ item.description | default('BGP Peer') }}"
+    loop: "{{ bgp_neighbors | default([]) }}"
+    when:
+    - ansible_network_os == 'eos'
+    - enable_bgp | default(false)
+    - bgp_asn is defined
+
+- name: Deploy Juniper JunOS routing protocols
+  block:
+  - name: Configure OSPF on JunOS
+    junipernetworks.junos.junos_config:
+      lines:
+      - "set protocols ospf area {{ item.area }} interface {{ item.interface }}"
+      commit: true
+    loop: "{{ ospf_interfaces | default([]) }}"
+    when:
+    - ansible_network_os == 'junos'
+    - enable_ospf | default(false)
+
+  - name: Configure BGP on JunOS
+    junipernetworks.junos.junos_config:
+      lines:
+      - "set routing-options autonomous-system {{ bgp_asn }}"
+      - "set protocols bgp group {{ item.group | default('external') }} neighbor {{ item.neighbor }} peer-as {{ item.remote_as }}"
+      commit: true
+    loop: "{{ bgp_neighbors | default([]) }}"
+    when:
+    - ansible_network_os == 'junos'
+    - enable_bgp | default(false)
+    - bgp_asn is defined
+
+- name: Deploy static routes
+  block:
+  - name: Configure static routes on Cisco IOS
+    cisco.ios.ios_config:
+      lines:
+      - "ip route {{ item.destination }} {{ item.mask }} {{ item.next_hop }} {{ item.ad | default('') }}"
+    loop: "{{ static_routes | default([]) }}"
+    when: ansible_network_os == 'ios'
+
+  - name: Configure static routes on Arista EOS
+    arista.eos.eos_config:
+      lines:
+      - "ip route {{ item.destination }}/{{ item.prefix_length }} {{ item.next_hop }}"
+    loop: "{{ static_routes | default([]) }}"
+    when: ansible_network_os == 'eos'
+
+  - name: Configure static routes on JunOS
+    junipernetworks.junos.junos_config:
+      lines:
+      - "set routing-options static route {{ item.destination }}/{{ item.prefix_length }} next-hop {{ item.next_hop }}"
+      commit: true
+    loop: "{{ static_routes | default([]) }}"
+    when: ansible_network_os == 'junos'
+
+- name: Verify routing table
+  block:
+  - name: Show routing table - Cisco
+    cisco.ios.ios_command:
+      commands:
+      - "show ip route summary"
+    register: route_summary_cisco
+    when: ansible_network_os == 'ios'
+
+  - name: Show routing table - Arista
+    arista.eos.eos_command:
+      commands:
+      - "show ip route summary"
+    register: route_summary_arista
+    when: ansible_network_os == 'eos'
+
+  - name: Show routing table - Juniper
+    junipernetworks.junos.junos_command:
+      commands:
+      - "show route summary"
+    register: route_summary_juniper
+    when: ansible_network_os == 'junos'
+
+- name: Log routing deployment completion
+  debug:
+    msg: "Routing protocols deployed for {{ inventory_hostname }} ({{ ansible_network_os }})"

@@ -1,0 +1,289 @@
+---
+# Emergency Rollback Tasks for Master Orchestration
+# Multi-vendor emergency rollback procedures
+
+- name: Initialize emergency rollback procedure
+  block:
+  - name: Create emergency log entry
+    copy:
+      content: |
+        EMERGENCY ROLLBACK INITIATED
+        ============================
+        Device: {{ inventory_hostname }}
+        Platform: {{ ansible_network_os | upper }}
+        Timestamp: {{ ansible_date_time.iso8601 }}
+        Rollback Reason: {{ rollback_reason | default('Automated rollback triggered') }}
+
+        Rollback Procedure Starting...
+      dest: "{{ playbook_dir }}/../reports/emergency/{{ inventory_hostname }}_emergency_rollback_{{ ansible_date_time.epoch }}.log"
+    delegate_to: localhost
+
+  - name: Send emergency notification
+    mail:
+      to: "{{ emergency_contact | default('network-ops@company.com') }}"
+      subject: "EMERGENCY: Network Device Rollback - {{ inventory_hostname }}"
+      body: |
+        EMERGENCY ROLLBACK IN PROGRESS
+
+        Device: {{ inventory_hostname }}
+        Platform: {{ ansible_network_os }}
+        Time: {{ ansible_date_time.iso8601 }}
+        Reason: {{ rollback_reason | default('Automated rollback triggered') }}
+
+        Automatic rollback procedure is now running.
+        Please monitor device status closely.
+    delegate_to: localhost
+    ignore_errors: true
+
+- name: Locate most recent backup
+  block:
+  - name: Find latest configuration backup
+    find:
+      paths: "{{ playbook_dir }}/../backups"
+      patterns: "{{ inventory_hostname }}_backup_*.cfg"
+      age: "-1d" # Within last day
+    register: backup_files
+    delegate_to: localhost
+
+  - name: Identify most recent backup
+    set_fact:
+      latest_backup: "{{ backup_files.files | sort(attribute='mtime') | last }}"
+    when: backup_files.files | length > 0
+
+  - name: Fail if no recent backup found
+    fail:
+      msg: "No recent backup found for {{ inventory_hostname }}. Manual intervention required."
+    when: backup_files.files | length == 0
+
+- name: Cisco IOS/IOS-XE emergency rollback
+  block:
+  - name: Stop all configuration changes
+    cisco.ios.ios_command:
+      commands:
+      - "configure terminal"
+      - "no archive"
+      - "end"
+    ignore_errors: true
+    when: ansible_network_os == 'ios'
+
+  - name: Restore from backup configuration
+    cisco.ios.ios_config:
+      src: "{{ latest_backup.path }}"
+      replace: config
+      backup: true
+    when:
+    - ansible_network_os == 'ios'
+    - latest_backup is defined
+
+  - name: Save rolled back configuration
+    cisco.ios.ios_command:
+      commands:
+      - "write memory"
+    when: ansible_network_os == 'ios'
+
+- name: Arista EOS emergency rollback
+  block:
+  - name: Use EOS rollback feature
+    arista.eos.eos_config:
+      lines:
+      - "rollback clean-config"
+      save_when: always
+    ignore_errors: true
+    when: ansible_network_os == 'eos'
+
+  - name: Restore from file if rollback unavailable
+    arista.eos.eos_config:
+      src: "{{ latest_backup.path }}"
+      replace: config
+      backup: true
+    when:
+    - ansible_network_os == 'eos'
+    - latest_backup is defined
+
+- name: Juniper JunOS emergency rollback
+  block:
+  - name: Use JunOS rollback feature
+    junipernetworks.junos.junos_config:
+      rollback: 1
+      comment: "Emergency rollback - {{ ansible_date_time.iso8601 }}"
+      confirm: 2 # Auto-confirm in 2 minutes
+    when: ansible_network_os == 'junos'
+
+  - name: Commit emergency rollback
+    junipernetworks.junos.junos_config:
+      comment: "Emergency rollback committed"
+      commit: true
+    when: ansible_network_os == 'junos'
+
+- name: Palo Alto PAN-OS emergency rollback
+  block:
+  - name: Revert to previous configuration
+    paloaltonetworks.panos.panos_config_element:
+      xpath: "/config"
+      file: "{{ latest_backup.path }}"
+    when:
+    - ansible_network_os == 'panos'
+    - latest_backup is defined
+
+  - name: Commit emergency rollback
+    paloaltonetworks.panos.panos_commit:
+      sync: true
+    when: ansible_network_os == 'panos'
+
+- name: Fortinet FortiOS emergency rollback
+  block:
+  - name: Restore configuration from backup
+    fortinet.fortios.fortios_configuration_fact:
+      config: "{{ latest_backup.path }}"
+    when:
+    - ansible_network_os == 'fortios'
+    - latest_backup is defined
+
+- name: Verify rollback success
+  block:
+  - name: Test device connectivity post-rollback
+    wait_for:
+      host: "{{ ansible_host }}"
+      port: 22
+      timeout: 120
+    delegate_to: localhost
+
+  - name: Verify device is responding
+    ansible.netcommon.cli_command:
+      command: "{{ platform_verify_command[ansible_network_os] | default('show version') }}"
+      timeout: 30
+    register: post_rollback_status
+    vars:
+      platform_verify_command:
+        ios: "show running-config | include hostname"
+        eos: "show hostname"
+        junos: "show version | match Hostname"
+        panos: "show system info | match hostname"
+        fortios: "get system status | grep Hostname"
+
+  - name: Check critical interfaces
+    ansible.netcommon.cli_command:
+      command: "{{ platform_interface_command[ansible_network_os] | default('show interfaces') }}"
+    register: interface_check
+    vars:
+      platform_interface_command:
+        ios: "show interfaces summary"
+        eos: "show interfaces status"
+        junos: "show interfaces terse"
+        panos: "show interface all"
+        fortios: "get system interface"
+
+  - name: Verify routing protocols
+    ansible.netcommon.cli_command:
+      command: "{{ platform_routing_command[ansible_network_os] | default('show ip route summary') }}"
+    register: routing_check
+    ignore_errors: true
+    vars:
+      platform_routing_command:
+        ios: "show ip protocols"
+        eos: "show ip route summary"
+        junos: "show route summary"
+        panos: "show routing summary"
+        fortios: "get router info routing-table summary"
+
+- name: Document rollback results
+  block:
+  - name: Create rollback report
+    copy:
+      content: |
+        EMERGENCY ROLLBACK REPORT
+        =========================
+        Device: {{ inventory_hostname }}
+        Platform: {{ ansible_network_os | upper }}
+        Rollback Time: {{ ansible_date_time.iso8601 }}
+        Backup Used: {{ latest_backup.path | basename if latest_backup is defined else 'Platform native rollback' }}
+
+        === ROLLBACK STATUS ===
+        Configuration Rollback: {{ 'SUCCESS' if post_rollback_status is succeeded else 'FAILED' }}
+        Device Connectivity: {{ 'RESTORED' if post_rollback_status is succeeded else 'FAILED' }}
+        Interface Status: {{ 'UP' if interface_check is succeeded else 'DOWN' }}
+        Routing Status: {{ 'ACTIVE' if routing_check is succeeded else 'INACTIVE' }}
+
+        === POST-ROLLBACK VERIFICATION ===
+        Device Response:
+        {{ post_rollback_status.stdout | default('No response') }}
+
+        Interface Summary:
+        {{ interface_check.stdout | default('Not available') }}
+
+        Routing Summary:
+        {{ routing_check.stdout | default('Not available') }}
+
+        === NEXT ACTIONS ===
+        {% if post_rollback_status is succeeded %}
+        ✓ Rollback successful - device is operational
+        ✓ Monitor device stability for next 30 minutes
+        ✓ Review original configuration changes for issues
+        ✓ Plan corrective actions if needed
+        {% else %}
+        ✗ Rollback failed - MANUAL INTERVENTION REQUIRED
+        ✗ Device may be in inconsistent state
+        ✗ Contact network engineering immediately
+        ✗ Consider console access for recovery
+        {% endif %}
+
+        === TECHNICAL DETAILS ===
+        Original Backup File: {{ latest_backup.path | basename if latest_backup is defined else 'N/A' }}
+        Backup Timestamp: {{ latest_backup.mtime | default('Unknown') }}
+        Rollback Method: {{ 'File restore' if latest_backup is defined else 'Platform rollback' }}
+
+        Emergency Contact: {{ emergency_contact | default('network-ops@company.com') }}
+        Incident ID: ROLLBACK-{{ inventory_hostname }}-{{ ansible_date_time.epoch }}
+      dest: "{{ playbook_dir }}/../reports/emergency/{{ inventory_hostname }}_rollback_report_{{ ansible_date_time.epoch }}.txt"
+    delegate_to: localhost
+
+  - name: Update emergency log
+    lineinfile:
+      path: "{{ playbook_dir }}/../reports/emergency/{{ inventory_hostname }}_emergency_rollback_{{ ansible_date_time.epoch }}.log"
+      line: "{{ ansible_date_time.time }} - Rollback {{ 'COMPLETED SUCCESSFULLY' if post_rollback_status is succeeded else 'FAILED - MANUAL INTERVENTION REQUIRED' }}"
+    delegate_to: localhost
+
+- name: Send rollback completion notification
+  block:
+  - name: Send success notification
+    mail:
+      to: "{{ emergency_contact | default('network-ops@company.com') }}"
+      subject: "RESOLVED: Emergency Rollback Complete - {{ inventory_hostname }}"
+      body: |
+        Emergency rollback completed successfully for {{ inventory_hostname }}.
+
+        Device Status: OPERATIONAL
+        Rollback Time: {{ ansible_date_time.iso8601 }}
+
+        Device is now stable and operational.
+        Please review detailed report in emergency/{{ inventory_hostname }}_rollback_report_{{ ansible_date_time.epoch }}.txt
+    when: post_rollback_status is succeeded
+    delegate_to: localhost
+    ignore_errors: true
+
+  - name: Send failure notification
+    mail:
+      to: "{{ emergency_contact | default('network-ops@company.com') }}"
+      subject: "CRITICAL: Emergency Rollback Failed - {{ inventory_hostname }}"
+      body: |
+        CRITICAL ALERT: Emergency rollback FAILED for {{ inventory_hostname }}.
+
+        Device Status: UNKNOWN/FAILED
+        Rollback Time: {{ ansible_date_time.iso8601 }}
+
+        IMMEDIATE MANUAL INTERVENTION REQUIRED
+
+        Actions needed:
+        1. Verify device physical connectivity
+        2. Attempt console access
+        3. Manual configuration recovery
+        4. Escalate to senior network engineer
+
+        Incident ID: ROLLBACK-{{ inventory_hostname }}-{{ ansible_date_time.epoch }}
+    when: post_rollback_status is failed
+    delegate_to: localhost
+    ignore_errors: true
+
+- name: Log emergency rollback completion
+  debug:
+    msg: "Emergency rollback {{ 'completed successfully' if post_rollback_status is succeeded else 'FAILED - manual intervention required' }} for {{ inventory_hostname }}"

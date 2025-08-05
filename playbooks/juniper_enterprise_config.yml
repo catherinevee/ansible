@@ -1,0 +1,822 @@
+---
+# Juniper Networks Comprehensive Enterprise Configuration Playbook
+# Supports: SRX (Security), EX (Switching), QFX (Data Center), MX (Routing)
+# Features: EVPN-VXLAN, Advanced Security, MPLS, BGP, OSPF, ISIS, QoS
+
+- name: Deploy Juniper Enterprise Network Configuration
+  hosts: juniper_devices
+  gather_facts: false
+  connection: netconf
+  vars:
+    ansible_network_os: junos
+    ansible_user: "{{ vault_juniper_username }}"
+    ansible_password: "{{ vault_juniper_password }}"
+    timeout: 300
+
+  tasks:
+  # Phase 1: System Configuration and Management
+  - name: "Phase 1: Configure System Settings and Management"
+    block:
+    - name: Configure system hostname and domain
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set system host-name {{ juniper_system_config.hostname }}"
+        - "set system domain-name {{ juniper_system_config.domain_name }}"
+        - "set system domain-search {{ item }}"
+        comment: "System hostname and domain configuration"
+      loop: "{{ juniper_system_config.domain_search }}"
+      tags: [ system, basic ]
+
+    - name: Configure system services
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set system services ssh root-login {{ juniper_system_config.ssh_root_login | default('allow') }}"
+        - "set system services ssh protocol-version v2"
+        - "set system services ssh connection-limit {{ juniper_system_config.ssh_connection_limit | default(10) }}"
+        - "set system services ssh rate-limit {{ juniper_system_config.ssh_rate_limit | default(5) }}"
+        - "set system services netconf ssh"
+        - "set system services netconf rfc-compliant"
+        - "set system services netconf yang-modules"
+        comment: "System services configuration"
+      tags: [ system, services ]
+
+    - name: Configure management interface
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set interfaces {{ juniper_mgmt_config.interface }} unit 0 family inet address {{ juniper_mgmt_config.ip_address }}/{{ juniper_mgmt_config.netmask }}"
+        - "set interfaces {{ juniper_mgmt_config.interface }} description '{{ juniper_mgmt_config.description | default('Management Interface') }}'"
+        comment: "Management interface configuration"
+      tags: [ management, interfaces ]
+
+    - name: Configure management routing instance
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set routing-instances {{ juniper_mgmt_config.vrf | default('mgmt_junos') }} instance-type vrf"
+        - "set routing-instances {{ juniper_mgmt_config.vrf | default('mgmt_junos') }} interface {{ juniper_mgmt_config.interface }}.0"
+        - "set routing-instances {{ juniper_mgmt_config.vrf | default('mgmt_junos') }} routing-options static route 0.0.0.0/0 next-hop {{ juniper_mgmt_config.gateway }}"
+        comment: "Management VRF configuration"
+      when: juniper_mgmt_config.gateway is defined
+      tags: [ management, vrf ]
+
+    - name: Configure NTP servers
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set system ntp server {{ item.server }} {{ 'prefer' if item.prefer | default(false) else '' }}"
+        - "set system ntp server {{ item.server }} {{ 'key ' + item.key if item.key is defined else '' }}"
+        comment: "NTP server configuration"
+      loop: "{{ juniper_ntp_config.servers }}"
+      tags: [ ntp, time ]
+
+    - name: Configure timezone and time settings
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set system time-zone {{ juniper_system_config.timezone }}"
+        - "set system clock source ntp"
+        comment: "System time configuration"
+      tags: [ time ]
+
+  # Phase 2: User Authentication and Security
+  - name: "Phase 2: Configure Authentication and User Security"
+    block:
+    - name: Configure system authentication
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set system authentication-order {{ item }}"
+        comment: "Authentication order configuration"
+      loop: "{{ juniper_security_config.authentication_order }}"
+      tags: [ authentication, security ]
+
+    - name: Configure root authentication
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set system root-authentication encrypted-password {{ juniper_security_config.root_authentication.encrypted_password }}"
+        comment: "Root authentication configuration"
+      no_log: true
+      tags: [ authentication, root ]
+
+    - name: Configure user accounts
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set system login user {{ item.name }} class {{ item.class }}"
+        - "set system login user {{ item.name }} authentication encrypted-password {{ item.authentication.encrypted_password }}"
+        - "set system login user {{ item.name }} full-name '{{ item.full_name | default(item.name) }}'"
+        comment: "User account configuration"
+      loop: "{{ juniper_security_config.login.users }}"
+      no_log: true
+      tags: [ authentication, users ]
+
+    - name: Configure RADIUS authentication
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set system radius-server {{ item.server }} port {{ item.port }}"
+        - "set system radius-server {{ item.server }} secret {{ item.secret }}"
+        - "set system radius-server {{ item.server }} timeout {{ item.timeout | default(5) }}"
+        - "set system radius-server {{ item.server }} retry {{ item.retry | default(3) }}"
+        - "set system radius-server {{ item.server }} source-address {{ item.source_address }}"
+        comment: "RADIUS server configuration"
+      loop: "{{ juniper_radius_config.servers }}"
+      when: juniper_radius_config.servers is defined
+      no_log: true
+      tags: [ radius, authentication ]
+
+  # Phase 3: Interface Configuration
+  - name: "Phase 3: Configure Physical and Logical Interfaces"
+    block:
+    - name: Configure physical interface properties
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set interfaces {{ item.name }} description '{{ item.description }}'"
+        - "set interfaces {{ item.name }} mtu {{ item.mtu | default(1514) }}"
+        - "set interfaces {{ item.name }} speed {{ item.speed }}"
+        - "set interfaces {{ item.name }} link-mode {{ item.link_mode | default('full-duplex') }}"
+        comment: "Physical interface configuration"
+      loop: "{{ juniper_interface_config.physical_interfaces }}"
+      when: item.speed is defined
+      tags: [ interfaces, physical ]
+
+    - name: Configure Layer 2 interfaces (EX/QFX switches)
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set interfaces {{ item.name }} unit 0 family ethernet-switching"
+        - "set interfaces {{ item.name }} unit 0 family ethernet-switching interface-mode {{ item.mode }}"
+        - "set interfaces {{ item.name }} unit 0 family ethernet-switching vlan members {{ item.vlan_members | join(' ') if item.mode == 'trunk' else item.access_vlan }}"
+        - "set interfaces {{ item.name }} unit 0 family ethernet-switching native-vlan-id {{ item.native_vlan }}"
+        comment: "Layer 2 interface configuration"
+      loop: "{{ juniper_interface_config.l2_interfaces }}"
+      when:
+      - juniper_interface_config.l2_interfaces is defined
+      - item.mode is defined
+      tags: [ interfaces, l2, switching ]
+
+    - name: Configure Layer 3 interfaces
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set interfaces {{ item.name }} unit {{ item.unit | default(0) }} family inet address {{ item.ipv4_address }}/{{ item.ipv4_prefix }}"
+        - "set interfaces {{ item.name }} unit {{ item.unit | default(0) }} family inet6 address {{ item.ipv6_address }}/{{ item.ipv6_prefix }}"
+        comment: "Layer 3 interface configuration"
+      loop: "{{ juniper_interface_config.l3_interfaces }}"
+      when: item.ipv4_address is defined or item.ipv6_address is defined
+      tags: [ interfaces, l3, routing ]
+
+    - name: Configure IRB interfaces for VLAN routing
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set interfaces irb unit {{ item.vlan_id }} family inet address {{ item.ipv4_address }}/{{ item.ipv4_prefix }}"
+        - "set interfaces irb unit {{ item.vlan_id }} family inet6 address {{ item.ipv6_address }}/{{ item.ipv6_prefix }}"
+        - "set interfaces irb unit {{ item.vlan_id }} description '{{ item.description }}'"
+        comment: "IRB interface configuration"
+      loop: "{{ juniper_vlan_config.irb_interfaces }}"
+      when:
+      - juniper_vlan_config.irb_interfaces is defined
+      - item.ipv4_address is defined or item.ipv6_address is defined
+      tags: [ interfaces, irb, vlan_routing ]
+
+  # Phase 4: VLAN and Virtual Switching Configuration
+  - name: "Phase 4: Configure VLANs and Virtual Switching"
+    block:
+    - name: Configure VLANs on EX/QFX switches
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set vlans {{ item.name }} vlan-id {{ item.vlan_id }}"
+        - "set vlans {{ item.name }} description '{{ item.description }}'"
+        - "set vlans {{ item.name }} l3-interface irb.{{ item.vlan_id }}"
+        comment: "VLAN configuration"
+      loop: "{{ juniper_vlan_config.vlans }}"
+      when: juniper_vlan_config.vlans is defined
+      tags: [ vlans, switching ]
+
+    - name: Configure VLAN interfaces for SRX devices
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set interfaces vlan unit {{ item.vlan_id }} family inet address {{ item.ipv4_address }}/{{ item.ipv4_prefix }}"
+        - "set interfaces vlan unit {{ item.vlan_id }} description '{{ item.description }}'"
+        comment: "SRX VLAN interface configuration"
+      loop: "{{ juniper_vlan_config.srx_vlans }}"
+      when:
+      - juniper_vlan_config.srx_vlans is defined
+      - juniper_device_type == 'srx'
+      tags: [ vlans, srx, security ]
+
+    - name: Configure Virtual Chassis (EX switch stacks)
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set virtual-chassis member {{ item.member_id }} role {{ item.role }}"
+        - "set virtual-chassis member {{ item.member_id }} serial-number {{ item.serial_number }}"
+        comment: "Virtual Chassis configuration"
+      loop: "{{ juniper_vc_config.members }}"
+      when:
+      - juniper_vc_config.members is defined
+      - juniper_device_type == 'ex'
+      tags: [ virtual_chassis, stacking ]
+
+  # Phase 5: Link Aggregation and LACP
+  - name: "Phase 5: Configure Link Aggregation (LAG/LACP)"
+    block:
+    - name: Configure aggregated ethernet interfaces
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set interfaces {{ item.lag_interface }} aggregated-ether-options lacp {{ item.lacp_mode | default('active') }}"
+        - "set interfaces {{ item.lag_interface }} aggregated-ether-options lacp periodic {{ item.lacp_periodic | default('fast') }}"
+        - "set interfaces {{ item.lag_interface }} aggregated-ether-options minimum-links {{ item.minimum_links | default(1) }}"
+        - "set interfaces {{ item.lag_interface }} description '{{ item.description }}'"
+        comment: "LAG interface configuration"
+      loop: "{{ juniper_lag_config.lag_interfaces }}"
+      when: juniper_lag_config.lag_interfaces is defined
+      tags: [ lag, lacp ]
+
+    - name: Configure LAG member interfaces
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set interfaces {{ item.1 }} gigether-options 802.3ad {{ item.0.lag_interface }}"
+        - "set interfaces {{ item.1 }} description 'Member of {{ item.0.lag_interface }}'"
+        comment: "LAG member configuration"
+      loop: "{{ juniper_lag_config.lag_interfaces | subelements('member_interfaces') }}"
+      when: juniper_lag_config.lag_interfaces is defined
+      tags: [ lag, members ]
+
+    - name: Configure LAG Layer 2 switching
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set interfaces {{ item.lag_interface }} unit 0 family ethernet-switching interface-mode {{ item.switching_mode }}"
+        - "set interfaces {{ item.lag_interface }} unit 0 family ethernet-switching vlan members {{ item.vlan_members | join(' ') if item.switching_mode == 'trunk' else item.access_vlan }}"
+        comment: "LAG Layer 2 configuration"
+      loop: "{{ juniper_lag_config.lag_interfaces }}"
+      when:
+      - juniper_lag_config.lag_interfaces is defined
+      - item.switching_mode is defined
+      tags: [ lag, l2, switching ]
+
+  # Phase 6: Routing Protocol Configuration
+  - name: "Phase 6: Configure Routing Protocols"
+    block:
+    - name: Configure OSPF routing protocol
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set protocols ospf router-id {{ juniper_ospf_config.router_id }}"
+        - "set protocols ospf reference-bandwidth {{ juniper_ospf_config.reference_bandwidth }}"
+        - "set protocols ospf spf-options delay {{ juniper_ospf_config.spf_options.delay }}"
+        - "set protocols ospf spf-options holddown {{ juniper_ospf_config.spf_options.holddown }}"
+        - "set protocols ospf spf-options rapid-runs {{ juniper_ospf_config.spf_options.rapid_runs }}"
+        comment: "OSPF global configuration"
+      when: juniper_ospf_config is defined
+      tags: [ ospf, routing ]
+
+    - name: Configure OSPF areas and interfaces
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set protocols ospf area {{ item.area_id }} interface {{ item.interface }} interface-type {{ item.interface_type | default('broadcast') }}"
+        - "set protocols ospf area {{ item.area_id }} interface {{ item.interface }} metric {{ item.metric | default(10) }}"
+        - "set protocols ospf area {{ item.area_id }} interface {{ item.interface }} hello-interval {{ item.hello_interval | default(10) }}"
+        - "set protocols ospf area {{ item.area_id }} interface {{ item.interface }} dead-interval {{ item.dead_interval | default(40) }}"
+        - "set protocols ospf area {{ item.area_id }} interface {{ item.interface }} authentication-key {{ item.auth_key }}"
+        comment: "OSPF area and interface configuration"
+      loop: "{{ juniper_ospf_config.interfaces }}"
+      when:
+      - juniper_ospf_config.interfaces is defined
+      - item.auth_key is defined
+      no_log: true
+      tags: [ ospf, interfaces, authentication ]
+
+    - name: Configure ISIS routing protocol
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set protocols isis reference-bandwidth {{ juniper_isis_config.reference_bandwidth }}"
+        - "set protocols isis level {{ juniper_isis_config.level | default('2') }} authentication-key {{ juniper_isis_config.auth_key }}"
+        - "set protocols isis level {{ juniper_isis_config.level | default('2') }} authentication-type {{ juniper_isis_config.auth_type | default('md5') }}"
+        - "set protocols isis spf-options delay {{ juniper_isis_config.spf_delay | default(200) }}"
+        comment: "ISIS global configuration"
+      when:
+      - juniper_isis_config is defined
+      - juniper_isis_config.auth_key is defined
+      no_log: true
+      tags: [ isis, routing ]
+
+    - name: Configure ISIS interfaces
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set protocols isis interface {{ item.interface }} level {{ item.level | default('2') }} metric {{ item.metric | default(10) }}"
+        - "set protocols isis interface {{ item.interface }} point-to-point"
+        - "set protocols isis interface {{ item.interface }} bfd-liveness-detection minimum-interval {{ item.bfd_interval | default(300) }}"
+        comment: "ISIS interface configuration"
+      loop: "{{ juniper_isis_config.interfaces }}"
+      when: juniper_isis_config.interfaces is defined
+      tags: [ isis, interfaces, bfd ]
+
+    - name: Configure static routes
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set routing-options static route {{ item.destination }} next-hop {{ item.next_hop }}"
+        - "set routing-options static route {{ item.destination }} preference {{ item.preference | default(5) }}"
+        - "set routing-options static route {{ item.destination }} metric {{ item.metric | default(1) }}"
+        comment: "Static route configuration"
+      loop: "{{ juniper_static_routes }}"
+      when: juniper_static_routes is defined
+      tags: [ static, routing ]
+
+  # Phase 7: BGP Configuration
+  - name: "Phase 7: Configure BGP Routing Protocol"
+    block:
+    - name: Configure BGP global settings
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set routing-options router-id {{ juniper_bgp_config.router_id }}"
+        - "set routing-options autonomous-system {{ juniper_bgp_config.local_asn }}"
+        - "set protocols bgp group {{ item.group_name }} type {{ item.group_type }}"
+        - "set protocols bgp group {{ item.group_name }} peer-as {{ item.peer_as }}"
+        - "set protocols bgp group {{ item.group_name }} local-as {{ item.local_as | default(juniper_bgp_config.local_asn) }}"
+        - "set protocols bgp group {{ item.group_name }} import {{ item.import_policy }}"
+        - "set protocols bgp group {{ item.group_name }} export {{ item.export_policy }}"
+        comment: "BGP group configuration"
+      loop: "{{ juniper_bgp_config.groups }}"
+      when: juniper_bgp_config.groups is defined
+      tags: [ bgp, groups ]
+
+    - name: Configure BGP neighbors
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set protocols bgp group {{ item.group_name }} neighbor {{ item.neighbor_ip }} description '{{ item.description }}'"
+        - "set protocols bgp group {{ item.group_name }} neighbor {{ item.neighbor_ip }} peer-as {{ item.peer_as }}"
+        - "set protocols bgp group {{ item.group_name }} neighbor {{ item.neighbor_ip }} authentication-key {{ item.auth_key }}"
+        comment: "BGP neighbor configuration"
+      loop: "{{ juniper_bgp_config.neighbors }}"
+      when:
+      - juniper_bgp_config.neighbors is defined
+      - item.auth_key is defined
+      no_log: true
+      tags: [ bgp, neighbors, authentication ]
+
+    - name: Configure BGP EVPN signaling
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set protocols bgp group {{ item.group_name }} family evpn signaling"
+        - "set protocols bgp group {{ item.group_name }} cluster {{ item.route_reflector_cluster }}"
+        - "set protocols bgp group {{ item.group_name }} local-address {{ item.local_address }}"
+        comment: "BGP EVPN configuration"
+      loop: "{{ juniper_bgp_config.evpn_groups }}"
+      when: juniper_bgp_config.evpn_groups is defined
+      tags: [ bgp, evpn, signaling ]
+
+  # Phase 8: MPLS and LDP Configuration
+  - name: "Phase 8: Configure MPLS and Label Distribution"
+    block:
+    - name: Configure MPLS global settings
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set protocols mpls label-switched-path {{ item.lsp_name }} to {{ item.destination }}"
+        - "set protocols mpls label-switched-path {{ item.lsp_name }} bandwidth {{ item.bandwidth }}"
+        - "set protocols mpls label-switched-path {{ item.lsp_name }} priority {{ item.setup_priority | default(7) }} {{ item.hold_priority | default(0) }}"
+        - "set protocols mpls label-switched-path {{ item.lsp_name }} adaptive"
+        - "set protocols mpls label-switched-path {{ item.lsp_name }} fast-reroute"
+        comment: "MPLS LSP configuration"
+      loop: "{{ juniper_mpls_config.lsps }}"
+      when: juniper_mpls_config.lsps is defined
+      tags: [ mpls, lsp ]
+
+    - name: Configure MPLS interfaces
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set protocols mpls interface {{ item }}"
+        comment: "MPLS interface configuration"
+      loop: "{{ juniper_mpls_config.interfaces }}"
+      when: juniper_mpls_config.interfaces is defined
+      tags: [ mpls, interfaces ]
+
+    - name: Configure RSVP for MPLS signaling
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set protocols rsvp interface {{ item.interface }} link-protection"
+        - "set protocols rsvp interface {{ item.interface }} bandwidth {{ item.bandwidth }}"
+        - "set protocols rsvp interface {{ item.interface }} subscription {{ item.subscription | default(100) }}"
+        comment: "RSVP interface configuration"
+      loop: "{{ juniper_mpls_config.rsvp_interfaces }}"
+      when: juniper_mpls_config.rsvp_interfaces is defined
+      tags: [ rsvp, mpls, signaling ]
+
+    - name: Configure LDP for label distribution
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set protocols ldp interface {{ item }}"
+        comment: "LDP interface configuration"
+      loop: "{{ juniper_mpls_config.ldp_interfaces }}"
+      when: juniper_mpls_config.ldp_interfaces is defined
+      tags: [ ldp, mpls, label_distribution ]
+
+  # Phase 9: EVPN-VXLAN Configuration (QFX switches)
+  - name: "Phase 9: Configure EVPN-VXLAN Overlay"
+    block:
+    - name: Configure EVPN routing instances
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set routing-instances {{ item.vrf_name }} instance-type vrf"
+        - "set routing-instances {{ item.vrf_name }} interface {{ item.interface }}"
+        - "set routing-instances {{ item.vrf_name }} route-distinguisher {{ item.rd }}"
+        - "set routing-instances {{ item.vrf_name }} vrf-target target:{{ item.rt_import }}"
+        - "set routing-instances {{ item.vrf_name }} vrf-target target:{{ item.rt_export }}"
+        - "set routing-instances {{ item.vrf_name }} protocols evpn"
+        comment: "EVPN VRF configuration"
+      loop: "{{ juniper_evpn_config.vrfs }}"
+      when:
+      - juniper_evpn_config.vrfs is defined
+      - juniper_device_type == 'qfx'
+      tags: [ evpn, vrf, overlay ]
+
+    - name: Configure VXLAN VNIs
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set protocols evpn vni {{ item.vni }} vrf-target export target:{{ item.rt_export }}"
+        - "set protocols evpn vni {{ item.vni }} vrf-target import target:{{ item.rt_import }}"
+        comment: "EVPN VNI configuration"
+      loop: "{{ juniper_evpn_config.vnis }}"
+      when:
+      - juniper_evpn_config.vnis is defined
+      - juniper_device_type == 'qfx'
+      tags: [ evpn, vni, vxlan ]
+
+    - name: Configure VTEP source interface
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set switch-options vtep-source-interface {{ juniper_evpn_config.vtep_source_interface }}"
+        - "set switch-options route-distinguisher {{ juniper_evpn_config.switch_route_distinguisher }}"
+        - "set switch-options vrf-target target:{{ juniper_evpn_config.switch_vrf_target }}"
+        comment: "VTEP source configuration"
+      when:
+      - juniper_evpn_config.vtep_source_interface is defined
+      - juniper_device_type == 'qfx'
+      tags: [ evpn, vtep, vxlan ]
+
+  # Phase 10: Security Policies and Zones (SRX devices)
+  - name: "Phase 10: Configure Security Policies and Zones"
+    block:
+    - name: Configure security zones
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set security zones security-zone {{ item.zone_name }} description '{{ item.description }}'"
+        - "set security zones security-zone {{ item.zone_name }} host-inbound-traffic system-services {{ item.allowed_services | join(' ') }}"
+        - "set security zones security-zone {{ item.zone_name }} host-inbound-traffic protocols {{ item.allowed_protocols | join(' ') }}"
+        - "set security zones security-zone {{ item.zone_name }} interfaces {{ item.interface }}"
+        comment: "Security zone configuration"
+      loop: "{{ juniper_security_zones }}"
+      when:
+      - juniper_security_zones is defined
+      - juniper_device_type == 'srx'
+      tags: [ security, zones, srx ]
+
+    - name: Configure security policies
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set security policies from-zone {{ item.from_zone }} to-zone {{ item.to_zone }} policy {{ item.policy_name }} match source-address {{ item.match.source_address }}"
+        - "set security policies from-zone {{ item.from_zone }} to-zone {{ item.to_zone }} policy {{ item.policy_name }} match destination-address {{ item.match.destination_address }}"
+        - "set security policies from-zone {{ item.from_zone }} to-zone {{ item.to_zone }} policy {{ item.policy_name }} match application {{ item.match.application }}"
+        - "set security policies from-zone {{ item.from_zone }} to-zone {{ item.to_zone }} policy {{ item.policy_name }} then {{ 'permit' if item.then.permit else 'deny' }}"
+        - "set security policies from-zone {{ item.from_zone }} to-zone {{ item.to_zone }} policy {{ item.policy_name }} then log session-init session-close"
+        comment: "Security policy configuration"
+      loop: "{{ juniper_security_policies }}"
+      when:
+      - juniper_security_policies is defined
+      - juniper_device_type == 'srx'
+      tags: [ security, policies, srx ]
+
+    - name: Configure NAT policies
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set security nat source rule-set {{ item.ruleset_name }} from zone {{ item.from_zone }}"
+        - "set security nat source rule-set {{ item.ruleset_name }} to zone {{ item.to_zone }}"
+        - "set security nat source rule-set {{ item.ruleset_name }} rule {{ item.rule_name }} match source-address {{ item.source_address }}"
+        - "set security nat source rule-set {{ item.ruleset_name }} rule {{ item.rule_name }} then source-nat interface"
+        comment: "NAT policy configuration"
+      loop: "{{ juniper_nat_policies }}"
+      when:
+      - juniper_nat_policies is defined
+      - juniper_device_type == 'srx'
+      tags: [ security, nat, srx ]
+
+  # Phase 11: Quality of Service Configuration
+  - name: "Phase 11: Configure Quality of Service"
+    block:
+    - name: Configure forwarding classes
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set class-of-service forwarding-classes class {{ item.name }} queue-num {{ item.queue_num }}"
+        comment: "Forwarding class configuration"
+      loop: "{{ juniper_qos_config.forwarding_classes }}"
+      when: juniper_qos_config.forwarding_classes is defined
+      tags: [ qos, forwarding_classes ]
+
+    - name: Configure schedulers
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set class-of-service schedulers {{ item.name }} transmit-rate {{ item.transmit_rate }}%"
+        - "set class-of-service schedulers {{ item.name }} buffer-size {{ item.buffer_size }}%"
+        - "set class-of-service schedulers {{ item.name }} priority {{ item.priority }}"
+        comment: "Scheduler configuration"
+      loop: "{{ juniper_qos_config.schedulers }}"
+      when: juniper_qos_config.schedulers is defined
+      tags: [ qos, schedulers ]
+
+    - name: Configure scheduler maps
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set class-of-service scheduler-maps {{ item.map_name }} forwarding-class {{ item.forwarding_class }} scheduler {{ item.scheduler }}"
+        comment: "Scheduler map configuration"
+      loop: "{{ juniper_qos_config.scheduler_maps }}"
+      when: juniper_qos_config.scheduler_maps is defined
+      tags: [ qos, scheduler_maps ]
+
+    - name: Apply QoS to interfaces
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set class-of-service interfaces {{ item.interface }} scheduler-map {{ item.scheduler_map }}"
+        - "set class-of-service interfaces {{ item.interface }} unit {{ item.unit | default('*') }} classifiers dscp {{ item.dscp_classifier | default('default') }}"
+        comment: "Interface QoS application"
+      loop: "{{ juniper_qos_config.interface_qos }}"
+      when: juniper_qos_config.interface_qos is defined
+      tags: [ qos, interfaces ]
+
+  # Phase 12: Firewall Filters and Security
+  - name: "Phase 12: Configure Firewall Filters"
+    block:
+    - name: Configure firewall filters
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set firewall family inet filter {{ item.0.name }} term {{ item.1.name }} from protocol {{ item.1.from.protocol }}"
+        - "set firewall family inet filter {{ item.0.name }} term {{ item.1.name }} from destination-port {{ item.1.from.destination_port }}"
+        - "set firewall family inet filter {{ item.0.name }} term {{ item.1.name }} from source-address {{ item.1.from.source_address | default('0.0.0.0/0') }}"
+        - "set firewall family inet filter {{ item.0.name }} term {{ item.1.name }} then {{ item.1.then }}"
+        comment: "Firewall filter configuration"
+      loop: "{{ juniper_firewall_filters | subelements('terms') }}"
+      when: juniper_firewall_filters is defined
+      tags: [ firewall, filters, security ]
+
+    - name: Apply firewall filters to interfaces
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set interfaces {{ item.interface }} unit {{ item.unit | default(0) }} family inet filter {{ item.direction }} {{ item.filter_name }}"
+        comment: "Firewall filter application"
+      loop: "{{ juniper_firewall_applications }}"
+      when: juniper_firewall_applications is defined
+      tags: [ firewall, application ]
+
+  # Phase 13: Monitoring and Logging Configuration
+  - name: "Phase 13: Configure Monitoring and Logging"
+    block:
+    - name: Configure SNMP settings
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set snmp description '{{ juniper_snmp_config.description }}'"
+        - "set snmp location '{{ juniper_snmp_config.location }}'"
+        - "set snmp contact '{{ juniper_snmp_config.contact }}'"
+        - "set snmp community {{ item.name }} authorization {{ item.authorization }}"
+        - "set snmp trap-options source-address {{ juniper_snmp_config.trap_options.source_address }}"
+        comment: "SNMP configuration"
+      loop: "{{ juniper_snmp_config.communities }}"
+      when: juniper_snmp_config is defined
+      no_log: true
+      tags: [ snmp, monitoring ]
+
+    - name: Configure SNMP trap targets
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set snmp trap-group {{ item.0.name }} targets {{ item.1 }}"
+        comment: "SNMP trap target configuration"
+      loop: "{{ juniper_snmp_config.trap_groups | subelements('targets') }}"
+      when: juniper_snmp_config.trap_groups is defined
+      tags: [ snmp, traps ]
+
+    - name: Configure syslog
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set system syslog host {{ item.host }} {{ item.facility }} {{ item.level }}"
+        - "set system syslog host {{ item.host }} port {{ item.port | default(514) }}"
+        - "set system syslog host {{ item.host }} source-address {{ item.source_address | default(ansible_host) }}"
+        comment: "Syslog configuration"
+      loop: "{{ juniper_logging_config.hosts }}"
+      when: juniper_logging_config.hosts is defined
+      tags: [ logging, syslog ]
+
+    - name: Configure local log files
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set system syslog file {{ item.name }} {{ item.facility }} {{ item.level }}"
+        - "set system syslog file {{ item.name }} size {{ item.size }}"
+        - "set system syslog file {{ item.name }} files {{ item.files }}"
+        comment: "Local log file configuration"
+      loop: "{{ juniper_logging_config.files }}"
+      when: juniper_logging_config.files is defined
+      tags: [ logging, files ]
+
+  # Phase 14: Route Policies and Prefix Lists
+  - name: "Phase 14: Configure Route Policies and Prefix Lists"
+    block:
+    - name: Configure prefix lists
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set policy-options prefix-list {{ item.name }} {{ item.prefix }}"
+        comment: "Prefix list configuration"
+      loop: "{{ juniper_prefix_lists }}"
+      when: juniper_prefix_lists is defined
+      tags: [ policy, prefix_lists ]
+
+    - name: Configure route policies
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set policy-options policy-statement {{ item.0.name }} term {{ item.1.name }} from protocol {{ item.1.from.protocol }}"
+        - "set policy-options policy-statement {{ item.0.name }} term {{ item.1.name }} from prefix-list {{ item.1.from.prefix_list }}"
+        - "set policy-options policy-statement {{ item.0.name }} term {{ item.1.name }} then {{ item.1.then.action }}"
+        - "set policy-options policy-statement {{ item.0.name }} term {{ item.1.name }} then metric {{ item.1.then.metric | default(omit) }}"
+        comment: "Route policy configuration"
+      loop: "{{ juniper_route_policies | subelements('terms') }}"
+      when:
+      - juniper_route_policies is defined
+      - item.1.from is defined
+      - item.1.then is defined
+      tags: [ policy, routing ]
+
+  post_tasks:
+  # Phase 15: Configuration Verification and Reporting
+  - name: "Phase 15: Post-Deployment Verification"
+    block:
+    - name: Commit configuration with comment
+      junipernetworks.junos.junos_config:
+        comment: "Ansible automated configuration deployment - {{ ansible_date_time.iso8601 }}"
+        confirm: 10
+      tags: [ commit, verification ]
+
+    - name: Gather Juniper device facts
+      junipernetworks.junos.junos_facts:
+        gather_subset:
+        - all
+      register: juniper_facts
+      tags: [ verification, facts ]
+
+    - name: Verify interface status
+      junipernetworks.junos.junos_command:
+        commands:
+        - "show interfaces terse"
+        - "show interfaces descriptions"
+        - "show lacp interfaces"
+        display: text
+      register: interface_status
+      tags: [ verification, interfaces ]
+
+    - name: Verify routing protocols
+      junipernetworks.junos.junos_command:
+        commands:
+        - "show route summary"
+        - "show bgp summary"
+        - "show ospf neighbor"
+        - "show isis adjacency"
+        display: text
+      register: routing_status
+      ignore_errors: true
+      tags: [ verification, routing ]
+
+    - name: Verify EVPN-VXLAN status (QFX only)
+      junipernetworks.junos.junos_command:
+        commands:
+        - "show evpn database"
+        - "show ethernet-switching table"
+        - "show route table bgp.evpn.0"
+        display: text
+      register: evpn_status
+      ignore_errors: true
+      when: juniper_device_type == 'qfx'
+      tags: [ verification, evpn, vxlan ]
+
+    - name: Verify security policies (SRX only)
+      junipernetworks.junos.junos_command:
+        commands:
+        - "show security policies"
+        - "show security zones"
+        - "show security nat source summary"
+        display: text
+      register: security_status
+      ignore_errors: true
+      when: juniper_device_type == 'srx'
+      tags: [ verification, security ]
+
+    - name: Verify MPLS status
+      junipernetworks.junos.junos_command:
+        commands:
+        - "show mpls lsp"
+        - "show rsvp session"
+        - "show ldp session"
+        display: text
+      register: mpls_status
+      ignore_errors: true
+      when: juniper_mpls_config is defined
+      tags: [ verification, mpls ]
+
+    - name: Generate Juniper deployment report
+      copy:
+        content: |
+          Juniper Networks Device Deployment Report
+          ========================================
+          Device: {{ inventory_hostname }}
+          Platform: {{ juniper_facts.ansible_facts.ansible_net_model | default('Juniper Device') }}
+          Software Version: {{ juniper_facts.ansible_facts.ansible_net_version | default('Unknown') }}
+          Serial Number: {{ juniper_facts.ansible_facts.ansible_net_serialnum | default('Unknown') }}
+          Device Type: {{ juniper_device_type | default('Unknown') }}
+          Deployment Time: {{ ansible_date_time.iso8601 }}
+
+          === DEVICE INFORMATION ===
+          Hostname: {{ juniper_facts.ansible_facts.ansible_net_hostname | default('Unknown') }}
+          Model: {{ juniper_facts.ansible_facts.ansible_net_model | default('Unknown') }}
+          Version: {{ juniper_facts.ansible_facts.ansible_net_version | default('Unknown') }}
+          Memory: {{ juniper_facts.ansible_facts.ansible_net_memtotal_mb | default('Unknown') }} MB
+
+          === INTERFACE STATUS ===
+          {{ interface_status.stdout[0] | default('Interface status not available') }}
+
+          === INTERFACE DESCRIPTIONS ===
+          {{ interface_status.stdout[1] | default('Interface descriptions not available') }}
+
+          {% if interface_status.stdout | length > 2 %}
+          === LACP STATUS ===
+          {{ interface_status.stdout[2] | default('LACP not configured') }}
+          {% endif %}
+
+          === ROUTING STATUS ===
+          Route Summary:
+          {{ routing_status.stdout[0] | default('Route information not available') }}
+
+          {% if routing_status.stdout | length > 1 %}
+          BGP Summary:
+          {{ routing_status.stdout[1] | default('BGP not configured') }}
+          {% endif %}
+
+          {% if routing_status.stdout | length > 2 %}
+          OSPF Neighbors:
+          {{ routing_status.stdout[2] | default('OSPF not configured') }}
+          {% endif %}
+
+          {% if routing_status.stdout | length > 3 %}
+          ISIS Adjacency:
+          {{ routing_status.stdout[3] | default('ISIS not configured') }}
+          {% endif %}
+
+          {% if evpn_status is defined and evpn_status.stdout is defined %}
+          === EVPN-VXLAN STATUS ===
+          EVPN Database:
+          {{ evpn_status.stdout[0] | default('EVPN not configured') }}
+
+          Ethernet Switching Table:
+          {{ evpn_status.stdout[1] | default('No switching entries') }}
+
+          BGP EVPN Routes:
+          {{ evpn_status.stdout[2] | default('No EVPN routes') }}
+          {% endif %}
+
+          {% if security_status is defined and security_status.stdout is defined %}
+          === SECURITY STATUS ===
+          Security Policies:
+          {{ security_status.stdout[0] | default('No security policies') }}
+
+          Security Zones:
+          {{ security_status.stdout[1] | default('No security zones') }}
+
+          NAT Summary:
+          {{ security_status.stdout[2] | default('NAT not configured') }}
+          {% endif %}
+
+          {% if mpls_status is defined and mpls_status.stdout is defined %}
+          === MPLS STATUS ===
+          MPLS LSPs:
+          {{ mpls_status.stdout[0] | default('MPLS not configured') }}
+
+          RSVP Sessions:
+          {{ mpls_status.stdout[1] | default('RSVP not configured') }}
+
+          LDP Sessions:
+          {{ mpls_status.stdout[2] | default('LDP not configured') }}
+          {% endif %}
+
+          === CONFIGURATION SUMMARY ===
+          VLANs Configured: {{ (juniper_vlan_config.vlans | default([])) | length }}
+          L2 Interfaces: {{ (juniper_interface_config.l2_interfaces | default([])) | length }}
+          L3 Interfaces: {{ (juniper_interface_config.l3_interfaces | default([])) | length }}
+          LAG Interfaces: {{ (juniper_lag_config.lag_interfaces | default([])) | length }}
+          BGP Groups: {{ (juniper_bgp_config.groups | default([])) | length }}
+          BGP Neighbors: {{ (juniper_bgp_config.neighbors | default([])) | length }}
+          OSPF Interfaces: {{ (juniper_ospf_config.interfaces | default([])) | length }}
+          Security Policies: {{ (juniper_security_policies | default([])) | length }}
+          Firewall Filters: {{ (juniper_firewall_filters | default([])) | length }}
+
+          Features Configured:
+          - OSPF: {{ 'Yes' if juniper_ospf_config is defined else 'No' }}
+          - ISIS: {{ 'Yes' if juniper_isis_config is defined else 'No' }}
+          - BGP: {{ 'Yes' if juniper_bgp_config is defined else 'No' }}
+          - MPLS: {{ 'Yes' if juniper_mpls_config is defined else 'No' }}
+          - EVPN-VXLAN: {{ 'Yes' if juniper_evpn_config is defined else 'No' }}
+          - Security Policies: {{ 'Yes' if juniper_security_policies is defined else 'No' }}
+          - Link Aggregation: {{ 'Yes' if juniper_lag_config is defined else 'No' }}
+          - QoS: {{ 'Yes' if juniper_qos_config is defined else 'No' }}
+
+          Status: {{ 'SUCCESS' if ansible_failed_task is not defined else 'FAILED' }}
+        dest: "{{ playbook_dir }}/../reports/juniper/{{ inventory_hostname }}_juniper_deployment_{{ ansible_date_time.epoch }}.txt"
+      delegate_to: localhost
+      tags: [ reporting ]
+
+# Example usage:
+# ansible-playbook juniper_enterprise_config.yml --limit juniper_devices
+# ansible-playbook juniper_enterprise_config.yml --tags bgp,evpn
+# ansible-playbook juniper_enterprise_config.yml --tags security,srx --check

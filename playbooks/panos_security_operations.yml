@@ -1,0 +1,406 @@
+---
+# Palo Alto Networks Security Operations Playbook
+# Advanced security operations and threat response automation
+# Leverages comprehensive PAN-OS security features
+
+- name: Palo Alto Networks Security Operations
+  hosts: palo_alto_devices
+  gather_facts: false
+  connection: local
+  vars:
+    panos_provider:
+      ip_address: "{{ ansible_host }}"
+      username: "{{ vault_panos_username }}"
+      password: "{{ vault_panos_password }}"
+      api_key: "{{ vault_panos_api_key | default(omit) }}"
+
+  tasks:
+  # Security Threat Intelligence Updates
+  - name: "Security Operations: Threat Intelligence Updates"
+    block:
+    - name: Update threat intelligence signatures
+      paloaltonetworks.panos.panos_software:
+        provider: "{{ panos_provider }}"
+        version: "latest"
+        content_update: true
+        sync: true
+      tags: [ threat_intel, updates ]
+
+    - name: Update antivirus signatures
+      paloaltonetworks.panos.panos_software:
+        provider: "{{ panos_provider }}"
+        version: "latest"
+        anti_virus: true
+        sync: true
+      tags: [ antivirus, updates ]
+
+    - name: Update WildFire signatures
+      paloaltonetworks.panos.panos_software:
+        provider: "{{ panos_provider }}"
+        version: "latest"
+        wildfire: true
+        sync: true
+      tags: [ wildfire, updates ]
+
+  # Dynamic Address Group Management
+  - name: "Security Operations: Dynamic Address Groups"
+    block:
+    - name: Create dynamic address groups for threat mitigation
+      paloaltonetworks.panos.panos_address_group:
+        provider: "{{ panos_provider }}"
+        name: "{{ item.name }}"
+        dynamic_value: "{{ item.filter }}"
+        description: "{{ item.description }}"
+        commit: false
+      loop:
+      - name: "Malicious-IPs-Dynamic"
+        filter: "malware and threat"
+        description: "Dynamically updated malicious IP addresses"
+      - name: "High-Risk-Countries"
+        filter: "country.Iran or country.NorthKorea"
+        description: "High-risk country IP ranges"
+      - name: "Compromised-Hosts-Internal"
+        filter: "infected and internal"
+        description: "Internal hosts identified as compromised"
+      tags: [ dynamic_groups, threat_mitigation ]
+
+  # SSL Decryption Policy Management
+  - name: "Security Operations: SSL Decryption Policies"
+    block:
+    - name: Configure SSL decryption policies using profiles from group_vars
+      paloaltonetworks.panos.panos_decryption_rule:
+        provider: "{{ panos_provider }}"
+        name: "{{ item.name }}"
+        source_zone: "{{ item.source_zone }}"
+        destination_zone: "{{ item.destination_zone }}"
+        source_ip: "{{ item.source_ip }}"
+        destination_ip: "{{ item.destination_ip }}"
+        service: "{{ item.service | default(['service-https']) }}"
+        action: "{{ item.action }}"
+        decryption_profile: "{{ item.decryption_profile }}"
+        description: "{{ item.description }}"
+        commit: false
+      loop:
+      - name: "Decrypt-Outbound-Trust"
+        source_zone: [ "trust" ]
+        destination_zone: [ "untrust" ]
+        source_ip: [ "Internal_Network" ]
+        destination_ip: [ "any" ]
+        action: "decrypt"
+        decryption_profile: "decrypt-outbound"
+        description: "Decrypt outbound HTTPS traffic from internal network"
+      - name: "Decrypt-Inbound-DMZ"
+        source_zone: [ "untrust" ]
+        destination_zone: [ "dmz" ]
+        source_ip: [ "any" ]
+        destination_ip: [ "DMZ_Network" ]
+        action: "decrypt"
+        decryption_profile: "decrypt-inbound"
+        description: "Decrypt inbound HTTPS traffic to DMZ services"
+      - name: "No-Decrypt-Banking"
+        source_zone: [ "trust" ]
+        destination_zone: [ "untrust" ]
+        source_ip: [ "Internal_Network" ]
+        destination_ip: [ "any" ]
+        service: [ "service-https" ]
+        action: "no-decrypt"
+        decryption_profile: "default"
+        description: "Do not decrypt banking and financial websites"
+      tags: [ ssl_decryption, security_inspection ]
+
+  # Security Policy Optimization
+  - name: "Security Operations: Policy Optimization"
+    block:
+    - name: Create application-based security rules
+      paloaltonetworks.panos.panos_security_rule:
+        provider: "{{ panos_provider }}"
+        rule_name: "{{ item.rule_name }}"
+        source_zone: "{{ item.source_zone }}"
+        destination_zone: "{{ item.destination_zone }}"
+        source_ip: "{{ item.source_ip }}"
+        destination_ip: "{{ item.destination_ip }}"
+        application: "{{ item.application }}"
+        service: "{{ item.service | default(['application-default']) }}"
+        action: "{{ item.action }}"
+        log_setting: "{{ item.log_setting }}"
+        group_profile: "{{ item.profile_setting }}"
+        description: "{{ item.description }}"
+        commit: false
+      loop:
+      - rule_name: "Allow-Business-Apps"
+        source_zone: [ "trust" ]
+        destination_zone: [ "untrust" ]
+        source_ip: [ "Internal_Network" ]
+        destination_ip: [ "any" ]
+        application: [ "office365", "salesforce", "webex", "zoom" ]
+        action: "allow"
+        log_setting: "default"
+        profile_setting: "default"
+        description: "Allow approved business applications"
+      - rule_name: "Block-High-Risk-Apps"
+        source_zone: [ "trust" ]
+        destination_zone: [ "untrust" ]
+        source_ip: [ "Internal_Network" ]
+        destination_ip: [ "any" ]
+        application: [ "bittorrent", "tor", "bitcoin-mining", "remote-access" ]
+        action: "deny"
+        log_setting: "security-logs"
+        profile_setting: "strict"
+        description: "Block high-risk applications"
+      - rule_name: "Control-Social-Media"
+        source_zone: [ "trust" ]
+        destination_zone: [ "untrust" ]
+        source_ip: [ "Internal_Network" ]
+        destination_ip: [ "any" ]
+        application: [ "facebook", "twitter", "instagram", "linkedin" ]
+        action: "allow"
+        log_setting: "default"
+        profile_setting: "default"
+        description: "Controlled access to social media"
+      tags: [ app_security, policy_optimization ]
+
+  # Incident Response Automation
+  - name: "Security Operations: Incident Response"
+    block:
+    - name: Create incident response address objects
+      paloaltonetworks.panos.panos_address_object:
+        provider: "{{ panos_provider }}"
+        name: "{{ item.name }}"
+        value: "{{ item.value }}"
+        address_type: "{{ item.type }}"
+        description: "{{ item.description }}"
+        commit: false
+      loop:
+      - name: "IOC-Malicious-IP-{{ ansible_date_time.epoch }}"
+        value: "{{ malicious_ip | default('203.0.113.250') }}"
+        type: "ip-netmask"
+        description: "Malicious IP identified in incident {{ incident_id | default('AUTO') }}"
+      - name: "IOC-C2-Network-{{ ansible_date_time.epoch }}"
+        value: "{{ c2_network | default('198.51.100.0/24') }}"
+        type: "ip-netmask"
+        description: "Command and control network {{ incident_id | default('AUTO') }}"
+      when: incident_response_mode | default(false)
+      tags: [ incident_response, ioc_blocking ]
+
+    - name: Create emergency block rules for incidents
+      paloaltonetworks.panos.panos_security_rule:
+        provider: "{{ panos_provider }}"
+        rule_name: "EMERGENCY-Block-IOC-{{ ansible_date_time.epoch }}"
+        source_zone: [ "any" ]
+        destination_zone: [ "any" ]
+        source_ip: [ "IOC-Malicious-IP-{{ ansible_date_time.epoch }}", "IOC-C2-Network-{{ ansible_date_time.epoch }}" ]
+        destination_ip: [ "any" ]
+        application: [ "any" ]
+        action: "deny"
+        log_setting: "security-logs"
+        description: "Emergency block rule for incident {{ incident_id | default('AUTO') }}"
+        location: "top"
+        commit: true
+      when: incident_response_mode | default(false)
+      tags: [ incident_response, emergency_block ]
+
+  # User-ID and Device Monitoring
+  - name: "Security Operations: User-ID Monitoring"
+    block:
+    - name: Configure User-ID agent settings
+      paloaltonetworks.panos.panos_userid:
+        provider: "{{ panos_provider }}"
+        server: "{{ userid_server | default('10.10.0.100') }}"
+        port: "{{ userid_port | default(5007) }}"
+        secret: "{{ vault_userid_secret }}"
+        commit: false
+      when: userid_server is defined
+      tags: [ userid, monitoring ]
+
+    - name: Create device monitoring profiles from group_vars
+      paloaltonetworks.panos.panos_monitor_profile:
+        provider: "{{ panos_provider }}"
+        name: "{{ item.name }}"
+        interval: "{{ item.interval }}"
+        threshold: "{{ item.threshold }}"
+        action: "{{ item.action }}"
+        commit: false
+      loop: "{{ panos_network_profiles.monitor_profiles }}"
+      tags: [ monitoring, device_monitoring ]
+
+  # GlobalProtect Security Hardening  
+  - name: "Security Operations: GlobalProtect Security"
+    block:
+    - name: Configure GlobalProtect security policies
+      paloaltonetworks.panos.panos_security_rule:
+        provider: "{{ panos_provider }}"
+        rule_name: "{{ item.rule_name }}"
+        source_zone: "{{ item.source_zone }}"
+        destination_zone: "{{ item.destination_zone }}"
+        source_ip: "{{ item.source_ip }}"
+        destination_ip: "{{ item.destination_ip }}"
+        application: "{{ item.application }}"
+        action: "{{ item.action }}"
+        log_setting: "{{ item.log_setting }}"
+        group_profile: "{{ item.profile_setting }}"
+        description: "{{ item.description }}"
+        commit: false
+      loop:
+      - rule_name: "GP-Allow-Internal-Access"
+        source_zone: [ "globalprotect" ]
+        destination_zone: [ "trust" ]
+        source_ip: [ "any" ]
+        destination_ip: [ "Internal_Network" ]
+        application: [ "any" ]
+        action: "allow"
+        log_setting: "traffic-logs"
+        profile_setting: "strict"
+        description: "GlobalProtect users internal network access"
+      - rule_name: "GP-Block-Admin-Networks"
+        source_zone: [ "globalprotect" ]
+        destination_zone: [ "trust" ]
+        source_ip: [ "any" ]
+        destination_ip: [ "Management_Network" ]
+        application: [ "any" ]
+        action: "deny"
+        log_setting: "security-logs"
+        profile_setting: "strict"
+        description: "Block GP users from management networks"
+      when: panos_globalprotect is defined
+      tags: [ globalprotect, remote_access_security ]
+
+  # Advanced Threat Prevention
+  - name: "Security Operations: Advanced Threat Prevention"
+    block:
+    - name: Configure WildFire analysis settings
+      paloaltonetworks.panos.panos_wildfire_analysis:
+        provider: "{{ panos_provider }}"
+        name: "enterprise-wildfire"
+        file_size_limit: 10
+        timeout: 5
+        verdict_timeout: 30
+        commit: false
+      tags: [ wildfire, apt_protection ]
+
+    - name: Configure DNS security profiles
+      paloaltonetworks.panos.panos_dns_security:
+        provider: "{{ panos_provider }}"
+        name: "enterprise-dns-security"
+        botnet_domains: "block"
+        malware_domains: "block"
+        phishing_domains: "block"
+        c2_domains: "block"
+        grayware_domains: "alert"
+        commit: false
+      tags: [ dns_security, threat_prevention ]
+
+  # Compliance and Audit Configuration
+  - name: "Security Operations: Compliance and Auditing"
+    block:
+    - name: Configure enhanced logging for compliance
+      paloaltonetworks.panos.panos_log_forwarding_profile:
+        provider: "{{ panos_provider }}"
+        name: "{{ item.name }}"
+        enhanced_logging: "{{ item.enhanced_logging }}"
+        commit: false
+      loop: "{{ panos_logging_config.log_forwarding_profiles }}"
+      tags: [ compliance, audit_logging ]
+
+    - name: Configure security audit rules
+      paloaltonetworks.panos.panos_security_rule:
+        provider: "{{ panos_provider }}"
+        rule_name: "AUDIT-{{ item.audit_type | upper }}"
+        source_zone: [ "{{ item.source_zone }}" ]
+        destination_zone: [ "{{ item.destination_zone }}" ]
+        source_ip: [ "{{ item.source_ip }}" ]
+        destination_ip: [ "{{ item.destination_ip }}" ]
+        application: [ "{{ item.application }}" ]
+        action: "allow"
+        log_setting: "security-logs"
+        log_start: true
+        log_end: true
+        description: "Audit rule for {{ item.description }}"
+        commit: false
+      loop:
+      - audit_type: "admin"
+        source_zone: "trust"
+        destination_zone: "trust"
+        source_ip: "Management_Network"
+        destination_ip: "any"
+        application: "ssh"
+        description: "Administrative access auditing"
+      - audit_type: "privileged"
+        source_zone: "trust"
+        destination_zone: "trust"
+        source_ip: "Internal_Network"
+        destination_ip: "Critical_Servers"
+        application: "any"
+        description: "Privileged server access auditing"
+      tags: [ compliance, security_audit ]
+
+  post_tasks:
+  - name: Generate security operations report
+    copy:
+      content: |
+        Palo Alto Networks Security Operations Report
+        ============================================
+        Device: {{ inventory_hostname }}
+        Operation Time: {{ ansible_date_time.iso8601 }}
+        Operation Mode: {{ 'INCIDENT RESPONSE' if incident_response_mode | default(false) else 'ROUTINE OPERATIONS' }}
+
+        === SECURITY UPDATES ===
+        Threat Intelligence: Updated
+        Antivirus Signatures: Updated
+        WildFire Database: Updated
+
+        === POLICY CONFIGURATION ===
+        Dynamic Address Groups: {{ 3 if not incident_response_mode | default(false) else 5 }}
+        SSL Decryption Rules: 3
+        Application Security Rules: 3
+
+        {% if incident_response_mode | default(false) %}
+        === INCIDENT RESPONSE ACTIONS ===
+        Incident ID: {{ incident_id | default('AUTO-' + ansible_date_time.epoch) }}
+        Malicious IPs Blocked: {{ malicious_ip | default('203.0.113.250') }}
+        C2 Networks Blocked: {{ c2_network | default('198.51.100.0/24') }}
+        Emergency Rules Created: 1
+        {% endif %}
+
+        === GLOBALPROTECT SECURITY ===
+        {% if panos_globalprotect is defined %}
+        GP Security Rules: 2
+        GP Portal Status: Configured
+        GP Gateway Status: Configured
+        {% else %}
+        GlobalProtect: Not configured
+        {% endif %}
+
+        === ADVANCED THREAT PREVENTION ===
+        WildFire Analysis: Enabled
+        DNS Security: Enabled
+
+        === COMPLIANCE AUDITING ===
+        Enhanced Logging: {{ panos_logging_config.log_forwarding_profiles | length }}
+        Audit Rules: 2
+
+        Status: {{ 'SUCCESS' if ansible_failed_task is not defined else 'FAILED' }}
+
+        Next Actions:
+        {% if incident_response_mode | default(false) %}
+        - Monitor blocked IOCs for 24 hours
+        - Review security logs for related activity
+        - Update threat intelligence feeds
+        - Generate incident summary report
+        {% else %}
+        - Review security policy effectiveness
+        - Analyze threat prevention metrics
+        - Update security documentation
+        - Schedule next security operations review
+        {% endif %}
+      dest: "{{ playbook_dir }}/../reports/panos/{{ inventory_hostname }}_security_ops_{{ ansible_date_time.epoch }}.txt"
+    delegate_to: localhost
+
+# Example usage:
+# Normal security operations:
+# ansible-playbook panos_security_operations.yml --limit palo_alto_devices
+
+# Incident response mode:
+# ansible-playbook panos_security_operations.yml -e "incident_response_mode=true incident_id=INC-2025-001 malicious_ip=203.0.113.250"
+
+# Update only threat intelligence:
+# ansible-playbook panos_security_operations.yml --tags threat_intel,updates

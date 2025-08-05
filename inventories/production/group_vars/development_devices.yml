@@ -1,0 +1,357 @@
+---
+# Development devices group variables - Multi-vendor lab environment
+# This file contains configurations for development and testing devices
+# across all supported network vendors
+
+# Common development environment settings
+development_environment: true
+lab_mode: true
+debug_logging: true
+config_backup_enabled: true
+testing_features_enabled: true
+
+# Common connection timeouts for lab environment
+connection_timeout: 60
+command_timeout: 30
+persistent_connection_timeout: 120
+
+# Development network addressing
+dev_network_base: "192.168.0.0/16"
+dev_mgmt_network: "192.168.255.0/24"
+dev_data_network: "192.168.1.0/24"
+dev_test_network: "192.168.100.0/24"
+
+# Common SNMP settings for development
+snmp_community_ro: "{{ vault_dev_snmp_ro }}"
+snmp_community_rw: "{{ vault_dev_snmp_rw }}"
+snmp_location: "Development Lab"
+snmp_contact: "Development Team"
+
+# Common NTP servers for lab
+ntp_servers:
+  primary: "192.168.255.1"
+  secondary: "192.168.255.2"
+  tertiary: "pool.ntp.org"
+
+# Common syslog server for development
+syslog_server: "192.168.255.10"
+syslog_facility: "local0"
+
+# Development DNS settings
+dns_servers:
+- "192.168.255.11"
+- "192.168.255.12"
+- "8.8.8.8"
+
+# Cisco IOS/IOS-XE development settings
+cisco_ios_dev_config:
+  enable_secret: "{{ vault_cisco_enable_secret }}"
+  username: "{{ vault_cisco_username }}"
+  password: "{{ vault_cisco_password }}"
+  ssh_version: 2
+  ip_domain_name: "dev.lab.local"
+
+  # Development VLANs
+  vlans:
+  - id: 10
+    name: "DEV-DATA"
+    description: "Development data VLAN"
+  - id: 20
+    name: "DEV-VOICE"
+    description: "Development voice VLAN"
+  - id: 30
+    name: "DEV-GUEST"
+    description: "Development guest VLAN"
+  - id: 100
+    name: "DEV-TEST"
+    description: "Development testing VLAN"
+  - id: 999
+    name: "DEV-MGMT"
+    description: "Development management VLAN"
+
+  # Basic security settings for lab
+  security_config:
+    enable_password_encryption: true
+    console_timeout: 5
+    vty_timeout: 10
+    login_block_for: 60
+    login_quiet_period: 30
+    max_login_attempts: 3
+
+  # Development QoS policy
+  qos_policy:
+  - name: "DEV-POLICY"
+    class_maps:
+    - name: "VOICE"
+      match: "dscp ef"
+      bandwidth_percent: 30
+    - name: "DATA"
+      match: "dscp af31"
+      bandwidth_percent: 40
+    - name: "BEST-EFFORT"
+      match: "any"
+      bandwidth_percent: 30
+
+# Arista EOS development settings
+arista_eos_dev_config:
+  username: "{{ vault_arista_username }}"
+  password: "{{ vault_arista_password }}"
+
+  # Development VXLAN/EVPN settings
+  vxlan_config:
+    vtep_ip: "{{ ansible_host }}"
+    vxlan_vni_base: 10000
+    evpn_rd: "{{ ansible_host }}:1"
+    evpn_rt: "1:1"
+
+  # Lab BGP configuration
+  bgp_config:
+    asn: "{{ dev_bgp_asn | default(65001) }}"
+    router_id: "{{ ansible_host }}"
+    neighbors:
+    - ip: "{{ bgp_neighbor_1 | default('192.168.1.1') }}"
+      remote_as: "{{ dev_bgp_asn | default(65001) }}"
+      description: "Development BGP peer 1"
+    - ip: "{{ bgp_neighbor_2 | default('192.168.1.2') }}"
+      remote_as: "{{ dev_bgp_asn | default(65001) }}"
+      description: "Development BGP peer 2"
+
+  # Development MLAG configuration
+  mlag_config:
+    domain_id: "DEV-MLAG"
+    local_interface: "Vlan4094"
+    peer_address: "{{ mlag_peer_ip }}"
+    peer_link: "Port-Channel100"
+    reload_delay_mlag: 300
+    reload_delay_non_mlag: 330
+
+# Juniper JunOS development settings
+juniper_junos_dev_config:
+  username: "{{ vault_juniper_username }}"
+  password: "{{ vault_juniper_password }}"
+
+  # Development OSPF configuration
+  ospf_config:
+    router_id: "{{ ansible_host }}"
+    areas:
+    - area_id: "0.0.0.0"
+      interfaces:
+      - name: "ge-0/0/0"
+        passive: false
+      - name: "ge-0/0/1"
+        passive: false
+      - name: "lo0"
+        passive: true
+
+  # Development MPLS configuration
+  mpls_config:
+    enabled: true
+    ldp_enabled: true
+    rsvp_enabled: false
+    interfaces:
+    - "ge-0/0/0"
+    - "ge-0/0/1"
+
+  # Development VPN configuration
+  vpn_config:
+    l3vpn_instances:
+    - name: "DEV-VPN-1"
+      rd: "{{ ansible_host }}:100"
+      rt_import: "65001:100"
+      rt_export: "65001:100"
+      interface: "ge-0/0/2"
+      vrf_target: "target:65001:100"
+
+# Palo Alto PAN-OS development settings
+panos_dev_config:
+  username: "{{ vault_panos_username }}"
+  password: "{{ vault_panos_password }}"
+
+  # Development security zones
+  security_zones:
+  - name: "dev-trust"
+    interface: "ethernet1/1"
+    mode: "layer3"
+    enable_userid: false
+  - name: "dev-untrust"
+    interface: "ethernet1/2"
+    mode: "layer3"
+    enable_userid: false
+  - name: "dev-test"
+    interface: "ethernet1/3"
+    mode: "layer3"
+    enable_userid: false
+
+  # Development security policies
+  security_policies:
+  - rule_name: "Allow-Dev-Traffic"
+    source_zone: "dev-trust"
+    destination_zone: "dev-test"
+    source_address: "any"
+    destination_address: "any"
+    application: "any"
+    service: "any"
+    action: "allow"
+    log_start: false
+    log_end: true
+  - rule_name: "Allow-Internet-Access"
+    source_zone: [ "dev-trust", "dev-test" ]
+    destination_zone: "dev-untrust"
+    source_address: "any"
+    destination_address: "any"
+    application: [ "web-browsing", "ssl", "dns", "ping" ]
+    service: "any"
+    action: "allow"
+    log_start: false
+    log_end: true
+
+  # Development NAT policies
+  nat_policies:
+  - rule_name: "Dev-Internet-NAT"
+    source_zone: [ "dev-trust", "dev-test" ]
+    destination_zone: "dev-untrust"
+    source_address: "any"
+    destination_address: "any"
+    service: "any"
+    nat_type: "ipv4"
+    snat_type: "dynamic-ip-and-port"
+    snat_interface: "ethernet1/2"
+
+# Fortinet FortiOS development settings
+fortinet_fortigate_dev_config:
+  username: "{{ vault_fortinet_username }}"
+  password: "{{ vault_fortinet_password }}"
+
+  # Development interfaces
+  interfaces:
+  - name: "port1"
+    ip: "{{ dev_port1_ip | default('192.168.1.1/24') }}"
+    allowaccess: "ping https ssh snmp http telnet"
+    type: "physical"
+    description: "Development internal interface"
+  - name: "port2"
+    ip: "{{ dev_port2_ip | default('dhcp') }}"
+    allowaccess: "ping"
+    type: "physical"
+    description: "Development external interface"
+  - name: "port3"
+    ip: "{{ dev_port3_ip | default('192.168.100.1/24') }}"
+    allowaccess: "ping https ssh"
+    type: "physical"
+    description: "Development test interface"
+
+  # Development firewall policies
+  firewall_policies:
+  - policyid: 1
+    name: "Dev-Internal-to-Internet"
+    srcintf: "port1"
+    dstintf: "port2"
+    srcaddr: "all"
+    dstaddr: "all"
+    service: "ALL"
+    action: "accept"
+    logtraffic: "all"
+    nat: "enable"
+  - policyid: 2
+    name: "Dev-Test-to-Internet"
+    srcintf: "port3"
+    dstintf: "port2"
+    srcaddr: "all"
+    dstaddr: "all"
+    service: "HTTP HTTPS DNS PING"
+    action: "accept"
+    logtraffic: "all"
+    nat: "enable"
+  - policyid: 3
+    name: "Dev-Internal-to-Test"
+    srcintf: "port1"
+    dstintf: "port3"
+    srcaddr: "all"
+    dstaddr: "all"
+    service: "ALL"
+    action: "accept"
+    logtraffic: "all"
+
+# Development testing and validation settings
+development_testing:
+  automated_testing: true
+  config_validation: true
+  rollback_enabled: true
+  snapshot_before_change: true
+
+  # Test suites to run
+  test_suites:
+  - connectivity_tests
+  - security_policy_tests
+  - routing_protocol_tests
+  - performance_baseline_tests
+
+  # Rollback settings
+  rollback_config:
+    max_rollback_configs: 10
+    auto_rollback_timeout: 600 # 10 minutes
+    manual_confirmation_required: false
+
+# Development monitoring and alerting
+development_monitoring:
+  enhanced_logging: true
+  debug_mode: true
+  performance_monitoring: true
+
+  # Monitoring thresholds (relaxed for development)
+  thresholds:
+    cpu_utilization: 90
+    memory_utilization: 90
+    interface_utilization: 95
+    error_rate: 5
+
+  # Alert destinations for development
+  alert_destinations:
+  - type: "email"
+    address: "dev-team@company.com"
+  - type: "syslog"
+    server: "192.168.255.10"
+  - type: "snmp"
+    community: "{{ vault_dev_snmp_rw }}"
+    server: "192.168.255.100"
+
+# Lab automation and orchestration
+lab_automation:
+  auto_deployment: true
+  config_templates: true
+  bulk_operations: true
+
+  # Automation schedules
+  schedules:
+    config_backup: "0 2 * * *" # Daily at 2 AM
+    health_check: "*/15 * * * *" # Every 15 minutes
+    performance_baseline: "0 */6 * * *" # Every 6 hours
+    security_audit: "0 1 * * 0" # Weekly on Sunday at 1 AM
+
+  # Bulk operation settings
+  bulk_operation_settings:
+    batch_size: 5
+    parallel_execution: true
+    failure_threshold: 2
+    retry_count: 3
+    retry_delay: 30
+
+# Development environment integration
+integration_settings:
+  version_control_enabled: true
+  ci_cd_integration_enabled: true
+  documentation_auto_generation: true
+
+  # Version control settings
+  version_control_config:
+    repository: "git@dev-gitlab.company.com:network/configs.git"
+    branch: "development"
+    auto_commit: true
+    commit_message_template: "Automated config update for {{ inventory_hostname }}"
+
+  # CI/CD pipeline integration
+  cicd_config:
+    pipeline_trigger: true
+    validation_required: true
+    approval_required: false
+    deployment_window: "any"

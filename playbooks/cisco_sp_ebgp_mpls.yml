@@ -1,0 +1,426 @@
+---
+# ====================================================================
+# CISCO SERVICE PROVIDER eBGP AND MPLS-VPN AUTOMATION PLAYBOOK
+# ====================================================================
+# Advanced automation for Cisco Service Provider networks with
+# eBGP peering, MPLS-VPN services, and carrier-grade features
+# ====================================================================
+
+- name: Deploy Cisco Service Provider eBGP and MPLS Infrastructure
+  hosts: cisco_sp_routers
+  gather_facts: false
+  connection: network_cli
+  vars:
+    ansible_network_os: ios
+    ansible_connection: network_cli
+
+  tasks:
+  # ===========================================
+  # PHASE 1: MPLS AND SERVICE PROVIDER FEATURES
+  # ===========================================
+  - name: Enable MPLS and Service Provider Features
+    cisco.ios.ios_config:
+      lines:
+      - "mpls ip"
+      - "mpls ldp router-id {{ mpls_router_id | default(ansible_host) }}"
+      - "mpls traffic-eng tunnels"
+      - "ip cef"
+      - "ip vrf {{ item.vrf_name }}"
+      - " rd {{ item.route_distinguisher }}"
+      - " route-target export {{ item.route_target_export }}"
+      - " route-target import {{ item.route_target_import }}"
+      parents: []
+    loop: "{{ customer_vrfs | default([]) }}"
+    when: device_role in ['pe', 'rr', 'asbr']
+    tags: [ 'mpls', 'vrfs' ]
+
+  # ===========================================
+  # PHASE 2: eBGP PEERING CONFIGURATION
+  # ===========================================
+  - name: Configure BGP Global Settings for Service Provider
+    cisco.ios.ios_config:
+      lines:
+      - "router bgp {{ bgp_asn }}"
+      - " bgp router-id {{ bgp_router_id | default(ansible_host) }}"
+      - " bgp log-neighbor-changes"
+      - " bgp graceful-restart"
+      - " bgp graceful-restart restart-time {{ bgp_restart_time | default('120') }}"
+      - " bgp graceful-restart stalepath-time {{ bgp_stalepath_time | default('360') }}"
+      - " bgp bestpath as-path multipath-relax"
+      - " bgp bestpath compare-routerid"
+      - " bgp bestpath med confed missing-as-worst"
+      - " maximum-paths {{ bgp_max_paths | default('32') }}"
+      - " maximum-paths ibgp {{ ibgp_max_paths | default('32') }}"
+      parents: []
+    tags: [ 'ebgp', 'global' ]
+
+  - name: Configure eBGP Customer Peering
+    cisco.ios.ios_config:
+      lines:
+      - " neighbor {{ item.neighbor_ip }} remote-as {{ item.customer_asn }}"
+      - " neighbor {{ item.neighbor_ip }} description {{ item.description }}"
+      - " neighbor {{ item.neighbor_ip }} password {{ item.md5_password | default(vault_bgp_password) }}"
+      - " neighbor {{ item.neighbor_ip }} timers {{ item.keepalive | default('30') }} {{ item.holdtime | default('90') }}"
+      - " neighbor {{ item.neighbor_ip }} maximum-routes {{ item.max_routes | default('1000') }} {{ item.threshold | default('75') }}"
+      - " neighbor {{ item.neighbor_ip }} fall-over bfd"
+      - " neighbor {{ item.neighbor_ip }} soft-reconfiguration inbound"
+      parents: "router bgp {{ bgp_asn }}"
+    loop: "{{ ebgp_customers | default([]) }}"
+    when: device_role in ['pe', 'asbr']
+    tags: [ 'ebgp', 'customers' ]
+
+  - name: Configure eBGP Provider Peering
+    cisco.ios.ios_config:
+      lines:
+      - " neighbor {{ item.neighbor_ip }} remote-as {{ item.provider_asn }}"
+      - " neighbor {{ item.neighbor_ip }} description {{ item.description }}"
+      - " neighbor {{ item.neighbor_ip }} password {{ item.md5_password | default(vault_bgp_password) }}"
+      - " neighbor {{ item.neighbor_ip }} timers {{ item.keepalive | default('10') }} {{ item.holdtime | default('30') }}"
+      - " neighbor {{ item.neighbor_ip }} maximum-routes {{ item.max_routes | default('800000') }} {{ item.threshold | default('75') }}"
+      - " neighbor {{ item.neighbor_ip }} fall-over bfd"
+      - " neighbor {{ item.neighbor_ip }} ttl-security hops {{ item.ttl_hops | default('1') }}"
+      parents: "router bgp {{ bgp_asn }}"
+    loop: "{{ ebgp_providers | default([]) }}"
+    when: device_role in ['asbr']
+    tags: [ 'ebgp', 'providers' ]
+
+  - name: Configure iBGP Route Reflector Peering
+    cisco.ios.ios_config:
+      lines:
+      - " neighbor {{ item.neighbor_ip }} remote-as {{ bgp_asn }}"
+      - " neighbor {{ item.neighbor_ip }} description {{ item.description }}"
+      - " neighbor {{ item.neighbor_ip }} update-source {{ ibgp_update_source | default('Loopback0') }}"
+      - " neighbor {{ item.neighbor_ip }} next-hop-self"
+      - " neighbor {{ item.neighbor_ip }} send-community both"
+      parents: "router bgp {{ bgp_asn }}"
+    loop: "{{ ibgp_rr_clients | default([]) }}"
+    when: device_role == 'rr'
+    tags: [ 'ibgp', 'route-reflector' ]
+
+  # ===========================================
+  # PHASE 3: VPNv4 AND VPNv6 ADDRESS FAMILIES
+  # ===========================================
+  - name: Configure VPNv4 Address Family
+    cisco.ios.ios_config:
+      lines:
+      - " address-family vpnv4"
+      - "  neighbor {{ item.neighbor_ip }} activate"
+      - "  neighbor {{ item.neighbor_ip }} send-community both"
+      - "  neighbor {{ item.neighbor_ip }} route-reflector-client"
+      parents: "router bgp {{ bgp_asn }}"
+    loop: "{{ ibgp_vpnv4_neighbors | default([]) }}"
+    when: device_role in ['pe', 'rr']
+    tags: [ 'vpnv4', 'address-family' ]
+
+  - name: Configure VPNv6 Address Family
+    cisco.ios.ios_config:
+      lines:
+      - " address-family vpnv6"
+      - "  neighbor {{ item.neighbor_ip }} activate"
+      - "  neighbor {{ item.neighbor_ip }} send-community both"
+      - "  neighbor {{ item.neighbor_ip }} route-reflector-client"
+      parents: "router bgp {{ bgp_asn }}"
+    loop: "{{ ibgp_vpnv6_neighbors | default([]) }}"
+    when: device_role in ['pe', 'rr'] and ipv6_enabled | default(false)
+    tags: [ 'vpnv6', 'address-family' ]
+
+  # ===========================================
+  # PHASE 4: CUSTOMER VRF CONFIGURATION
+  # ===========================================
+  - name: Configure Customer VRF Address Families
+    cisco.ios.ios_config:
+      lines:
+      - " address-family ipv4 vrf {{ item.vrf_name }}"
+      - "  neighbor {{ item.customer_ip }} remote-as {{ item.customer_asn }}"
+      - "  neighbor {{ item.customer_ip }} activate"
+      - "  neighbor {{ item.customer_ip }} as-override"
+      - "  neighbor {{ item.customer_ip }} send-community both"
+      - "  neighbor {{ item.customer_ip }} route-map {{ item.import_policy | default('CUST-IN') }} in"
+      - "  neighbor {{ item.customer_ip }} route-map {{ item.export_policy | default('CUST-OUT') }} out"
+      - "  neighbor {{ item.customer_ip }} maximum-routes {{ item.max_routes | default('1000') }}"
+      parents: "router bgp {{ bgp_asn }}"
+    loop: "{{ customer_vrf_peering | default([]) }}"
+    when: device_role == 'pe'
+    tags: [ 'customer-vrf', 'peering' ]
+
+  # ===========================================
+  # PHASE 5: ADVANCED ROUTE POLICIES
+  # ===========================================
+  - name: Configure AS-Path Access Lists
+    cisco.ios.ios_config:
+      lines:
+      - "ip as-path access-list {{ item.list_number }} {{ item.action }} {{ item.regex }}"
+      parents: []
+    loop: "{{ bgp_as_path_lists | default([]) }}"
+    tags: [ 'route-policies', 'as-path' ]
+
+  - name: Configure Community Lists
+    cisco.ios.ios_config:
+      lines:
+      - "ip community-list {{ item.list_number }} {{ item.action }} {{ item.community }}"
+      parents: []
+    loop: "{{ bgp_community_lists | default([]) }}"
+    tags: [ 'route-policies', 'communities' ]
+
+  - name: Configure Route Maps for Traffic Engineering
+    cisco.ios.ios_config:
+      lines:
+      - "route-map {{ item.name }} {{ item.action }} {{ item.sequence }}"
+      - " match {{ item.match_criteria }}"
+      - " set {{ item.set_action }}"
+      parents: []
+    loop: "{{ service_provider_route_maps | default([]) }}"
+    tags: [ 'route-policies', 'route-maps' ]
+
+  - name: Apply Route Policies to eBGP Neighbors
+    cisco.ios.ios_config:
+      lines:
+      - " neighbor {{ item.neighbor_ip }} route-map {{ item.inbound_policy }} in"
+      - " neighbor {{ item.neighbor_ip }} route-map {{ item.outbound_policy }} out"
+      parents: "router bgp {{ bgp_asn }}"
+    loop: "{{ ebgp_policy_applications | default([]) }}"
+    tags: [ 'route-policies', 'application' ]
+
+  # ===========================================
+  # PHASE 6: MPLS TRAFFIC ENGINEERING
+  # ===========================================
+  - name: Configure MPLS TE Global Settings
+    cisco.ios.ios_config:
+      lines:
+      - "mpls traffic-eng router-id {{ mpls_te_router_id | default(ansible_host) }}"
+      - "mpls traffic-eng area {{ ospf_area | default('0') }}"
+      parents: []
+    when: device_role in ['p', 'pe'] and mpls_te_enabled | default(false)
+    tags: [ 'mpls-te', 'global' ]
+
+  - name: Enable MPLS TE on Interfaces
+    cisco.ios.ios_config:
+      lines:
+      - "interface {{ item.interface }}"
+      - " mpls traffic-eng tunnels"
+      - " mpls traffic-eng bandwidth {{ item.bandwidth | default('1000000') }}"
+      - " mpls traffic-eng attribute-flags {{ item.attributes | default('0x0') }}"
+      parents: []
+    loop: "{{ mpls_te_interfaces | default([]) }}"
+    when: device_role in ['p', 'pe'] and mpls_te_enabled | default(false)
+    tags: [ 'mpls-te', 'interfaces' ]
+
+  # ===========================================
+  # PHASE 7: QOS AND SERVICE CLASSES
+  # ===========================================
+  - name: Configure Service Provider QoS Classes
+    cisco.ios.ios_config:
+      lines:
+      - "class-map match-all {{ item.class_name }}"
+      - " match dscp {{ item.dscp_values }}"
+      - "policy-map {{ item.policy_name }}"
+      - " class {{ item.class_name }}"
+      - "  bandwidth {{ item.bandwidth }}"
+      - "  priority {{ item.priority | default('') }}"
+      parents: []
+    loop: "{{ sp_qos_classes | default([]) }}"
+    tags: [ 'qos', 'classes' ]
+
+  - name: Apply QoS Policies to Customer Interfaces
+    cisco.ios.ios_config:
+      lines:
+      - "interface {{ item.interface }}"
+      - " service-policy input {{ item.input_policy }}"
+      - " service-policy output {{ item.output_policy }}"
+      parents: []
+    loop: "{{ customer_qos_interfaces | default([]) }}"
+    tags: [ 'qos', 'application' ]
+
+  # ===========================================
+  # PHASE 8: CARRIER ETHERNET SERVICES
+  # ===========================================
+  - name: Configure Ethernet Virtual Circuits
+    cisco.ios.ios_config:
+      lines:
+      - "interface {{ item.interface }}"
+      - " encapsulation dot1Q {{ item.outer_vlan }} second-dot1q {{ item.inner_vlan }}"
+      - " xconnect {{ item.remote_pe_ip }} {{ item.vc_id }} encapsulation mpls"
+      - "  mtu {{ item.mtu | default('1500') }}"
+      - "  pw-class {{ item.pw_class | default('default') }}"
+      parents: []
+    loop: "{{ ethernet_virtual_circuits | default([]) }}"
+    when: device_role == 'pe' and carrier_ethernet_enabled | default(false)
+    tags: [ 'carrier-ethernet', 'evc' ]
+
+  - name: Configure VPLS Instances
+    cisco.ios.ios_config:
+      lines:
+      - "l2 vfi {{ item.vfi_name }} manual"
+      - " vpn id {{ item.vpn_id }}"
+      - " neighbor {{ item.remote_pe_ip }} encapsulation mpls"
+      - "interface {{ item.interface }}"
+      - " xconnect vfi {{ item.vfi_name }}"
+      parents: []
+    loop: "{{ vpls_instances | default([]) }}"
+    when: device_role == 'pe' and vpls_enabled | default(false)
+    tags: [ 'vpls', 'l2vpn' ]
+
+  # ===========================================
+  # PHASE 9: NETWORK MONITORING AND TELEMETRY
+  # ===========================================
+  - name: Configure BGP Monitoring and Logging
+    cisco.ios.ios_config:
+      lines:
+      - "bgp log-neighbor-changes"
+      - "bgp bestpath compare-routerid"
+      - "bgp bestpath as-path ignore"
+      - "bgp dampening {{ dampening_half_life | default('15') }} {{ dampening_reuse | default('750') }} {{ dampening_suppress | default('2000') }} {{ dampening_max_suppress | default('60') }}"
+      parents: "router bgp {{ bgp_asn }}"
+    tags: [ 'monitoring', 'bgp' ]
+
+  - name: Configure SNMP for Network Management
+    cisco.ios.ios_config:
+      lines:
+      - "snmp-server community {{ vault_snmp_community_ro }} RO"
+      - "snmp-server community {{ vault_snmp_community_rw }} RW"
+      - "snmp-server host {{ item.nms_server }} version {{ item.version | default('2c') }} {{ item.community }}"
+      - "snmp-server enable traps bgp"
+      - "snmp-server enable traps mpls ldp"
+      - "snmp-server enable traps mpls traffic-eng"
+      parents: []
+    loop: "{{ snmp_nms_servers | default([]) }}"
+    tags: [ 'monitoring', 'snmp' ]
+
+  # ===========================================
+  # PHASE 10: SECURITY AND ACCESS CONTROL
+  # ===========================================
+  - name: Configure BGP Security Features
+    cisco.ios.ios_config:
+      lines:
+      - " neighbor {{ item.neighbor_ip }} ttl-security hops {{ item.ttl_hops | default('1') }}"
+      - " neighbor {{ item.neighbor_ip }} password {{ item.md5_password }}"
+      - " neighbor {{ item.neighbor_ip }} update-source {{ item.update_source }}"
+      parents: "router bgp {{ bgp_asn }}"
+    loop: "{{ secured_bgp_neighbors | default([]) }}"
+    tags: [ 'security', 'bgp' ]
+
+  - name: Configure Infrastructure Access Control
+    cisco.ios.ios_config:
+      lines:
+      - "ip access-list extended {{ item.acl_name }}"
+      - " {{ item.rule }}"
+      parents: []
+    loop: "{{ infrastructure_acls | default([]) }}"
+    tags: [ 'security', 'acls' ]
+
+  # ===========================================
+  # PHASE 11: SAVE CONFIGURATION
+  # ===========================================
+  - name: Save Configuration
+    cisco.ios.ios_config:
+      save_when: changed
+    tags: [ 'save' ]
+
+  # ===========================================
+  # PHASE 12: VERIFICATION AND STATUS
+  # ===========================================
+  - name: Verify BGP Status
+    cisco.ios.ios_command:
+      commands:
+      - "show bgp summary"
+      - "show bgp vpnv4 unicast all summary"
+      - "show bgp neighbors"
+      - "show ip bgp dampened-paths"
+    register: bgp_status
+    tags: [ 'verify', 'bgp' ]
+
+  - name: Verify MPLS Status
+    cisco.ios.ios_command:
+      commands:
+      - "show mpls ldp discovery"
+      - "show mpls ldp neighbor"
+      - "show mpls forwarding-table"
+      - "show mpls traffic-eng tunnels brief"
+    register: mpls_status
+    when: device_role in ['p', 'pe']
+    tags: [ 'verify', 'mpls' ]
+
+  - name: Verify Customer VRF Status
+    cisco.ios.ios_command:
+      commands:
+      - "show vrf"
+      - "show ip route vrf {{ item.vrf_name }}"
+      - "show bgp vpnv4 unicast vrf {{ item.vrf_name }} summary"
+    register: vrf_status
+    loop: "{{ customer_vrfs | default([]) }}"
+    when: device_role == 'pe'
+    tags: [ 'verify', 'vrf' ]
+
+  - name: Verify Service Provider Route Policies
+    cisco.ios.ios_command:
+      commands:
+      - "show route-map {{ item.name }}"
+      - "show ip as-path-access-list {{ item.as_path_list }}"
+      - "show ip community-list {{ item.community_list }}"
+    register: policy_status
+    loop: "{{ service_provider_route_maps | default([]) }}"
+    tags: [ 'verify', 'policies' ]
+
+  # ===========================================
+  # PHASE 13: SERVICE PROVIDER STATUS REPORT
+  # ===========================================
+  - name: Display Service Provider Infrastructure Report
+    ansible.builtin.debug:
+      msg: |
+        =======================================================
+        CISCO SERVICE PROVIDER eBGP/MPLS DEPLOYMENT REPORT
+        =======================================================
+        Device: {{ inventory_hostname }}
+        Role: {{ device_role }}
+        BGP ASN: {{ bgp_asn }}
+        MPLS Router ID: {{ mpls_router_id | default(ansible_host) }}
+
+        === BGP STATUS ===
+        {% if bgp_status is defined and bgp_status.stdout is defined %}
+        BGP Summary:
+        {{ bgp_status.stdout[0] | default('BGP not configured') }}
+
+        VPNv4 Summary:
+        {{ bgp_status.stdout[1] | default('VPNv4 not configured') }}
+
+        BGP Neighbors:
+        {{ bgp_status.stdout[2] | default('No BGP neighbors') }}
+
+        Dampened Paths:
+        {{ bgp_status.stdout[3] | default('No dampened paths') }}
+        {% endif %}
+
+        {% if mpls_status is defined and mpls_status.stdout is defined %}
+        === MPLS STATUS ===
+        LDP Discovery:
+        {{ mpls_status.stdout[0] | default('LDP not configured') }}
+
+        LDP Neighbors:
+        {{ mpls_status.stdout[1] | default('No LDP neighbors') }}
+
+        MPLS Forwarding Table:
+        {{ mpls_status.stdout[2] | default('No MPLS forwarding entries') }}
+
+        Traffic Engineering Tunnels:
+        {{ mpls_status.stdout[3] | default('No TE tunnels') }}
+        {% endif %}
+
+        {% if vrf_status is defined and vrf_status.results is defined %}
+        === CUSTOMER VRF STATUS ===
+        {% for result in vrf_status.results %}
+        VRF: {{ result.item.vrf_name }}
+        Routes: {{ result.stdout[1] | default('No routes') | regex_findall('\\d+\\.\\d+\\.\\d+\\.\\d+') | length }} entries
+        BGP Status: {{ result.stdout[2] | default('BGP not configured') }}
+        {% endfor %}
+        {% endif %}
+
+        === DEPLOYMENT SUMMARY ===
+        eBGP Customers: {{ ebgp_customers | default([]) | length }}
+        eBGP Providers: {{ ebgp_providers | default([]) | length }}
+        Customer VRFs: {{ customer_vrfs | default([]) | length }}
+        Route Policies: {{ service_provider_route_maps | default([]) | length }}
+
+        Status: {{ 'SUCCESS' if ansible_failed_result is not defined else 'FAILED' }}
+        Timestamp: {{ ansible_date_time.iso8601 | default('Unknown') }}
+        =======================================================
+    tags: [ 'verify', 'report' ]

@@ -1,0 +1,250 @@
+---
+# Comprehensive routing protocol deployment playbook
+# Supports OSPF, EIGRP, BGP, and static routing across multiple vendors
+- name: Deploy Routing Protocols
+  hosts: all
+  gather_facts: true
+  vars:
+    report_timestamp: "{{ ansible_date_time.iso8601 }}"
+    deployment_mode: "{{ mode | default('validate') }}"
+    routing_protocols: "{{ protocols | default(['ospf', 'bgp']) }}"
+
+  tasks:
+  - name: Create routing deployment report directory
+    file:
+      path: "{{ playbook_dir }}/../reports/routing_deployment"
+      state: directory
+    delegate_to: localhost
+    run_once: true
+
+  - name: Initialize routing deployment report
+    template:
+      src: "{{ playbook_dir }}/../templates/deployment_summary.j2"
+      dest: "{{ playbook_dir }}/../reports/routing_deployment/routing_deployment_{{ report_timestamp | regex_replace(':', '-') }}.txt"
+    vars:
+      deployment_type: "Routing Protocol Deployment"
+      deployment_scope: "{{ routing_protocols | join(', ') | upper }}"
+    delegate_to: localhost
+    run_once: true
+
+  # Cisco IOS/IOS-XE Routing Configuration
+  - name: Deploy OSPF on Cisco devices
+    block:
+    - name: Configure OSPF routing protocol
+      cisco.ios.ios_ospfv2:
+        config:
+          processes:
+          - process_id: "{{ cisco_ospf.process_id | default(1) }}"
+            router_id: "{{ cisco_ospf.router_id | default(ansible_host) }}"
+            areas:
+            - area_id: "{{ item.area_id }}"
+              networks:
+              - address: "{{ item.network }}"
+                wildcard_bits: "{{ item.wildcard }}"
+                area: "{{ item.area_id }}"
+            authentication:
+              message_digest: "{{ cisco_ospf.authentication | default(true) }}"
+      loop: "{{ cisco_ospf.areas | default([]) }}"
+      when:
+      - ansible_network_os == "ios"
+      - "'ospf' in routing_protocols"
+      - cisco_ospf is defined
+
+    - name: Configure EIGRP routing protocol
+      cisco.ios.ios_config:
+        lines:
+        - "router eigrp {{ cisco_eigrp.asn | default(100) }}"
+        - "network {{ item.network }} {{ item.wildcard }}"
+        - "eigrp router-id {{ cisco_eigrp.router_id | default(ansible_host) }}"
+        - "passive-interface default"
+        - "no passive-interface {{ item.interface }}"
+        parents: []
+      loop: "{{ cisco_eigrp.networks | default([]) }}"
+      when:
+      - ansible_network_os == "ios"
+      - "'eigrp' in routing_protocols"
+      - cisco_eigrp is defined
+
+    - name: Configure BGP routing protocol
+      cisco.ios.ios_bgp_global:
+        config:
+          as_number: "{{ cisco_bgp.asn }}"
+          router_id: "{{ cisco_bgp.router_id | default(ansible_host) }}"
+          bgp:
+            log_neighbor_changes: true
+            graceful_restart:
+              graceful_reset: true
+          neighbors:
+          - neighbor_address: "{{ item.neighbor }}"
+            remote_as: "{{ item.remote_as }}"
+            description: "{{ item.description | default('BGP Peer') }}"
+            fall_over:
+              bfd: "{{ item.bfd | default(false) }}"
+            password:
+              encryption: 7
+              key: "{{ item.password | default('') }}"
+      loop: "{{ cisco_bgp.neighbors | default([]) }}"
+      when:
+      - ansible_network_os == "ios"
+      - "'bgp' in routing_protocols"
+      - cisco_bgp is defined
+
+    when:
+    - "'cisco' in group_names"
+    - deployment_mode in ['deploy', 'validate']
+
+  # Arista EOS Routing Configuration
+  - name: Deploy routing protocols on Arista devices
+    block:
+    - name: Configure BGP on Arista spine-leaf fabric
+      arista.eos.eos_bgp_global:
+        config:
+          as_number: "{{ arista_bgp.asn }}"
+          router_id: "{{ arista_bgp.router_id | default(ansible_host) }}"
+          bgp:
+            log_neighbor_changes: true
+            graceful_restart:
+              restart_time: 300
+              stalepath_time: 360
+          neighbors:
+          - neighbor_address: "{{ item.neighbor }}"
+            remote_as: "{{ item.remote_as }}"
+            description: "{{ item.description }}"
+            send_community:
+              community_attribute: "{{ item.send_community | default('standard extended') }}"
+      loop: "{{ arista_bgp.neighbors | default([]) }}"
+      when:
+      - "'bgp' in routing_protocols"
+      - arista_bgp is defined
+
+    - name: Configure OSPF on Arista devices
+      arista.eos.eos_ospfv2:
+        config:
+          processes:
+          - process_id: "{{ arista_ospf.process_id | default(1) }}"
+            router_id: "{{ arista_ospf.router_id | default(ansible_host) }}"
+            areas:
+            - area_id: "{{ item.area_id }}"
+              networks:
+              - address: "{{ item.network }}"
+                wildcard_bits: "{{ item.wildcard }}"
+      loop: "{{ arista_ospf.areas | default([]) }}"
+      when:
+      - "'ospf' in routing_protocols"
+      - arista_ospf is defined
+
+    when:
+    - "'arista' in group_names"
+    - deployment_mode in ['deploy', 'validate']
+
+  # Juniper JunOS Routing Configuration
+  - name: Deploy routing protocols on Juniper devices
+    block:
+    - name: Configure OSPF on Juniper devices
+      junipernetworks.junos.junos_ospf:
+        config:
+          processes:
+          - process_id: "{{ juniper_ospf.process_id | default('ospf') }}"
+            router_id: "{{ juniper_ospf.router_id | default(ansible_host) }}"
+            areas:
+            - area_id: "{{ item.area_id }}"
+              interfaces:
+              - name: "{{ item.interface }}"
+                priority: "{{ item.priority | default(128) }}"
+                metric: "{{ item.metric | default(10) }}"
+      loop: "{{ juniper_ospf.areas | default([]) }}"
+      when:
+      - "'ospf' in routing_protocols"
+      - juniper_ospf is defined
+
+    - name: Configure BGP on Juniper devices
+      junipernetworks.junos.junos_bgp_global:
+        config:
+          as_number: "{{ juniper_bgp.asn }}"
+          router_id: "{{ juniper_bgp.router_id | default(ansible_host) }}"
+          neighbors:
+          - neighbor_address: "{{ item.neighbor }}"
+            remote_as: "{{ item.remote_as }}"
+            description: "{{ item.description }}"
+            authentication_key: "{{ item.auth_key | default('') }}"
+      loop: "{{ juniper_bgp.neighbors | default([]) }}"
+      when:
+      - "'bgp' in routing_protocols"
+      - juniper_bgp is defined
+
+    - name: Configure MPLS on Juniper devices
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set protocols mpls interface {{ item.interface }}"
+        - "set protocols ldp interface {{ item.interface }}"
+        comment: "Configure MPLS and LDP on {{ item.interface }}"
+      loop: "{{ juniper_mpls.interfaces | default([]) }}"
+      when:
+      - "'mpls' in routing_protocols"
+      - juniper_mpls is defined
+
+    when:
+    - "'juniper' in group_names"
+    - deployment_mode in ['deploy', 'validate']
+
+  # Validation and Testing
+  - name: Validate routing protocol deployment
+    block:
+    - name: Check routing table entries
+      cisco.ios.ios_command:
+        commands:
+        - "show ip route summary"
+        - "show ip ospf neighbor"
+        - "show ip bgp summary"
+        - "show ip eigrp neighbors"
+      register: cisco_routing_status
+      when: ansible_network_os == "ios"
+
+    - name: Check Arista routing status
+      arista.eos.eos_command:
+        commands:
+        - "show ip route summary"
+        - "show ip ospf neighbor"
+        - "show ip bgp summary"
+      register: arista_routing_status
+      when: ansible_network_os == "eos"
+
+    - name: Check Juniper routing status
+      junipernetworks.junos.junos_command:
+        commands:
+        - "show route summary"
+        - "show ospf neighbor"
+        - "show bgp summary"
+        - "show mpls interface"
+      register: juniper_routing_status
+      when: ansible_network_os == "junos"
+
+    when: deployment_mode in ['validate', 'audit']
+
+  # Report Generation
+  - name: Generate routing deployment report
+    template:
+      src: "{{ playbook_dir }}/../templates/deployment_summary.j2"
+      dest: "{{ playbook_dir }}/../reports/routing_deployment/{{ inventory_hostname }}_routing_{{ report_timestamp | regex_replace(':', '-') }}.txt"
+    vars:
+      deployment_type: "Routing Protocol Configuration"
+      device_status: "{{ 'SUCCESS' if ansible_failed_task is not defined else 'FAILED' }}"
+      protocols_deployed: "{{ routing_protocols }}"
+      routing_validation: "{{ cisco_routing_status | default(arista_routing_status) | default(juniper_routing_status) | default({}) }}"
+    delegate_to: localhost
+
+  handlers:
+  - name: Save configuration
+    cisco.ios.ios_config:
+      save_when: modified
+    when: ansible_network_os == "ios"
+
+  - name: Save Arista configuration
+    arista.eos.eos_config:
+      save_when: modified
+    when: ansible_network_os == "eos"
+
+  - name: Commit Juniper configuration
+    junipernetworks.junos.junos_config:
+      confirm_commit: yes
+    when: ansible_network_os == "junos"

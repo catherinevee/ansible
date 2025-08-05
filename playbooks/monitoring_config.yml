@@ -1,0 +1,333 @@
+---
+# Network Monitoring and Alerting Configuration Playbook
+# Configures comprehensive monitoring across all network devices
+- name: Configure Network Monitoring and Alerting
+  hosts: all
+  gather_facts: true
+  vars:
+    report_timestamp: "{{ ansible_date_time.iso8601 }}"
+    monitoring_level: "{{ level | default('standard') }}" # basic, standard, comprehensive
+    enable_alerting: "{{ alerting | default(true) }}"
+
+  tasks:
+  - name: Create monitoring configuration report directory
+    file:
+      path: "{{ playbook_dir }}/../reports/monitoring_config"
+      state: directory
+    delegate_to: localhost
+    run_once: true
+
+  - name: Initialize monitoring configuration report
+    template:
+      src: "{{ playbook_dir }}/../templates/deployment_summary.j2"
+      dest: "{{ playbook_dir }}/../reports/monitoring_config/monitoring_config_{{ report_timestamp | regex_replace(':', '-') }}.txt"
+    vars:
+      deployment_type: "Network Monitoring Configuration"
+      deployment_scope: "{{ monitoring_level | upper }} Level"
+    delegate_to: localhost
+    run_once: true
+
+  # Cisco Monitoring Configuration
+  - name: Configure Cisco monitoring
+    block:
+    - name: Configure SNMP v3 monitoring
+      cisco.ios.ios_config:
+        lines:
+        - "snmp-server group {{ monitoring_config.snmp_group | default('MONITORING') }} v3 priv read {{ monitoring_config.snmp_view | default('READALL') }}"
+        - "snmp-server user {{ monitoring_config.snmp_user | default('monitor') }} {{ monitoring_config.snmp_group | default('MONITORING') }} v3 auth sha {{ vault_snmp_auth_key }} priv aes 128 {{ vault_snmp_priv_key }}"
+        - "snmp-server view {{ monitoring_config.snmp_view | default('READALL') }} iso included"
+        - "snmp-server contact {{ monitoring_config.contact | default('NOC Team') }}"
+        - "snmp-server location {{ monitoring_config.location | default('Enterprise Network') }}"
+        - "snmp-server enable traps"
+        - "snmp-server enable traps snmp authentication linkdown linkup coldstart warmstart"
+        - "snmp-server enable traps config"
+        - "snmp-server enable traps entity"
+        - "snmp-server enable traps bgp"
+        - "snmp-server enable traps ospf state-change"
+        - "snmp-server enable traps syslog"
+        - "snmp-server host {{ monitoring_config.nms_server | default('10.255.1.100') }} version 3 priv {{ monitoring_config.snmp_user | default('monitor') }}"
+
+    - name: Configure NetFlow monitoring
+      cisco.ios.ios_config:
+        lines:
+        - "ip flow-export version {{ monitoring_config.netflow_version | default(9) }}"
+        - "ip flow-export destination {{ monitoring_config.netflow_collector | default('10.255.1.101') }} {{ monitoring_config.netflow_port | default(2055) }}"
+        - "ip flow-export source {{ monitoring_config.netflow_source | default('Loopback0') }}"
+        - "ip flow-export template timeout-rate {{ monitoring_config.template_timeout | default(30) }}"
+        - "ip flow-cache timeout active {{ monitoring_config.active_timeout | default(5) }}"
+        - "ip flow-cache timeout inactive {{ monitoring_config.inactive_timeout | default(15) }}"
+      when: monitoring_level in ['standard', 'comprehensive']
+
+    - name: Configure interface monitoring
+      cisco.ios.ios_config:
+        lines:
+        - "interface {{ item.interface }}"
+        - "ip flow ingress"
+        - "ip flow egress"
+        - "snmp trap link-status"
+        - "logging event link-status"
+        parents: []
+      loop: "{{ monitoring_config.monitored_interfaces | default([]) }}"
+      when: monitoring_level == 'comprehensive'
+
+    - name: Configure IP SLA monitoring
+      cisco.ios.ios_config:
+        lines:
+        - "ip sla {{ item.sla_id }}"
+        - "icmp-echo {{ item.destination }} source-interface {{ item.source_interface | default('Loopback0') }}"
+        - "frequency {{ item.frequency | default(60) }}"
+        - "timeout {{ item.timeout | default(5000) }}"
+        - "threshold {{ item.threshold | default(3000) }}"
+        - "ip sla schedule {{ item.sla_id }} life forever start-time now"
+        - "track {{ item.track_id }} ip sla {{ item.sla_id }} reachability"
+      loop: "{{ monitoring_config.ip_sla_probes | default([]) }}"
+      when: monitoring_level == 'comprehensive'
+
+    - name: Configure EEM monitoring scripts
+      cisco.ios.ios_config:
+        lines:
+        - "event manager applet {{ item.name }}"
+        - "event {{ item.event_type }} pattern \"{{ item.pattern }}\""
+        - "action 1.0 syslog msg \"{{ item.action_message }}\""
+        - "action 2.0 snmp-trap strdata \"{{ item.trap_message }}\""
+        parents: []
+      loop: "{{ monitoring_config.eem_scripts | default([]) }}"
+      when: monitoring_level == 'comprehensive'
+
+    when:
+    - "'cisco' in group_names"
+    - ansible_network_os == "ios"
+
+  # Arista Monitoring Configuration
+  - name: Configure Arista monitoring
+    block:
+    - name: Configure SNMP v3 monitoring on Arista
+      arista.eos.eos_config:
+        lines:
+        - "snmp-server group {{ monitoring_config.snmp_group | default('network-monitor') }} v3 priv read {{ monitoring_config.snmp_view | default('default') }}"
+        - "snmp-server user {{ monitoring_config.snmp_user | default('monitor') }} {{ monitoring_config.snmp_group | default('network-monitor') }} v3 auth sha {{ vault_snmp_auth_key }} priv aes {{ vault_snmp_priv_key }}"
+        - "snmp-server contact {{ monitoring_config.contact | default('NOC Team') }}"
+        - "snmp-server location {{ monitoring_config.location | default('Datacenter') }}"
+        - "snmp-server enable traps"
+        - "snmp-server host {{ monitoring_config.nms_server | default('10.255.1.100') }} version 3 priv {{ monitoring_config.snmp_user | default('monitor') }}"
+
+    - name: Configure sFlow monitoring
+      arista.eos.eos_config:
+        lines:
+        - "sflow sample {{ monitoring_config.sflow_rate | default(16384) }}"
+        - "sflow polling-interval {{ monitoring_config.sflow_polling | default(20) }}"
+        - "sflow destination {{ monitoring_config.sflow_collector | default('10.255.1.102') }} {{ monitoring_config.sflow_port | default(6343) }}"
+        - "sflow source-interface {{ monitoring_config.sflow_source | default('Management1') }}"
+        - "sflow run"
+      when: monitoring_level in ['standard', 'comprehensive']
+
+    - name: Configure interface monitoring on Arista
+      arista.eos.eos_config:
+        lines:
+        - "interface {{ item.interface }}"
+        - "sflow enable"
+        - "logging event link-status"
+        parents: []
+      loop: "{{ monitoring_config.monitored_interfaces | default([]) }}"
+      when: monitoring_level == 'comprehensive'
+
+    - name: Configure event monitoring
+      arista.eos.eos_config:
+        lines:
+        - "event-monitor"
+        - "logging level {{ monitoring_config.log_level | default('informational') }}"
+        - "buffer size {{ monitoring_config.buffer_size | default(1000) }}"
+
+    - name: Configure LANZ (Latency Analyzer)
+      arista.eos.eos_config:
+        lines:
+        - "queue-monitor length"
+        - "queue-monitor length notifying"
+        - "logging level queue-monitor {{ monitoring_config.queue_log_level | default(informational) }}"
+      when: monitoring_level == 'comprehensive'
+
+    when:
+    - "'arista' in group_names"
+    - ansible_network_os == "eos"
+
+  # Juniper Monitoring Configuration
+  - name: Configure Juniper monitoring
+    block:
+    - name: Configure SNMP v3 monitoring on Juniper
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set snmp v3 usm local-engine user {{ monitoring_config.snmp_user | default('monitor') }} authentication-sha authentication-password {{ vault_snmp_auth_key }}"
+        - "set snmp v3 usm local-engine user {{ monitoring_config.snmp_user | default('monitor') }} privacy-aes128 privacy-password {{ vault_snmp_priv_key }}"
+        - "set snmp v3 vacm security-to-group security-model usm security-name {{ monitoring_config.snmp_user | default('monitor') }} group network-monitor"
+        - "set snmp v3 vacm access group network-monitor default-context-prefix security-model any security-level privacy read-view all"
+        - "set snmp contact \"{{ monitoring_config.contact | default('NOC Team') }}\""
+        - "set snmp location \"{{ monitoring_config.location | default('Service Provider Network') }}\""
+        - "set snmp trap-group nms-servers version v3 security-name {{ monitoring_config.snmp_user | default('monitor') }}"
+        - "set snmp trap-group nms-servers targets {{ monitoring_config.nms_server | default('10.255.1.100') }}"
+
+    - name: Configure interface monitoring on Juniper
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set interfaces {{ item.interface }} description \"{{ item.description | default('Monitored Interface') }}\""
+        - "set event-options policy INTERFACE_MONITORING events ui_link_down"
+        - "set event-options policy INTERFACE_MONITORING events ui_link_up"
+        - "set event-options policy INTERFACE_MONITORING then event-script interface-monitor.py"
+      loop: "{{ monitoring_config.monitored_interfaces | default([]) }}"
+      when: monitoring_level in ['standard', 'comprehensive']
+
+    - name: Configure RPM (Real-time Performance Monitoring)
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set services rpm probe {{ item.probe_name }} test {{ item.test_name }} probe-type icmp-ping"
+        - "set services rpm probe {{ item.probe_name }} test {{ item.test_name }} target address {{ item.target }}"
+        - "set services rpm probe {{ item.probe_name }} test {{ item.test_name }} probe-count {{ item.probe_count | default(5) }}"
+        - "set services rpm probe {{ item.probe_name }} test {{ item.test_name }} probe-interval {{ item.interval | default(1) }}"
+        - "set services rpm probe {{ item.probe_name }} test {{ item.test_name }} test-interval {{ item.test_interval | default(60) }}"
+        - "set services rpm probe {{ item.probe_name }} test {{ item.test_name }} thresholds successive-loss {{ item.loss_threshold | default(3) }}"
+        - "set services rpm probe {{ item.probe_name }} test {{ item.test_name }} thresholds total-loss {{ item.total_loss | default(5) }}"
+      loop: "{{ monitoring_config.rpm_probes | default([]) }}"
+      when: monitoring_level == 'comprehensive'
+
+    - name: Configure flow monitoring
+      junipernetworks.junos.junos_config:
+        lines:
+        - "set services flow-monitoring version {{ monitoring_config.flow_version | default('version9') }}"
+        - "set services flow-monitoring {{ monitoring_config.flow_instance | default('instance1') }} flow-server {{ monitoring_config.flow_collector | default('10.255.1.101') }} port {{ monitoring_config.flow_port | default(2055) }}"
+        - "set services flow-monitoring {{ monitoring_config.flow_instance | default('instance1') }} flow-server {{ monitoring_config.flow_collector | default('10.255.1.101') }} source-address {{ monitoring_config.flow_source | default(ansible_host) }}"
+        - "set services flow-monitoring {{ monitoring_config.flow_instance | default('instance1') }} template {{ monitoring_config.flow_template | default('template1') }} template-refresh-rate seconds {{ monitoring_config.template_refresh | default(30) }}"
+      when: monitoring_level in ['standard', 'comprehensive']
+
+    when:
+    - "'juniper' in group_names"
+    - ansible_network_os == "junos"
+
+  # Palo Alto Monitoring Configuration
+  - name: Configure Palo Alto monitoring
+    block:
+    - name: Configure SNMP v3 monitoring on Palo Alto
+      paloaltonetworks.panos.panos_snmp_profile:
+        name: "{{ monitoring_config.snmp_profile | default('monitoring-profile') }}"
+        version: "v3"
+        v3_security_level: "authPriv"
+        v3_auth_protocol: "SHA1"
+        v3_auth_key: "{{ vault_snmp_auth_key }}"
+        v3_priv_protocol: "AES128"
+        v3_priv_key: "{{ vault_snmp_priv_key }}"
+
+    - name: Configure syslog monitoring
+      paloaltonetworks.panos.panos_syslog_profile:
+        name: "{{ monitoring_config.syslog_profile | default('monitoring-syslog') }}"
+        servers:
+        - name: "primary-syslog"
+          server: "{{ monitoring_config.syslog_server | default('10.255.1.103') }}"
+          protocol: "UDP"
+          port: 514
+          format: "BSD"
+          facility: "LOG_USER"
+
+    - name: Configure email alerting
+      paloaltonetworks.panos.panos_email_profile:
+        name: "{{ monitoring_config.email_profile | default('noc-alerts') }}"
+        config:
+          display_name: "PAN-OS Alert System"
+          from_email: "{{ monitoring_config.from_email | default('panos-alerts@company.com') }}"
+          to_email: "{{ monitoring_config.to_email | default('noc@company.com') }}"
+          smtp_server: "{{ monitoring_config.smtp_server | default('mail.company.com') }}"
+      when: enable_alerting
+
+    - name: Configure log forwarding
+      paloaltonetworks.panos.panos_log_forwarding_profile:
+        name: "{{ monitoring_config.log_profile | default('comprehensive-logging') }}"
+        enhanced_logging: true
+        match_list:
+        - name: "threat-logs"
+          log_type: "threat"
+          filter: "All Logs"
+          send_syslog: "{{ monitoring_config.syslog_profile | default('monitoring-syslog') }}"
+        - name: "traffic-logs"
+          log_type: "traffic"
+          filter: "All Logs"
+          send_syslog: "{{ monitoring_config.syslog_profile | default('monitoring-syslog') }}"
+
+    when:
+    - "'palo_alto' in group_names"
+    - ansible_connection == "local"
+
+  # Monitoring Validation
+  - name: Validate monitoring configuration
+    block:
+    - name: Check Cisco monitoring status
+      cisco.ios.ios_command:
+        commands:
+        - "show snmp user"
+        - "show snmp group"
+        - "show ip flow export"
+        - "show ip sla statistics"
+        - "show logging"
+      register: cisco_monitoring_status
+      when: ansible_network_os == "ios"
+
+    - name: Check Arista monitoring status
+      arista.eos.eos_command:
+        commands:
+        - "show snmp user"
+        - "show sflow"
+        - "show queue-monitor length status"
+        - "show logging"
+      register: arista_monitoring_status
+      when: ansible_network_os == "eos"
+
+    - name: Check Juniper monitoring status
+      junipernetworks.junos.junos_command:
+        commands:
+        - "show snmp v3 usm user"
+        - "show services rpm probe-results"
+        - "show services flow-monitoring"
+        - "show log messages | last 50"
+      register: juniper_monitoring_status
+      when: ansible_network_os == "junos"
+
+    - name: Check Palo Alto monitoring status
+      paloaltonetworks.panos.panos_op:
+        cmd: |
+          <show>
+            <system>
+              <info/>
+            </system>
+          </show>
+      register: panos_monitoring_status
+      when: ansible_connection == "local" and "'palo_alto' in group_names"
+
+  # Generate Monitoring Report
+  - name: Generate monitoring configuration report
+    template:
+      src: "{{ playbook_dir }}/../templates/deployment_summary.j2"
+      dest: "{{ playbook_dir }}/../reports/monitoring_config/{{ inventory_hostname }}_monitoring_{{ report_timestamp | regex_replace(':', '-') }}.txt"
+    vars:
+      deployment_type: "Network Monitoring Configuration"
+      device_status: "{{ 'SUCCESS' if ansible_failed_task is not defined else 'FAILED' }}"
+      monitoring_applied: "{{ monitoring_level }}"
+      alerting_enabled: "{{ enable_alerting }}"
+      monitoring_validation: "{{ cisco_monitoring_status | default(arista_monitoring_status) | default(juniper_monitoring_status) | default(panos_monitoring_status) | default({}) }}"
+    delegate_to: localhost
+
+  handlers:
+  - name: Save configuration and restart monitoring
+    cisco.ios.ios_config:
+      save_when: modified
+    when: ansible_network_os == "ios"
+
+  - name: Save Arista configuration
+    arista.eos.eos_config:
+      save_when: modified
+    when: ansible_network_os == "eos"
+
+  - name: Commit Juniper configuration
+    junipernetworks.junos.junos_config:
+      confirm_commit: true
+    when: ansible_network_os == "junos"
+
+  - name: Commit Palo Alto configuration
+    paloaltonetworks.panos.panos_commit:
+      sync: true
+    when: ansible_connection == "local" and "'palo_alto' in group_names"

@@ -1,0 +1,138 @@
+---
+# Cisco device-specific variables
+ansible_network_os: ios
+ansible_connection: network_cli
+ansible_become: yes
+ansible_become_method: enable
+
+# Cisco-specific settings
+cisco_enable_password: "{{ vault_cisco_enable_password }}"
+
+# Standard interface configurations for Cisco devices
+cisco_standard_interfaces:
+  trunk_ports:
+  - name: GigabitEthernet1/0/24
+    description: "Trunk to Core Switch"
+    vlans: "1,10,20,30,40"
+  access_ports:
+  - name: GigabitEthernet1/0/1
+    description: "User Access Port"
+    vlan: 10
+  - name: GigabitEthernet1/0/2
+    description: "Voice Access Port"
+    vlan: 20
+
+# BGP configuration for Cisco routers
+cisco_bgp_config:
+  router_id: "{{ ansible_host }}"
+  local_asn: "{{ bgp_asn | default('65001') }}"
+
+# Common Cisco security settings
+cisco_security_config:
+  aaa:
+    new_model: true
+    authentication:
+      login:
+        default: local
+    authorization:
+      exec:
+        default: local
+  service:
+    password_encryption: true
+    timestamps:
+      debug: datetime
+      log: datetime
+  logging:
+    console: critical
+    buffered:
+      size: 32768
+      level: informational
+    facility: local7
+  snmp:
+    server:
+      community: "{{ vault_snmp_community_ro }}"
+      access: ro
+    trap:
+      source: Loopback0
+      destination: "{{ monitoring_server | default('10.0.1.100') }}"
+
+# NTP configuration for all Cisco devices
+cisco_ntp_config:
+  servers:
+  - "0.pool.ntp.org"
+  - "1.pool.ntp.org"
+  - "{{ ntp_server_primary | default('10.0.1.10') }}"
+  - "{{ ntp_server_secondary | default('10.0.1.11') }}"
+  timezone: "{{ site_timezone | default('UTC 0') }}"
+
+# VLAN configurations for enterprise deployment
+cisco_enterprise_vlans:
+  management:
+    id: 1
+    name: "MGMT_VLAN"
+    description: "Management VLAN"
+  user_vlans:
+  - id: 10
+    name: "USER_VLAN"
+    description: "User Access VLAN"
+  - id: 20
+    name: "VOICE_VLAN"
+    description: "Voice VLAN"
+  - id: 30
+    name: "GUEST_VLAN"
+    description: "Guest Access VLAN"
+  - id: 40
+    name: "DMZ_VLAN"
+    description: "DMZ VLAN"
+  - id: 100
+    name: "SERVER_VLAN"
+    description: "Server VLAN"
+  - id: 200
+    name: "STORAGE_VLAN"
+    description: "Storage VLAN"
+
+# QoS configuration for enterprise traffic
+cisco_qos_config:
+  voice_dscp: 46
+  video_dscp: 34
+  data_dscp: 0
+  trust_boundary: extend
+
+# Spanning Tree Protocol configuration
+cisco_stp_config:
+  mode: rapid-pvst
+  priority: "{{ stp_priority | default('32768') }}"
+  portfast_default: true
+  bpduguard_default: true
+
+# OSPF configuration for internal routing
+cisco_ospf_config:
+  process_id: 1
+  router_id: "{{ ansible_host }}"
+  area: "{{ ospf_area | default('0.0.0.0') }}"
+  network_type: broadcast
+
+# High availability configuration
+cisco_ha_config:
+  hsrp:
+    group: 1
+    priority: "{{ hsrp_priority | default('100') }}"
+    preempt: true
+  vrrp:
+    group: 1
+    priority: "{{ vrrp_priority | default('100') }}"
+    preempt: true
+
+# Enterprise security hardening
+cisco_security_hardening:
+  password_policy:
+    min_length: 8
+    complexity: true
+    history: 5
+  access_control:
+    privilege_levels: true
+    role_based_cli: true
+  threat_mitigation:
+    ip_source_guard: true
+    dhcp_snooping: true
+    arp_inspection: true

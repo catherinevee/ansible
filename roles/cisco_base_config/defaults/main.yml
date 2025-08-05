@@ -1,0 +1,31 @@
+---
+# Default variables for Cisco base configuration
+domain_name: "example.com"
+console_timeout: "5 0"
+motd_banner: |
+  ********************************
+  * AUTHORIZED ACCESS ONLY       *
+  * All activity is monitored    *
+  * and logged                   *
+  ********************************
+
+snmp_contact: "Network Operations Center"
+enable_aaa: true
+admin_username: "admin"
+
+# NTP configuration
+ntp_servers:
+- 192.168.1.254
+- 192.168.1.253
+
+# Security settings
+security_config:
+  password_min_length: 8
+  login_block_for: 300
+  login_quiet_time: 600
+  login_delay: 3
+
+# Interface defaults
+default_interface_config:
+  description_prefix: "Managed by Ansible"
+  shutdown_unused: true

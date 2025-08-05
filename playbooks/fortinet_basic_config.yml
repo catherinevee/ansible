@@ -1,0 +1,407 @@
+---
+# ====================================================================
+# FORTINET FORTIGATE BASIC CONFIGURATION EXAMPLES
+# ====================================================================
+# Comprehensive basic configuration examples for FortiGate firewalls
+# including FortiGate VM, 60F, 100F, 200F, 400F, 600F, and higher series
+# ====================================================================
+
+- name: Deploy FortiGate Basic Configuration Examples
+  hosts: fortinet_devices
+  gather_facts: false
+  connection: httpapi
+  vars:
+    ansible_command_timeout: 60
+    ansible_connect_timeout: 30
+
+  tasks:
+  # ===========================================
+  # FORTINET FORTIGATE SYSTEM CONFIGURATION
+  # ===========================================
+  - name: Configure FortiGate System Basics
+    fortinet.fortios.fortios_system_global:
+      vdom: "{{ fortios_vdom | default('root') }}"
+      system_global:
+        hostname: "{{ inventory_hostname }}"
+        admintimeout: "{{ admin_timeout | default('5') }}"
+        admin_console_timeout: "{{ console_timeout | default('0') }}"
+        admin_https_pki_required: "{{ https_pki_required | default('disable') }}"
+        admin_hsts_max_age: "{{ hsts_max_age | default('15552000') }}"
+        admin_https_redirect: "{{ https_redirect | default('enable') }}"
+        admin_lockout_threshold: "{{ lockout_threshold | default('3') }}"
+        admin_lockout_duration: "{{ lockout_duration | default('60') }}"
+        admin_login_max: "{{ max_admin_login | default('100') }}"
+        admin_server_cert: "{{ admin_cert | default('Fortinet_Factory') }}"
+        admin_sport: "{{ admin_https_port | default('443') }}"
+        admin_ssh_password: "{{ ssh_password_auth | default('enable') }}"
+        admin_ssh_port: "{{ ssh_port | default('22') }}"
+        admin_ssh_v1: "{{ ssh_v1 | default('disable') }}"
+        admin_telnet: "{{ telnet_enable | default('disable') }}"
+        admin_telnet_port: "{{ telnet_port | default('23') }}"
+        timezone: "{{ timezone | default('04') }}"
+        gui_theme: "{{ gui_theme | default('blue') }}"
+        language: "{{ gui_language | default('english') }}"
+        dst: "{{ dst_enable | default('enable') }}"
+    tags: [ 'fortinet', 'system', 'basic' ]
+
+  - name: Configure FortiGate DNS Settings
+    fortinet.fortios.fortios_system_dns:
+      vdom: "{{ fortios_vdom | default('root') }}"
+      system_dns:
+        primary: "{{ primary_dns }}"
+        secondary: "{{ secondary_dns }}"
+        domain: "{{ domain_name }}"
+        dns_over_tls: "{{ dns_over_tls | default('disable') }}"
+        ssl_certificate: "{{ dns_ssl_cert | default('Fortinet_Factory') }}"
+        server_hostname: "{{ dns_hostname | default([]) }}"
+        ip6_primary: "{{ ipv6_primary_dns | default('') }}"
+        ip6_secondary: "{{ ipv6_secondary_dns | default('') }}"
+    when: primary_dns is defined
+    tags: [ 'fortinet', 'dns', 'basic' ]
+
+  - name: Configure FortiGate Admin Users
+    fortinet.fortios.fortios_system_admin:
+      vdom: "{{ fortios_vdom | default('root') }}"
+      state: present
+      system_admin:
+        name: "{{ item.username }}"
+        password: "{{ item.password }}"
+        trusthost1: "{{ item.trusted_host1 | default('0.0.0.0 0.0.0.0') }}"
+        trusthost2: "{{ item.trusted_host2 | default('') }}"
+        trusthost3: "{{ item.trusted_host3 | default('') }}"
+        accprofile: "{{ item.profile | default('super_admin') }}"
+        vdom: "{{ item.vdom | default(['root']) }}"
+        comments: "{{ item.description | default('Created by Ansible') }}"
+        two_factor: "{{ item.two_factor | default('disable') }}"
+        fortitoken: "{{ item.fortitoken | default('') }}"
+        email_to: "{{ item.email | default('') }}"
+        sms_phone: "{{ item.sms_phone | default('') }}"
+        peer_auth: "{{ item.peer_auth | default('disable') }}"
+        peer_group: "{{ item.peer_group | default('') }}"
+        radius_vdom_override: "{{ item.radius_vdom_override | default('disable') }}"
+        remote_auth: "{{ item.remote_auth | default('disable') }}"
+        remote_group: "{{ item.remote_group | default('') }}"
+    loop: "{{ admin_users | default([]) }}"
+    tags: [ 'fortinet', 'users', 'admin' ]
+
+  - name: Configure FortiGate SSH Public Keys
+    fortinet.fortios.fortios_system_admin:
+      vdom: "{{ fortios_vdom | default('root') }}"
+      state: present
+      system_admin:
+        name: "{{ item.username }}"
+        ssh_public_key1: "{{ item.ssh_key1 | default('') }}"
+        ssh_public_key2: "{{ item.ssh_key2 | default('') }}"
+        ssh_public_key3: "{{ item.ssh_key3 | default('') }}"
+    loop: "{{ admin_users | default([]) }}"
+    when: item.ssh_key1 is defined or item.ssh_key2 is defined or item.ssh_key3 is defined
+    tags: [ 'fortinet', 'ssh', 'keys' ]
+
+  - name: Configure FortiGate Interfaces
+    fortinet.fortios.fortios_system_interface:
+      vdom: "{{ fortios_vdom | default('root') }}"
+      state: present
+      system_interface:
+        name: "{{ item.name }}"
+        alias: "{{ item.alias | default(item.description | default('')) }}"
+        allowaccess: "{{ item.access | default(['ping', 'https', 'ssh', 'snmp', 'http', 'telnet', 'fgfm', 'radius-acct', 'probe-response', 'fabric', 'ftm']) }}"
+        description: "{{ item.description | default('Interface ' + item.name) }}"
+        ip: "{{ item.ip | default('0.0.0.0 0.0.0.0') }}"
+        mode: "{{ item.mode | default('static') }}"
+        mtu: "{{ item.mtu | default('1500') }}"
+        mtu_override: "{{ item.mtu_override | default('disable') }}"
+        status: "{{ item.status | default('up') }}"
+        type: "{{ item.type | default('physical') }}"
+        vdom: "{{ item.vdom | default('root') }}"
+        vrf: "{{ item.vrf | default('0') }}"
+        distance: "{{ item.distance | default('5') }}"
+        priority: "{{ item.priority | default('0') }}"
+        dhcp_relay_service: "{{ item.dhcp_relay | default('disable') }}"
+        dhcp_relay_ip: "{{ item.dhcp_relay_servers | default([]) }}"
+    loop: "{{ interfaces | default([]) }}"
+    tags: [ 'fortinet', 'interface', 'basic' ]
+
+  - name: Configure FortiGate Static Routes
+    fortinet.fortios.fortios_router_static:
+      vdom: "{{ fortios_vdom | default('root') }}"
+      state: present
+      router_static:
+        seq_num: "{{ item.seq | default('1') }}"
+        dst: "{{ item.destination | default('0.0.0.0/0') }}"
+        gateway: "{{ item.gateway }}"
+        device: "{{ item.interface | default('') }}"
+        distance: "{{ item.distance | default('10') }}"
+        weight: "{{ item.weight | default('0') }}"
+        priority: "{{ item.priority | default('0') }}"
+        comment: "{{ item.description | default('Static route via ' + item.gateway) }}"
+        status: "{{ item.status | default('enable') }}"
+    loop: "{{ static_routes | default([]) }}"
+    when: item.gateway is defined
+    tags: [ 'fortinet', 'routing', 'static' ]
+
+  - name: Configure FortiGate NTP
+    fortinet.fortios.fortios_system_ntp:
+      vdom: "{{ fortios_vdom | default('root') }}"
+      system_ntp:
+        ntpsync: "{{ ntp_sync | default('enable') }}"
+        type: "{{ ntp_type | default('fortiguard') }}"
+        syncinterval: "{{ ntp_sync_interval | default('1') }}"
+        source_ip: "{{ ntp_source_ip | default('0.0.0.0') }}"
+        source_ip6: "{{ ntp_source_ip6 | default('::') }}"
+        server_mode: "{{ ntp_server_mode | default('disable') }}"
+        authentication: "{{ ntp_auth | default('disable') }}"
+        ntpserver:
+        - id: 1
+          server: "{{ ntp_servers[0].server | default('pool.ntp.org') }}"
+          ntpv3: "{{ ntp_servers[0].ntpv3 | default('disable') }}"
+          authentication: "{{ ntp_servers[0].auth | default('disable') }}"
+          key: "{{ ntp_servers[0].key | default('') }}"
+          key_id: "{{ ntp_servers[0].key_id | default('0') }}"
+        - id: 2
+          server: "{{ ntp_servers[1].server | default('time.nist.gov') }}"
+          ntpv3: "{{ ntp_servers[1].ntpv3 | default('disable') }}"
+          authentication: "{{ ntp_servers[1].auth | default('disable') }}"
+          key: "{{ ntp_servers[1].key | default('') }}"
+          key_id: "{{ ntp_servers[1].key_id | default('0') }}"
+    when: ntp_servers is defined and ntp_servers | length > 0
+    tags: [ 'fortinet', 'ntp', 'time' ]
+
+  - name: Configure FortiGate SNMP Community
+    fortinet.fortios.fortios_system_snmp_community:
+      vdom: "{{ fortios_vdom | default('root') }}"
+      state: present
+      system_snmp_community:
+        id: "{{ item.id | default('1') }}"
+        name: "{{ item.community }}"
+        status: "{{ item.status | default('enable') }}"
+        hosts:
+        - id: 1
+          source_ip: "{{ item.source_ip | default('0.0.0.0') }}"
+          ip: "{{ item.host }}"
+          ha_direct: "{{ item.ha_direct | default('disable') }}"
+          host_type: "{{ item.host_type | default('any') }}"
+        events: "{{ item.events | default(['cpu-high', 'mem-low', 'log-full', 'intf-ip', 'vpn-tun-up', 'vpn-tun-down', 'ha-switch', 'fm-if-change']) }}"
+        query_v1_status: "{{ item.v1_status | default('enable') }}"
+        query_v1_port: "{{ item.v1_port | default('161') }}"
+        query_v2c_status: "{{ item.v2c_status | default('enable') }}"
+        query_v2c_port: "{{ item.v2c_port | default('161') }}"
+        trap_v1_status: "{{ item.trap_v1_status | default('disable') }}"
+        trap_v1_lport: "{{ item.trap_v1_lport | default('162') }}"
+        trap_v1_rport: "{{ item.trap_v1_rport | default('162') }}"
+        trap_v2c_status: "{{ item.trap_v2c_status | default('disable') }}"
+        trap_v2c_lport: "{{ item.trap_v2c_lport | default('162') }}"
+        trap_v2c_rport: "{{ item.trap_v2c_rport | default('162') }}"
+    loop: "{{ snmp_communities | default([]) }}"
+    tags: [ 'fortinet', 'snmp', 'community' ]
+
+  - name: Configure FortiGate SNMP System Info
+    fortinet.fortios.fortios_system_snmp_sysinfo:
+      vdom: "{{ fortios_vdom | default('root') }}"
+      system_snmp_sysinfo:
+        status: "{{ snmp_status | default('enable') }}"
+        engine_id: "{{ snmp_engine_id | default('') }}"
+        description: "{{ snmp_description | default(inventory_hostname + ' - FortiGate Firewall') }}"
+        contact_info: "{{ snmp_contact }}"
+        location: "{{ snmp_location }}"
+        trap_high_cpu_threshold: "{{ snmp_cpu_threshold | default('80') }}"
+        trap_low_memory_threshold: "{{ snmp_memory_threshold | default('80') }}"
+        trap_log_full_threshold: "{{ snmp_log_threshold | default('90') }}"
+    when: snmp_contact is defined
+    tags: [ 'fortinet', 'snmp', 'sysinfo' ]
+
+  - name: Configure FortiGate Logging Settings
+    fortinet.fortios.fortios_log_setting:
+      vdom: "{{ fortios_vdom | default('root') }}"
+      log_setting:
+        resolve_ip: "{{ log_resolve_ip | default('enable') }}"
+        resolve_port: "{{ log_resolve_port | default('enable') }}"
+        log_user_in_upper: "{{ log_user_upper | default('disable') }}"
+        fwpolicy_implicit_log: "{{ implicit_log | default('disable') }}"
+        fwpolicy6_implicit_log: "{{ implicit_log_v6 | default('disable') }}"
+        log_invalid_packet: "{{ log_invalid_packet | default('disable') }}"
+        local_in_allow: "{{ local_in_allow | default('disable') }}"
+        local_in_deny_unicast: "{{ local_in_deny_unicast | default('disable') }}"
+        local_in_deny_broadcast: "{{ local_in_deny_broadcast | default('disable') }}"
+        local_out: "{{ local_out | default('disable') }}"
+        daemon_log: "{{ daemon_log | default('disable') }}"
+    tags: [ 'fortinet', 'logging', 'settings' ]
+
+  - name: Configure FortiGate Syslog Servers
+    fortinet.fortios.fortios_log_syslogd_setting:
+      vdom: "{{ fortios_vdom | default('root') }}"
+      log_syslogd_setting:
+        status: "{{ syslog_status | default('enable') }}"
+        server: "{{ syslog_servers[0].server | default('') }}"
+        mode: "{{ syslog_mode | default('udp') }}"
+        port: "{{ syslog_servers[0].port | default('514') }}"
+        facility: "{{ syslog_facility | default('local7') }}"
+        source_ip: "{{ syslog_source_ip | default('') }}"
+        format: "{{ syslog_format | default('default') }}"
+        priority: "{{ syslog_priority | default('default') }}"
+        max_log_rate: "{{ syslog_max_rate | default('0') }}"
+        enc_algorithm: "{{ syslog_encryption | default('disable') }}"
+        ssl_min_proto_version: "{{ syslog_ssl_min | default('default') }}"
+        certificate: "{{ syslog_certificate | default('') }}"
+        custom_field_name: "{{ syslog_custom_fields | default([]) }}"
+    when: syslog_servers is defined and syslog_servers | length > 0
+    tags: [ 'fortinet', 'logging', 'syslog' ]
+
+  - name: Configure FortiGate Security Policies
+    fortinet.fortios.fortios_firewall_policy:
+      vdom: "{{ fortios_vdom | default('root') }}"
+      state: present
+      firewall_policy:
+        policyid: "{{ item.id }}"
+        name: "{{ item.name | default('Policy_' + item.id|string) }}"
+        uuid: "{{ item.uuid | default('') }}"
+        srcintf: "{{ item.source_interfaces }}"
+        dstintf: "{{ item.destination_interfaces }}"
+        srcaddr: "{{ item.source_addresses }}"
+        dstaddr: "{{ item.destination_addresses }}"
+        internet_service: "{{ item.internet_service | default('disable') }}"
+        internet_service_name: "{{ item.internet_service_name | default([]) }}"
+        internet_service_custom: "{{ item.internet_service_custom | default([]) }}"
+        service: "{{ item.services | default(['ALL']) }}"
+        schedule: "{{ item.schedule | default('always') }}"
+        action: "{{ item.action | default('accept') }}"
+        logtraffic: "{{ item.log_traffic | default('utm') }}"
+        logtraffic_start: "{{ item.log_traffic_start | default('disable') }}"
+        capture_packet: "{{ item.capture_packet | default('disable') }}"
+        nat: "{{ item.nat | default('disable') }}"
+        ippool: "{{ item.ippool | default('disable') }}"
+        poolname: "{{ item.poolname | default([]) }}"
+        status: "{{ item.status | default('enable') }}"
+        comments: "{{ item.description | default('Policy created by Ansible') }}"
+        av_profile: "{{ item.av_profile | default('') }}"
+        webfilter_profile: "{{ item.webfilter_profile | default('') }}"
+        dnsfilter_profile: "{{ item.dnsfilter_profile | default('') }}"
+        emailfilter_profile: "{{ item.emailfilter_profile | default('') }}"
+        ips_sensor: "{{ item.ips_sensor | default('') }}"
+        application_list: "{{ item.application_list | default('') }}"
+        ssl_ssh_profile: "{{ item.ssl_ssh_profile | default('') }}"
+    loop: "{{ security_policies | default([]) }}"
+    tags: [ 'fortinet', 'policy', 'security' ]
+
+  - name: Configure FortiGate Address Objects
+    fortinet.fortios.fortios_firewall_address:
+      vdom: "{{ fortios_vdom | default('root') }}"
+      state: present
+      firewall_address:
+        name: "{{ item.name }}"
+        uuid: "{{ item.uuid | default('') }}"
+        subnet: "{{ item.subnet | default('') }}"
+        type: "{{ item.type | default('ipmask') }}"
+        start_ip: "{{ item.start_ip | default('') }}"
+        end_ip: "{{ item.end_ip | default('') }}"
+        fqdn: "{{ item.fqdn | default('') }}"
+        country: "{{ item.country | default('') }}"
+        wildcard_fqdn: "{{ item.wildcard_fqdn | default('') }}"
+        cache_ttl: "{{ item.cache_ttl | default('0') }}"
+        wildcard: "{{ item.wildcard | default('') }}"
+        comment: "{{ item.description | default('Address object created by Ansible') }}"
+        visibility: "{{ item.visibility | default('enable') }}"
+        associated_interface: "{{ item.interface | default('') }}"
+        color: "{{ item.color | default('0') }}"
+        tagging: "{{ item.tags | default([]) }}"
+        allow_routing: "{{ item.allow_routing | default('disable') }}"
+    loop: "{{ address_objects | default([]) }}"
+    tags: [ 'fortinet', 'address', 'objects' ]
+
+  - name: Configure FortiGate Service Objects
+    fortinet.fortios.fortios_firewall_service_custom:
+      vdom: "{{ fortios_vdom | default('root') }}"
+      state: present
+      firewall_service_custom:
+        name: "{{ item.name }}"
+        uuid: "{{ item.uuid | default('') }}"
+        protocol: "{{ item.protocol | default('TCP/UDP/SCTP') }}"
+        helper: "{{ item.helper | default('auto') }}"
+        iprange: "{{ item.iprange | default('0.0.0.0') }}"
+        fqdn: "{{ item.fqdn | default('') }}"
+        category: "{{ item.category | default('') }}"
+        comment: "{{ item.description | default('Service object created by Ansible') }}"
+        color: "{{ item.color | default('0') }}"
+        visibility: "{{ item.visibility | default('enable') }}"
+        tcp_portrange: "{{ item.tcp_ports | default('') }}"
+        udp_portrange: "{{ item.udp_ports | default('') }}"
+        sctp_portrange: "{{ item.sctp_ports | default('') }}"
+        tcp_halfclose_timer: "{{ item.tcp_halfclose_timer | default('0') }}"
+        tcp_halfopen_timer: "{{ item.tcp_halfopen_timer | default('0') }}"
+        tcp_timewait_timer: "{{ item.tcp_timewait_timer | default('0') }}"
+        udp_idle_timer: "{{ item.udp_idle_timer | default('0') }}"
+        session_ttl: "{{ item.session_ttl | default('0') }}"
+        check_reset_range: "{{ item.check_reset_range | default('default') }}"
+    loop: "{{ service_objects | default([]) }}"
+    tags: [ 'fortinet', 'service', 'objects' ]
+
+  - name: Configure FortiGate Banner
+    fortinet.fortios.fortios_system_replacemsg_admin:
+      vdom: "{{ fortios_vdom | default('root') }}"
+      state: present
+      system_replacemsg_admin:
+        msg_type: "{{ item.type | default('pre-admin') }}"
+        buffer: "{{ item.message | default(banner_motd | default('Authorized Access Only - Enterprise Network')) }}"
+        header: "{{ item.header | default('none') }}"
+        format: "{{ item.format | default('text') }}"
+    loop:
+    - type: "pre-admin"
+      message: "{{ banner_motd | default('Authorized Access Only - Enterprise Network') }}"
+    tags: [ 'fortinet', 'banner', 'security' ]
+
+  # ===========================================
+  # VERIFICATION
+  # ===========================================
+  - name: Verify FortiGate Configuration
+    block:
+    - name: Get FortiGate System Status
+      fortinet.fortios.fortios_monitor:
+        vdom: "{{ fortios_vdom | default('root') }}"
+        selector: "system_status"
+      register: fortinet_status
+
+    - name: Get FortiGate Interface Status
+      fortinet.fortios.fortios_monitor:
+        vdom: "{{ fortios_vdom | default('root') }}"
+        selector: "system_interface"
+      register: fortinet_interfaces
+
+    - name: Display FortiGate Configuration Status
+      ansible.builtin.debug:
+        msg: |
+          ====================================
+          FORTINET BASIC CONFIGURATION REPORT
+          ====================================
+          Device: {{ inventory_hostname }}
+          Platform: FORTINET FORTIGATE
+
+          {% if fortinet_status.meta is defined %}
+          Model: {{ fortinet_status.meta.results.model | default('Unknown') }}
+          Version: {{ fortinet_status.meta.results.version | default('Unknown') }}
+          Serial: {{ fortinet_status.meta.results.serial | default('Unknown') }}
+          Hostname: {{ fortinet_status.meta.results.hostname | default('Unknown') }}
+          {% endif %}
+
+          === CONFIGURATION STATUS ===
+          Hostname: {{ inventory_hostname }}
+          Domain: {{ domain_name | default('Not Set') }}
+          VDOM: {{ fortios_vdom | default('root') }}
+          Admin Users: {{ admin_users | default([]) | length }}
+          Interfaces: {{ interfaces | default([]) | length }}
+          Static Routes: {{ static_routes | default([]) | length }}
+          NTP Servers: {{ ntp_servers | default([]) | length }}
+          SNMP Communities: {{ snmp_communities | default([]) | length }}
+          Syslog Servers: {{ syslog_servers | default([]) | length }}
+          Security Policies: {{ security_policies | default([]) | length }}
+          Address Objects: {{ address_objects | default([]) | length }}
+          Service Objects: {{ service_objects | default([]) | length }}
+
+          {% if fortinet_interfaces.meta is defined %}
+          === INTERFACE STATUS ===
+          {% for interface in fortinet_interfaces.meta.results %}
+          {{ interface.name }}: {{ interface.status | default('Unknown') }} - {{ interface.ip | default('No IP') }}
+          {% endfor %}
+          {% endif %}
+
+          Deployment Status: {{ 'SUCCESS' if ansible_failed_result is not defined else 'FAILED' }}
+          ====================================
+    tags: [ 'fortinet', 'verify' ]

@@ -1,0 +1,50 @@
+---
+# Global variables for all network devices
+ansible_python_interpreter: "{{ ansible_playbook_python }}"
+
+# Common network settings
+ntp_servers:
+- 192.168.1.254
+- 192.168.1.253
+
+dns_servers:
+- 8.8.8.8
+- 8.8.4.4
+
+# Logging settings
+syslog_servers:
+- 192.168.1.100
+
+# SNMP community (will be encrypted in vault)
+snmp_community: "{{ vault_snmp_community }}"
+
+# Network zones and subnets
+network_zones:
+  management:
+    subnet: 192.168.1.0/24
+    vlan: 1
+  users:
+    subnet: 10.1.0.0/16
+    vlan: 10
+  voice:
+    subnet: 10.2.0.0/16
+    vlan: 20
+  servers:
+    subnet: 10.3.0.0/16
+    vlan: 30
+  dmz:
+    subnet: 10.4.0.0/24
+    vlan: 40
+
+# Common VLANs
+common_vlans:
+- id: 1
+  name: "Management"
+- id: 10
+  name: "Users"
+- id: 20
+  name: "Voice"
+- id: 30
+  name: "Servers"
+- id: 40
+  name: "DMZ"

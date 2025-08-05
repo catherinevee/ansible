@@ -1,0 +1,587 @@
+---
+# Arista Networks Specific Configuration Playbook
+# Comprehensive Arista EOS deployment using enterprise group_vars configuration
+# Supports: All Arista switches with advanced data center and campus features
+
+- name: Deploy Arista EOS Enterprise Network Configuration
+  hosts: arista_devices
+  gather_facts: false
+  connection: network_cli
+  vars:
+    ansible_network_os: eos
+    ansible_user: "{{ vault_arista_username }}"
+    ansible_password: "{{ vault_arista_password }}"
+    ansible_become: true
+    ansible_become_method: enable
+
+  tasks:
+  # Phase 1: Basic System Configuration
+  - name: "Phase 1: Configure Basic System Settings"
+    block:
+    - name: Set hostname and domain configuration
+      arista.eos.eos_system:
+        hostname: "{{ arista_system_config.hostname }}"
+        domain_name: "{{ arista_system_config.domain_name }}"
+        domain_search: "{{ arista_system_config.domain_search }}"
+        name_servers: "{{ arista_system_config.name_servers }}"
+      tags: [ system, basic ]
+
+    - name: Configure management interface
+      arista.eos.eos_l3_interfaces:
+        config:
+        - name: "{{ arista_mgmt_config.interface }}"
+          ipv4:
+          - address: "{{ arista_mgmt_config.ip_address }}/{{ arista_mgmt_config.netmask }}"
+      tags: [ management, interfaces ]
+
+    - name: Configure default route for management
+      arista.eos.eos_static_routes:
+        config:
+        - vrf: "{{ arista_mgmt_config.vrf | default('MGMT') }}"
+          address_families:
+          - afi: ipv4
+            routes:
+            - dest: "0.0.0.0/0"
+              next_hops:
+              - forward_router_address: "{{ arista_mgmt_config.gateway }}"
+      when: arista_mgmt_config.gateway is defined
+      tags: [ management, routing ]
+
+    - name: Configure NTP servers
+      arista.eos.eos_ntp:
+        server: "{{ item.server }}"
+        key: "{{ item.key | default(omit) }}"
+        prefer: "{{ item.prefer | default(false) }}"
+        state: present
+      loop: "{{ arista_ntp_config.ntp_servers }}"
+      tags: [ ntp, time ]
+
+    - name: Configure timezone and clock settings
+      arista.eos.eos_config:
+        lines:
+        - "clock timezone {{ arista_system_config.timezone.name }} {{ arista_system_config.timezone.offset }}"
+        - "service timestamps debug datetime msec localtime show-timezone"
+        - "service timestamps log datetime msec localtime show-timezone"
+      tags: [ time, logging ]
+
+  # Phase 2: VLAN Configuration
+  - name: "Phase 2: Configure VLANs and Spanning Tree"
+    block:
+    - name: Create VLANs
+      arista.eos.eos_vlans:
+        config:
+        - vlan_id: "{{ item.vlan_id }}"
+          name: "{{ item.name }}"
+          state: "{{ item.state | default('active') }}"
+      loop: "{{ arista_vlan_config.vlans }}"
+      tags: [ vlans ]
+
+    - name: Configure SVI interfaces
+      arista.eos.eos_l3_interfaces:
+        config:
+        - name: "Vlan{{ item.vlan_id }}"
+          ipv4:
+          - address: "{{ item.svi_ip }}/{{ item.svi_mask }}"
+          ipv6: "{{ item.ipv6_config | default(omit) }}"
+      loop: "{{ arista_vlan_config.vlans }}"
+      when: item.svi_ip is defined
+      tags: [ vlans, svi ]
+
+    - name: Configure Spanning Tree Protocol
+      arista.eos.eos_config:
+        lines:
+        - "spanning-tree mode {{ arista_stp_config.mode }}"
+        - "spanning-tree priority {{ arista_stp_config.priority }}"
+        - "spanning-tree edge-port bpduguard default"
+        - "spanning-tree edge-port bpdufilter default"
+      when: arista_stp_config is defined
+      tags: [ stp ]
+
+  # Phase 3: Interface Configuration
+  - name: "Phase 3: Configure Physical and Logical Interfaces"
+    block:
+    - name: Configure Layer 2 interfaces
+      arista.eos.eos_l2_interfaces:
+        config:
+        - name: "{{ item.name }}"
+          access:
+            vlan: "{{ item.access_vlan | default(omit) }}"
+          trunk:
+            allowed_vlans: "{{ item.trunk_vlans | default(omit) }}"
+            native_vlan: "{{ item.native_vlan | default(omit) }}"
+          mode: "{{ item.mode }}"
+      loop: "{{ arista_interface_config.l2_interfaces }}"
+      tags: [ interfaces, l2 ]
+
+    - name: Configure Layer 3 interfaces
+      arista.eos.eos_l3_interfaces:
+        config:
+        - name: "{{ item.name }}"
+          ipv4:
+          - address: "{{ item.ipv4_address }}/{{ item.ipv4_mask }}"
+          ipv6: "{{ item.ipv6_config | default(omit) }}"
+      loop: "{{ arista_interface_config.l3_interfaces }}"
+      tags: [ interfaces, l3 ]
+
+    - name: Configure interface descriptions and settings
+      arista.eos.eos_interfaces:
+        config:
+        - name: "{{ item.name }}"
+          description: "{{ item.description }}"
+          enabled: "{{ item.enabled | default(true) }}"
+          speed: "{{ item.speed | default(omit) }}"
+          duplex: "{{ item.duplex | default(omit) }}"
+          mtu: "{{ item.mtu | default(omit) }}"
+      loop: "{{ arista_interface_config.l2_interfaces + arista_interface_config.l3_interfaces }}"
+      tags: [ interfaces ]
+
+  # Phase 4: Port-Channel and MLAG Configuration
+  - name: "Phase 4: Configure Port-Channels and MLAG"
+    block:
+    - name: Configure MLAG domain
+      arista.eos.eos_config:
+        lines:
+        - "mlag configuration"
+        - "domain-id {{ arista_mlag_config.domain_id }}"
+        - "local-interface {{ arista_mlag_config.local_interface }}"
+        - "peer-address {{ arista_mlag_config.peer_ip }}"
+        - "peer-link {{ arista_mlag_config.peer_link }}"
+        - "reload-delay mlag {{ arista_mlag_config.reload_delay | default(300) }}"
+        - "reload-delay non-mlag {{ arista_mlag_config.non_mlag_reload_delay | default(330) }}"
+        parents: []
+      when: arista_mlag_config is defined
+      tags: [ mlag ]
+
+    - name: Configure port-channels
+      arista.eos.eos_lag_interfaces:
+        config:
+        - name: "Port-Channel{{ item.po_id }}"
+          members:
+          - member: "{{ member.interface }}"
+            mode: "{{ member.mode | default('active') }}"
+          mode: "{{ item.lacp_mode | default('active') }}"
+      loop: "{{ arista_portchannel_config.port_channels }}"
+      tags: [ portchannel, lacp ]
+
+    - name: Configure MLAG port-channels
+      arista.eos.eos_config:
+        lines:
+        - "mlag {{ item.mlag_id }}"
+        parents:
+        - "interface Port-Channel{{ item.po_id }}"
+      loop: "{{ arista_mlag_config.mlag_portchannels }}"
+      when: arista_mlag_config.mlag_portchannels is defined
+      tags: [ mlag, portchannel ]
+
+  # Phase 5: VXLAN Configuration
+  - name: "Phase 5: Configure VXLAN Overlay"
+    block:
+    - name: Configure VXLAN interface
+      arista.eos.eos_config:
+        lines:
+        - "interface Vxlan1"
+        - "vxlan source-interface {{ arista_vxlan_config.source_interface }}"
+        - "vxlan udp-port {{ arista_vxlan_config.udp_port | default(4789) }}"
+        - "vxlan vlan {{ item.vlan_id }} vni {{ item.vni }}"
+        parents: []
+      loop: "{{ arista_vxlan_config.vlan_vni_mapping }}"
+      when: arista_vxlan_config is defined
+      tags: [ vxlan ]
+
+    - name: Configure VXLAN VRF instances
+      arista.eos.eos_config:
+        lines:
+        - "vxlan vrf {{ item.vrf_name }} vni {{ item.vni }}"
+        parents:
+        - "interface Vxlan1"
+      loop: "{{ arista_vxlan_config.vrf_vni_mapping }}"
+      when: arista_vxlan_config.vrf_vni_mapping is defined
+      tags: [ vxlan, vrf ]
+
+  # Phase 6: BGP Configuration for EVPN
+  - name: "Phase 6: Configure BGP for EVPN"
+    block:
+    - name: Configure BGP global settings
+      arista.eos.eos_bgp_global:
+        config:
+          as_number: "{{ arista_bgp_config.as_number }}"
+          router_id: "{{ arista_bgp_config.router_id }}"
+          log_neighbor_changes: true
+          maximum_paths:
+            paths: "{{ arista_bgp_config.maximum_paths | default(8) }}"
+            ecmp: "{{ arista_bgp_config.ecmp_paths | default(8) }}"
+      tags: [ bgp ]
+
+    - name: Configure BGP EVPN address family
+      arista.eos.eos_config:
+        lines:
+        - "router bgp {{ arista_bgp_config.as_number }}"
+        - "address-family evpn"
+        - "neighbor EVPN-OVERLAY-PEERS activate"
+        - "neighbor EVPN-OVERLAY-PEERS send-community"
+        - "neighbor EVPN-OVERLAY-PEERS send-community extended"
+        - "neighbor EVPN-OVERLAY-PEERS maximum-routes {{ arista_bgp_config.evpn_max_routes | default(0) }}"
+        parents: []
+      tags: [ bgp, evpn ]
+
+    - name: Configure BGP peer groups
+      arista.eos.eos_config:
+        lines:
+        - "neighbor {{ item.name }} peer group"
+        - "neighbor {{ item.name }} remote-as {{ item.remote_as }}"
+        - "neighbor {{ item.name }} update-source {{ item.update_source }}"
+        - "neighbor {{ item.name }} bfd"
+        - "neighbor {{ item.name }} send-community"
+        - "neighbor {{ item.name }} maximum-routes {{ item.max_routes | default(12000) }}"
+        parents:
+        - "router bgp {{ arista_bgp_config.as_number }}"
+      loop: "{{ arista_bgp_config.peer_groups }}"
+      tags: [ bgp, peer_groups ]
+
+    - name: Configure BGP neighbors
+      arista.eos.eos_config:
+        lines:
+        - "neighbor {{ item.neighbor_ip }} peer group {{ item.peer_group }}"
+        - "neighbor {{ item.neighbor_ip }} description {{ item.description }}"
+        parents:
+        - "router bgp {{ arista_bgp_config.as_number }}"
+      loop: "{{ arista_bgp_config.neighbors }}"
+      tags: [ bgp, neighbors ]
+
+  # Phase 7: VRF Configuration for Multi-Tenancy
+  - name: "Phase 7: Configure VRFs for Multi-Tenancy"
+    block:
+    - name: Create VRFs
+      arista.eos.eos_vrfs:
+        config:
+        - name: "{{ item.name }}"
+          rd: "{{ item.rd }}"
+          route_targets:
+            import: "{{ item.rt_import }}"
+            export: "{{ item.rt_export }}"
+      loop: "{{ arista_vrf_config.vrfs }}"
+      tags: [ vrf ]
+
+    - name: Configure VRF interfaces
+      arista.eos.eos_config:
+        lines:
+        - "vrf {{ item.vrf }}"
+        parents:
+        - "interface {{ item.interface }}"
+      loop: "{{ arista_vrf_config.vrf_interfaces }}"
+      tags: [ vrf, interfaces ]
+
+  # Phase 8: Routing Protocol Configuration
+  - name: "Phase 8: Configure Underlay Routing Protocols"
+    block:
+    - name: Configure OSPF for underlay
+      arista.eos.eos_ospfv2:
+        config:
+          processes:
+          - process_id: "{{ arista_underlay_config.ospf.process_id }}"
+            router_id: "{{ arista_underlay_config.ospf.router_id }}"
+            areas:
+            - area_id: "{{ item.area_id }}"
+              networks:
+              - address: "{{ item.network }}"
+                wildcard_bits: "{{ item.wildcard }}"
+      loop: "{{ arista_underlay_config.ospf.areas }}"
+      when: arista_underlay_config.routing_protocol == 'ospf'
+      tags: [ underlay, ospf ]
+
+    - name: Configure ISIS for underlay
+      arista.eos.eos_config:
+        lines:
+        - "router isis {{ arista_underlay_config.isis.process_name }}"
+        - "net {{ arista_underlay_config.isis.net_id }}"
+        - "is-type {{ arista_underlay_config.isis.is_type }}"
+        - "address-family ipv4 unicast"
+        parents: []
+      when: arista_underlay_config.routing_protocol == 'isis'
+      tags: [ underlay, isis ]
+
+    - name: Configure static routes
+      arista.eos.eos_static_routes:
+        config:
+        - address_families:
+          - afi: ipv4
+            routes:
+            - dest: "{{ item.destination }}/{{ item.mask }}"
+              next_hops:
+              - forward_router_address: "{{ item.next_hop }}"
+                admin_distance: "{{ item.admin_distance | default(1) }}"
+      loop: "{{ arista_routing_config.static_routes }}"
+      when: arista_routing_config.static_routes is defined
+      tags: [ routing, static ]
+
+  # Phase 9: QoS Configuration
+  - name: "Phase 9: Configure Quality of Service"
+    block:
+    - name: Configure QoS class maps
+      arista.eos.eos_config:
+        lines:
+        - "class-map {{ item.name }}"
+        - "match {{ item.match_criteria }}"
+        parents: []
+      loop: "{{ arista_qos_config.class_maps }}"
+      when: arista_qos_config.class_maps is defined
+      tags: [ qos, class_maps ]
+
+    - name: Configure QoS policy maps
+      arista.eos.eos_config:
+        lines:
+        - "policy-map {{ item.name }}"
+        - "class {{ class.class_name }}"
+        - "{{ class.action }}"
+        parents: []
+      loop: "{{ arista_qos_config.policy_maps }}"
+      when: arista_qos_config.policy_maps is defined
+      tags: [ qos, policy_maps ]
+
+    - name: Apply QoS service policies to interfaces
+      arista.eos.eos_config:
+        lines:
+        - "service-policy {{ item.direction }} {{ item.policy_name }}"
+        parents:
+        - "interface {{ item.interface }}"
+      loop: "{{ arista_qos_config.service_policies }}"
+      when: arista_qos_config.service_policies is defined
+      tags: [ qos, service_policy ]
+
+  # Phase 10: Security and Access Control
+  - name: "Phase 10: Configure Security Features"
+    block:
+    - name: Configure Access Control Lists
+      arista.eos.eos_acls:
+        config:
+        - afi: ipv4
+          acls:
+          - name: "{{ item.name }}"
+            aces:
+            - sequence: "{{ ace.sequence }}"
+              grant: "{{ ace.action }}"
+              protocol: "{{ ace.protocol }}"
+              source:
+                address: "{{ ace.source_ip | default('any') }}"
+                wildcard_bits: "{{ ace.source_wildcard | default(omit) }}"
+              destination:
+                address: "{{ ace.dest_ip | default('any') }}"
+                wildcard_bits: "{{ ace.dest_wildcard | default(omit) }}"
+              port_protocol:
+                eq: "{{ ace.dest_port | default(omit) }}"
+              log: "{{ ace.log | default(false) }}"
+            loop: "{{ item.aces }}"
+            loop_control:
+              loop_var: ace
+      loop: "{{ arista_security_config.access_lists }}"
+      when: arista_security_config.access_lists is defined
+      tags: [ security, acl ]
+
+    - name: Configure AAA settings
+      arista.eos.eos_config:
+        lines:
+        - "aaa authentication login default group {{ arista_aaa_config.login_group }} local"
+        - "aaa authorization exec default group {{ arista_aaa_config.exec_group }} local"
+        - "aaa accounting exec default start-stop group {{ arista_aaa_config.accounting_group }}"
+        parents: []
+      when: arista_aaa_config is defined
+      tags: [ aaa, authentication ]
+
+    - name: Configure RADIUS servers
+      arista.eos.eos_config:
+        lines:
+        - "radius-server host {{ item.host }} key {{ item.key }}"
+        - "radius-server host {{ item.host }} timeout {{ item.timeout | default(5) }}"
+        - "radius-server host {{ item.host }} retransmit {{ item.retransmit | default(3) }}"
+        parents: []
+      loop: "{{ arista_aaa_config.radius_servers }}"
+      when: arista_aaa_config.radius_servers is defined
+      no_log: true
+      tags: [ aaa, radius ]
+
+  # Phase 11: Monitoring and Logging
+  - name: "Phase 11: Configure Monitoring and Logging"
+    block:
+    - name: Configure SNMP settings
+      arista.eos.eos_config:
+        lines:
+        - "snmp-server community {{ vault_snmp_community_ro }} ro {{ arista_snmp_config.ro_acl | default('') }}"
+        - "snmp-server community {{ vault_snmp_community_rw }} rw {{ arista_snmp_config.rw_acl | default('') }}"
+        - "snmp-server location {{ arista_snmp_config.location }}"
+        - "snmp-server contact {{ arista_snmp_config.contact }}"
+        - "snmp-server enable traps"
+        parents: []
+      when: arista_snmp_config is defined
+      no_log: true
+      tags: [ snmp, monitoring ]
+
+    - name: Configure sFlow
+      arista.eos.eos_config:
+        lines:
+        - "sflow sample {{ arista_sflow_config.sample_rate | default(16384) }}"
+        - "sflow destination {{ item.collector_ip }}"
+        - "sflow source-interface {{ arista_sflow_config.source_interface }}"
+        - "sflow run"
+        parents: []
+      loop: "{{ arista_sflow_config.collectors }}"
+      when: arista_sflow_config.collectors is defined
+      tags: [ sflow, monitoring ]
+
+    - name: Configure syslog
+      arista.eos.eos_logging:
+        dest: host
+        name: "{{ item.server }}"
+        facility: "{{ item.facility }}"
+        level: "{{ item.level }}"
+        state: present
+      loop: "{{ arista_logging_config.syslog_servers }}"
+      when: arista_logging_config.syslog_servers is defined
+      tags: [ logging, syslog ]
+
+  # Phase 12: CloudVision Integration
+  - name: "Phase 12: Configure CloudVision Portal Integration"
+    block:
+    - name: Configure CloudVision Portal settings
+      arista.eos.eos_config:
+        lines:
+        - "daemon TerminAttr"
+        - "exec /usr/bin/TerminAttr -cvcompression={{ arista_cvp_config.compression | default('gzip') }} -cvaddr={{ arista_cvp_config.cvp_servers | join(',') }} -cvauth={{ arista_cvp_config.auth_method | default('key') }},{{ arista_cvp_config.auth_key }} -cvvrf={{ arista_cvp_config.vrf | default('MGMT') }} -smashexcludes={{ arista_cvp_config.smash_excludes | default('ale,flexCounter,hardware,kni,pulse,strata') }} -ingestexclude={{ arista_cvp_config.ingest_exclude | default('/Sysdb/cell/1/agent,/Sysdb/cell/2/agent') }} -taillogs"
+        - "no shutdown"
+        parents: []
+      when: arista_cvp_config is defined
+      tags: [ cvp, cloud_vision ]
+
+  post_tasks:
+  # Phase 13: Configuration Verification and Reporting
+  - name: "Phase 13: Post-Deployment Verification"
+    block:
+    - name: Gather Arista device facts
+      arista.eos.eos_facts:
+        gather_subset:
+        - all
+      register: arista_facts
+      tags: [ verification, facts ]
+
+    - name: Verify interface status
+      arista.eos.eos_command:
+        commands:
+        - "show interfaces status"
+        - "show interfaces description"
+      register: interface_status
+      tags: [ verification, interfaces ]
+
+    - name: Verify MLAG status
+      arista.eos.eos_command:
+        commands:
+        - "show mlag"
+        - "show mlag config-sanity"
+        - "show mlag detail"
+      register: mlag_status
+      ignore_errors: true
+      when: arista_mlag_config is defined
+      tags: [ verification, mlag ]
+
+    - name: Verify VXLAN status
+      arista.eos.eos_command:
+        commands:
+        - "show vxlan config-sanity"
+        - "show bgp evpn summary"
+        - "show vxlan address-table"
+      register: vxlan_status
+      ignore_errors: true
+      when: arista_vxlan_config is defined
+      tags: [ verification, vxlan ]
+
+    - name: Verify BGP status
+      arista.eos.eos_command:
+        commands:
+        - "show ip bgp summary"
+        - "show bgp evpn summary"
+        - "show ip route summary"
+      register: bgp_status
+      ignore_errors: true
+      tags: [ verification, bgp ]
+
+    - name: Generate Arista deployment report
+      copy:
+        content: |
+          Arista EOS Network Device Deployment Report
+          ==========================================
+          Device: {{ inventory_hostname }}
+          Platform: {{ arista_facts.ansible_facts.ansible_net_model | default('Arista Switch') }}
+          Software Version: {{ arista_facts.ansible_facts.ansible_net_version | default('Unknown') }}
+          Serial Number: {{ arista_facts.ansible_facts.ansible_net_serialnum | default('Unknown') }}
+          Deployment Time: {{ ansible_date_time.iso8601 }}
+
+          === DEVICE INFORMATION ===
+          Hostname: {{ arista_facts.ansible_facts.ansible_net_hostname | default('Unknown') }}
+          System MAC: {{ arista_facts.ansible_facts.ansible_net_system_mac_address | default('Unknown') }}
+          Memory: {{ arista_facts.ansible_facts.ansible_net_memtotal_mb | default('Unknown') }} MB
+          Filesystems: {{ arista_facts.ansible_facts.ansible_net_filesystems | default('Unknown') }}
+
+          === INTERFACE STATUS ===
+          {{ interface_status.stdout[0] | default('Interface status not available') }}
+
+          === INTERFACE DESCRIPTIONS ===
+          {{ interface_status.stdout[1] | default('Interface descriptions not available') }}
+
+          {% if mlag_status is defined and mlag_status.stdout is defined %}
+          === MLAG STATUS ===
+          {{ mlag_status.stdout[0] | default('MLAG not configured') }}
+
+          MLAG Configuration Sanity:
+          {{ mlag_status.stdout[1] | default('MLAG sanity check not available') }}
+
+          MLAG Details:
+          {{ mlag_status.stdout[2] | default('MLAG details not available') }}
+          {% endif %}
+
+          {% if vxlan_status is defined and vxlan_status.stdout is defined %}
+          === VXLAN STATUS ===
+          VXLAN Configuration Sanity:
+          {{ vxlan_status.stdout[0] | default('VXLAN not configured') }}
+
+          BGP EVPN Summary:
+          {{ vxlan_status.stdout[1] | default('BGP EVPN not configured') }}
+
+          VXLAN Address Table:
+          {{ vxlan_status.stdout[2] | default('No VXLAN addresses') }}
+          {% endif %}
+
+          {% if bgp_status is defined and bgp_status.stdout is defined %}
+          === BGP STATUS ===
+          IP BGP Summary:
+          {{ bgp_status.stdout[0] | default('BGP not configured') }}
+
+          BGP EVPN Summary:
+          {{ bgp_status.stdout[1] | default('BGP EVPN not configured') }}
+
+          IP Route Summary:
+          {{ bgp_status.stdout[2] | default('No routes') }}
+          {% endif %}
+
+          === CONFIGURATION SUMMARY ===
+          VLANs Configured: {{ (arista_vlan_config.vlans | default([])) | length }}
+          L2 Interfaces: {{ (arista_interface_config.l2_interfaces | default([])) | length }}
+          L3 Interfaces: {{ (arista_interface_config.l3_interfaces | default([])) | length }}
+          Port-Channels: {{ (arista_portchannel_config.port_channels | default([])) | length }}
+          VRFs: {{ (arista_vrf_config.vrfs | default([])) | length }}
+          BGP Neighbors: {{ (arista_bgp_config.neighbors | default([])) | length }}
+          ACLs: {{ (arista_security_config.access_lists | default([])) | length }}
+
+          Features Configured:
+          - MLAG: {{ 'Yes' if arista_mlag_config is defined else 'No' }}
+          - VXLAN: {{ 'Yes' if arista_vxlan_config is defined else 'No' }}
+          - BGP EVPN: {{ 'Yes' if arista_bgp_config is defined else 'No' }}
+          - CloudVision: {{ 'Yes' if arista_cvp_config is defined else 'No' }}
+          - sFlow: {{ 'Yes' if arista_sflow_config is defined else 'No' }}
+
+          Status: {{ 'SUCCESS' if ansible_failed_task is not defined else 'FAILED' }}
+        dest: "{{ playbook_dir }}/../reports/arista/{{ inventory_hostname }}_arista_deployment_{{ ansible_date_time.epoch }}.txt"
+      delegate_to: localhost
+      tags: [ reporting ]
+
+# Example usage:
+# ansible-playbook arista_enterprise_config.yml --limit arista_devices
+# ansible-playbook arista_enterprise_config.yml --tags mlag,vxlan
+# ansible-playbook arista_enterprise_config.yml --tags bgp,evpn --check

@@ -1,0 +1,54 @@
+---
+# Fortinet device-specific variables
+ansible_connection: httpapi
+ansible_httpapi_use_ssl: true
+ansible_httpapi_port: 443
+ansible_httpapi_validate_certs: false
+
+# FortiGate API settings
+fortios_access_token: "{{ vault_fortigate_api_token }}"
+
+# Common interface configurations
+fortinet_interfaces:
+- name: "port1"
+  ip: "10.0.1.60/24"
+  allowaccess: "ping https ssh"
+  type: "physical"
+  alias: "Internal"
+- name: "port2"
+  ip: "192.168.100.1/24"
+  allowaccess: "ping"
+  type: "physical"
+  alias: "External"
+
+# Standard firewall policies
+fortinet_firewall_policies:
+- policyid: 1
+  name: "Internal_to_External"
+  srcintf: "port1"
+  dstintf: "port2"
+  srcaddr: "all"
+  dstaddr: "all"
+  service: "ALL"
+  action: "accept"
+  schedule: "always"
+  logtraffic: "all"
+- policyid: 2
+  name: "External_to_DMZ"
+  srcintf: "port2"
+  dstintf: "port1"
+  srcaddr: "all"
+  dstaddr: "DMZ_Subnet"
+  service: "HTTP HTTPS"
+  action: "accept"
+  schedule: "always"
+  logtraffic: "all"
+
+# Address objects
+fortinet_address_objects:
+- name: "Internal_Network"
+  subnet: "10.0.0.0 255.0.0.0"
+  type: "ipmask"
+- name: "DMZ_Subnet"
+  subnet: "10.4.0.0 255.255.255.0"
+  type: "ipmask"

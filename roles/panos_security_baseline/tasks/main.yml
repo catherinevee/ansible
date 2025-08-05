@@ -1,0 +1,95 @@
+---
+# PAN-OS security baseline configuration tasks
+- name: Configure security zones
+  paloaltonetworks.panos.panos_zone:
+    provider: "{{ panos_provider }}"
+    zone: "{{ item.name }}"
+    mode: "{{ item.mode }}"
+    interface: "{{ item.interface }}"
+    state: present
+  loop: "{{ panos_security_zones }}"
+  register: zones_result
+
+- name: Configure address objects
+  paloaltonetworks.panos.panos_address_object:
+    provider: "{{ panos_provider }}"
+    name: "{{ item.name }}"
+    value: "{{ item.value }}"
+    address_type: "{{ item.type }}"
+    description: "{{ item.description | default(omit) }}"
+    state: present
+  loop: "{{ panos_address_objects }}"
+  register: address_objects_result
+
+- name: Configure service objects
+  paloaltonetworks.panos.panos_service_object:
+    provider: "{{ panos_provider }}"
+    name: "{{ item.name }}"
+    protocol: "{{ item.protocol }}"
+    destination_port: "{{ item.port }}"
+    description: "{{ item.description | default(omit) }}"
+    state: present
+  loop: "{{ panos_service_objects | default([]) }}"
+  register: service_objects_result
+
+- name: Deploy baseline security rules
+  paloaltonetworks.panos.panos_security_rule:
+    provider: "{{ panos_provider }}"
+    rule_name: "{{ item.rule_name }}"
+    source_zone: "{{ item.source_zone }}"
+    destination_zone: "{{ item.destination_zone }}"
+    source_address: "{{ item.source_address }}"
+    destination_address: "{{ item.destination_address }}"
+    application: "{{ item.application }}"
+    service: "{{ item.service }}"
+    action: "{{ item.action }}"
+    log_start: "{{ item.log_start | default(false) }}"
+    log_end: "{{ item.log_end | default(true) }}"
+    description: "{{ item.description | default('Managed by Ansible') }}"
+    state: present
+  loop: "{{ panos_baseline_security_rules }}"
+  register: security_rules_result
+  # Deploy comprehensive security ruleset
+
+- name: Configure URL filtering profiles
+  paloaltonetworks.panos.panos_url_filtering:
+    provider: "{{ panos_provider }}"
+    name: "{{ item.name }}"
+    dynamic_url: "{{ item.dynamic_url | default(omit) }}"
+    action: "{{ item.action | default('alert') }}"
+    state: present
+  loop: "{{ panos_url_filtering_profiles | default([]) }}"
+  register: url_filtering_result
+  # URL filtering for web security
+
+- name: Configure vulnerability protection profiles
+  paloaltonetworks.panos.panos_vulnerability_profile:
+    provider: "{{ panos_provider }}"
+    name: "{{ item.name }}"
+    description: "{{ item.description | default('Managed by Ansible') }}"
+    state: present
+  loop: "{{ panos_vulnerability_profiles | default([]) }}"
+  register: vulnerability_profiles_result
+  # Threat protection profiles
+
+- name: Apply security profiles to rules
+  paloaltonetworks.panos.panos_security_rule:
+    provider: "{{ panos_provider }}"
+    rule_name: "{{ item.rule_name }}"
+    antivirus: "{{ item.antivirus | default(omit) }}"
+    vulnerability: "{{ item.vulnerability | default(omit) }}"
+    spyware: "{{ item.spyware | default(omit) }}"
+    url_filtering: "{{ item.url_filtering | default(omit) }}"
+    file_blocking: "{{ item.file_blocking | default(omit) }}"
+    state: present
+  loop: "{{ panos_rules_with_profiles | default([]) }}"
+  when: item.rule_name is defined
+  # Apply security profiles to existing rules
+
+- name: Commit configuration changes
+  paloaltonetworks.panos.panos_commit_push:
+    provider: "{{ panos_provider }}"
+    description: "Ansible Security Baseline Deployment - {{ ansible_date_time.iso8601 }}"
+  when: >
+    zones_result.changed or  address_objects_result.changed or  service_objects_result.changed or  security_rules_result.changed or  url_filtering_result.changed or  vulnerability_profiles_result.changed
+  # Commit only if changes were made

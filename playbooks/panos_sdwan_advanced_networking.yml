@@ -1,0 +1,720 @@
+---
+# Palo Alto Networks SD-WAN and Advanced Networking Playbook
+# Comprehensive SD-WAN, SDWAN policies, QoS, and advanced networking features
+# Supports: SD-WAN deployment, path selection, SLA monitoring, and traffic steering
+
+- name: Deploy Palo Alto Networks SD-WAN and Advanced Networking
+  hosts: palo_alto_devices
+  gather_facts: false
+  connection: local
+  vars:
+    panos_provider:
+      ip_address: "{{ ansible_host }}"
+      username: "{{ vault_panos_username }}"
+      password: "{{ vault_panos_password }}"
+      api_key: "{{ vault_panos_api_key | default(omit) }}"
+
+  tasks:
+  # Phase 1: SD-WAN Interface Configuration
+  - name: "Phase 1: Configure SD-WAN Interfaces and Zones"
+    block:
+    - name: Configure SD-WAN interfaces
+      paloaltonetworks.panos.panos_config_element:
+        provider: "{{ panos_provider }}"
+        xpath: "/config/devices/entry[@name='localhost.localdomain']/network/interface/ethernet/entry[@name='{{ item.interface }}']"
+        element: |
+          <layer3>
+            <sdwan-link-settings>
+              <upstream-nat>
+                <enable>{{ item.sdwan_settings.upstream_nat.enable | default('no') }}</enable>
+                {% if item.sdwan_settings.upstream_nat.enable == 'yes' %}
+                <static-ip>
+                  <address>{{ item.sdwan_settings.upstream_nat.static_ip }}</address>
+                  <translated-address>{{ item.sdwan_settings.upstream_nat.translated_address }}</translated-address>
+                </static-ip>
+                {% endif %}
+              </upstream-nat>
+              <sdwan-link-type>{{ item.sdwan_settings.link_type | default('ethernet') }}</sdwan-link-type>
+              <permit-peer-flows>{{ item.sdwan_settings.permit_peer_flows | default('no') }}</permit-peer-flows>
+              <tunnel-monitor>
+                <enable>{{ item.sdwan_settings.tunnel_monitor.enable | default('yes') }}</enable>
+                {% if item.sdwan_settings.tunnel_monitor.enable == 'yes' %}
+                <destination-ip>{{ item.sdwan_settings.tunnel_monitor.destination_ip }}</destination-ip>
+                <proxy-id>{{ item.sdwan_settings.tunnel_monitor.proxy_id | default('any') }}</proxy-id>
+                <tunneled>{{ item.sdwan_settings.tunnel_monitor.tunneled | default('no') }}</tunneled>
+                {% endif %}
+              </tunnel-monitor>
+            </sdwan-link-settings>
+            <ip>
+              <entry name="{{ item.ip_address }}"/>
+            </ip>
+            <interface-management-profile>{{ item.management_profile | default(omit) }}</interface-management-profile>
+          </layer3>
+          <comment>{{ item.comment }}</comment>
+        commit: false
+      loop: "{{ panos_sdwan_interfaces }}"
+      tags: [ sdwan, interfaces ]
+
+    - name: Configure SD-WAN zones
+      paloaltonetworks.panos.panos_zone:
+        provider: "{{ panos_provider }}"
+        zone: "{{ item.zone_name }}"
+        mode: "layer3"
+        interface: "{{ item.interfaces }}"
+        zone_profile: "{{ item.zone_protection_profile | default(omit) }}"
+        enable_user_id: "{{ item.enable_user_identification | default(false) }}"
+        log_setting: "{{ item.log_setting | default('default') }}"
+        commit: false
+      loop: "{{ panos_sdwan_zones }}"
+      tags: [ sdwan, zones ]
+
+  # Phase 2: SD-WAN Policy Configuration
+  - name: "Phase 2: Configure SD-WAN Policies and Path Selection"
+    block:
+    - name: Configure SD-WAN policy rules
+      paloaltonetworks.panos.panos_config_element:
+        provider: "{{ panos_provider }}"
+        xpath: "/config/devices/entry[@name='localhost.localdomain']/network/sdwan/policy-based-forwarding/entry[@name='{{ item.name }}']"
+        element: |
+          <description>{{ item.description }}</description>
+          <source>
+            <zone>
+              {% for zone in item.source_zones %}
+              <member>{{ zone }}</member>
+              {% endfor %}
+            </zone>
+            <address>
+              {% for addr in item.source_addresses %}
+              <member>{{ addr }}</member>
+              {% endfor %}
+            </address>
+            <user>
+              {% for user in item.source_users | default(['any']) %}
+              <member>{{ user }}</member>
+              {% endfor %}
+            </user>
+          </source>
+          <destination>
+            <zone>
+              {% for zone in item.destination_zones %}
+              <member>{{ zone }}</member>
+              {% endfor %}
+            </zone>
+            <address>
+              {% for addr in item.destination_addresses %}
+              <member>{{ addr }}</member>
+              {% endfor %}
+            </address>
+          </destination>
+          <application>
+            {% for app in item.applications %}
+            <member>{{ app }}</member>
+            {% endfor %}
+          </application>
+          <service>
+            {% for svc in item.services %}
+            <member>{{ svc }}</member>
+            {% endfor %}
+          </service>
+          <action>
+            <forward>
+              <target>{{ item.action.forward.target }}</target>
+              <monitor>
+                <ip>{{ item.action.forward.monitor.ip }}</ip>
+                <disable-if-unreachable>{{ item.action.forward.monitor.disable_if_unreachable | default('yes') }}</disable-if-unreachable>
+              </monitor>
+              {% if item.action.forward.symmetric_return is defined %}
+              <symmetric-return>{{ item.action.forward.symmetric_return }}</symmetric-return>
+              {% endif %}
+            </forward>
+          </action>
+          <path-monitor>
+            <enable>{{ item.path_monitor.enable | default('yes') }}</enable>
+            <failure-condition>{{ item.path_monitor.failure_condition | default('any') }}</failure-condition>
+            <hold-time>{{ item.path_monitor.hold_time | default(2) }}</hold-time>
+          </path-monitor>
+        commit: false
+      loop: "{{ panos_sdwan_policies }}"
+      tags: [ sdwan, policies ]
+
+    - name: Configure path quality monitoring
+      paloaltonetworks.panos.panos_config_element:
+        provider: "{{ panos_provider }}"
+        xpath: "/config/devices/entry[@name='localhost.localdomain']/network/sdwan/path-quality-monitoring/entry[@name='{{ item.name }}']"
+        element: |
+          <description>{{ item.description }}</description>
+          <enable>{{ item.enable | default('yes') }}</enable>
+          <probe-type>{{ item.probe_type | default('icmp') }}</probe-type>
+          <probe-interval>{{ item.probe_interval | default(1) }}</probe-interval>
+          <probe-count>{{ item.probe_count | default(3) }}</probe-count>
+          <jitter-threshold>{{ item.jitter_threshold | default(50) }}</jitter-threshold>
+          <latency-threshold>{{ item.latency_threshold | default(150) }}</latency-threshold>
+          <packet-loss-threshold>{{ item.packet_loss_threshold | default(2) }}</packet-loss-threshold>
+          <probe-from-service-interface>
+            <interface>{{ item.probe_interface }}</interface>
+          </probe-from-service-interface>
+          <destinations>
+            {% for destination in item.destinations %}
+            <entry name="{{ destination.name }}">
+              <destination>{{ destination.ip }}</destination>
+              <enable>{{ destination.enable | default('yes') }}</enable>
+            </entry>
+            {% endfor %}
+          </destinations>
+        commit: false
+      loop: "{{ panos_path_quality_monitoring }}"
+      tags: [ sdwan, path_monitoring ]
+
+  # Phase 3: Advanced QoS Configuration
+  - name: "Phase 3: Configure Advanced Quality of Service"
+    block:
+    - name: Configure QoS profiles with bandwidth guarantees
+      paloaltonetworks.panos.panos_config_element:
+        provider: "{{ panos_provider }}"
+        xpath: "/config/devices/entry[@name='localhost.localdomain']/network/qos/profile/entry[@name='{{ item.name }}']"
+        element: |
+          <description>{{ item.description }}</description>
+          <class-bandwidth-type>
+            <mbps-based>
+              <class>
+                {% for qos_class in item.classes %}
+                <entry name="{{ qos_class.name }}">
+                  <priority>{{ qos_class.priority }}</priority>
+                  <class-bandwidth>
+                    <mbps>{{ qos_class.bandwidth_mbps }}</mbps>
+                    <guaranteed-bandwidth>
+                      <percentage>{{ qos_class.guaranteed_percentage | default(0) }}</percentage>
+                    </guaranteed-bandwidth>
+                    <maximum-bandwidth>
+                      <percentage>{{ qos_class.maximum_percentage | default(100) }}</percentage>
+                    </maximum-bandwidth>
+                  </class-bandwidth>
+                </entry>
+                {% endfor %}
+              </class>
+            </mbps-based>
+          </class-bandwidth-type>
+          <aggregate-bandwidth>
+            <mbps>{{ item.aggregate_bandwidth_mbps }}</mbps>
+          </aggregate-bandwidth>
+        commit: false
+      loop: "{{ panos_advanced_qos_profiles }}"
+      tags: [ qos, bandwidth ]
+
+    - name: Configure traffic shaping policies
+      paloaltonetworks.panos.panos_config_element:
+        provider: "{{ panos_provider }}"
+        xpath: "/config/devices/entry[@name='localhost.localdomain']/rulebase/qos/rules/entry[@name='{{ item.name }}']"
+        element: |
+          <description>{{ item.description }}</description>
+          <from>
+            {% for zone in item.from_zones %}
+            <member>{{ zone }}</member>
+            {% endfor %}
+          </from>
+          <to>
+            {% for zone in item.to_zones %}
+            <member>{{ zone }}</member>
+            {% endfor %}
+          </to>
+          <source>
+            {% for src in item.source %}
+            <member>{{ src }}</member>
+            {% endfor %}
+          </source>
+          <destination>
+            {% for dst in item.destination %}
+            <member>{{ dst }}</member>
+            {% endfor %}
+          </destination>
+          <application>
+            {% for app in item.application %}
+            <member>{{ app }}</member>
+            {% endfor %}
+          </application>
+          <service>
+            {% for svc in item.service %}
+            <member>{{ svc }}</member>
+            {% endfor %}
+          </service>
+          <action>
+            <class>{{ item.action.qos_class }}</class>
+            {% if item.action.dscp_marking is defined %}
+            <dscp-marking>
+              <dscp>{{ item.action.dscp_marking.dscp }}</dscp>
+            </dscp-marking>
+            {% endif %}
+            {% if item.action.police is defined %}
+            <police>
+              <enable>yes</enable>
+              <aggregate-rate>{{ item.action.police.aggregate_rate }}</aggregate-rate>
+              <burst-size>{{ item.action.police.burst_size | default(15000) }}</burst-size>
+            </police>
+            {% endif %}
+          </action>
+        commit: false
+      loop: "{{ panos_traffic_shaping_policies }}"
+      tags: [ qos, traffic_shaping ]
+
+  # Phase 4: Advanced Routing Configuration
+  - name: "Phase 4: Configure Advanced Routing and Path Selection"
+    block:
+    - name: Configure ECMP and load balancing
+      paloaltonetworks.panos.panos_config_element:
+        provider: "{{ panos_provider }}"
+        xpath: "/config/devices/entry[@name='localhost.localdomain']/network/virtual-router/entry[@name='{{ item.vr_name }}']/ecmp"
+        element: |
+          <enable>{{ item.ecmp_enable | default('yes') }}</enable>
+          <max-path>{{ item.max_paths | default(2) }}</max-path>
+          <load-balance>{{ item.load_balance_method | default('source-ip-hash') }}</load-balance>
+          <symmetric-return>{{ item.symmetric_return | default('no') }}</symmetric-return>
+          <strict-source-path>{{ item.strict_source_path | default('no') }}</strict-source-path>
+        commit: false
+      loop: "{{ panos_virtual_routers }}"
+      tags: [ routing, ecmp ]
+
+    - name: Configure policy-based routing
+      paloaltonetworks.panos.panos_config_element:
+        provider: "{{ panos_provider }}"
+        xpath: "/config/devices/entry[@name='localhost.localdomain']/network/virtual-router/entry[@name='{{ item.virtual_router }}']/routing-table/ip/pbr-rule/entry[@name='{{ item.name }}']"
+        element: |
+          <description>{{ item.description }}</description>
+          <from>
+            <zone>
+              {% for zone in item.from_zones %}
+              <member>{{ zone }}</member>
+              {% endfor %}
+            </zone>
+            <interface>
+              {% for intf in item.from_interfaces | default([]) %}
+              <member>{{ intf }}</member>
+              {% endfor %}
+            </interface>
+          </from>
+          <source>
+            {% for src in item.source %}
+            <member>{{ src }}</member>
+            {% endfor %}
+          </source>
+          <destination>
+            {% for dst in item.destination %}
+            <member>{{ dst }}</member>
+            {% endfor %}
+          </destination>
+          <application>
+            {% for app in item.application %}
+            <member>{{ app }}</member>
+            {% endfor %}
+          </application>
+          <service>
+            {% for svc in item.service %}
+            <member>{{ svc }}</member>
+            {% endfor %}
+          </service>
+          <action>
+            <{{ item.action.type }}>
+              {% if item.action.type == 'forward' %}
+              <target>{{ item.action.target }}</target>
+              <monitor>
+                <ip>{{ item.action.monitor_ip }}</ip>
+                <disable-if-unreachable>{{ item.action.disable_if_unreachable | default('no') }}</disable-if-unreachable>
+              </monitor>
+              {% elif item.action.type == 'next-hop' %}
+              <ip-address>{{ item.action.next_hop_ip }}</ip-address>
+              <monitor>
+                <ip>{{ item.action.monitor_ip }}</ip>
+                <disable-if-unreachable>{{ item.action.disable_if_unreachable | default('no') }}</disable-if-unreachable>
+              </monitor>
+              {% endif %}
+            </{{ item.action.type }}>
+          </action>
+          <enable>{{ item.enable | default('yes') }}</enable>
+        commit: false
+      loop: "{{ panos_pbr_rules }}"
+      tags: [ routing, pbr ]
+
+    - name: Configure route redistribution
+      paloaltonetworks.panos.panos_config_element:
+        provider: "{{ panos_provider }}"
+        xpath: "/config/devices/entry[@name='localhost.localdomain']/network/virtual-router/entry[@name='{{ item.virtual_router }}']/protocol/redist-profile/entry[@name='{{ item.name }}']"
+        element: |
+          <priority>{{ item.priority | default(10) }}</priority>
+          <action>{{ item.action | default('redist') }}</action>
+          <filter>
+            <type>
+              <{{ item.filter.type }}>
+                {% if item.filter.type == 'static' %}
+                <route-table>{{ item.filter.route_table | default('unicast') }}</route-table>
+                {% elif item.filter.type == 'connect' %}
+                <route-table>{{ item.filter.route_table | default('unicast') }}</route-table>
+                {% elif item.filter.type == 'ospf' %}
+                <path-type>
+                  {% for path_type in item.filter.ospf_path_types %}
+                  <{{ path_type }}/>
+                  {% endfor %}
+                </path-type>
+                {% elif item.filter.type == 'bgp' %}
+                <origin>
+                  {% for origin in item.filter.bgp_origins %}
+                  <{{ origin }}/>
+                  {% endfor %}
+                </origin>
+                {% endif %}
+              </{{ item.filter.type }}>
+            </type>
+            {% if item.filter.prefix_filters is defined %}
+            <interface>
+              {% for intf in item.filter.interfaces %}
+              <member>{{ intf }}</member>
+              {% endfor %}
+            </interface>
+            {% endif %}
+            {% if item.filter.prefix_filters is defined %}
+            <destination>
+              {% for prefix in item.filter.prefix_filters %}
+              <member>{{ prefix }}</member>
+              {% endfor %}
+            </destination>
+            {% endif %}
+          </filter>
+        commit: false
+      loop: "{{ panos_redistribution_profiles }}"
+      tags: [ routing, redistribution ]
+
+  # Phase 5: Network Segmentation and Micro-segmentation
+  - name: "Phase 5: Configure Network Segmentation"
+    block:
+    - name: Configure micro-segmentation policies
+      paloaltonetworks.panos.panos_security_rule:
+        provider: "{{ panos_provider }}"
+        rule_name: "{{ item.rule_name }}"
+        description: "{{ item.description }}"
+        source_zone: "{{ item.source_zone }}"
+        dest_zone: "{{ item.dest_zone }}"
+        source_ip: "{{ item.source_ip }}"
+        source_user: "{{ item.source_user | default(['any']) }}"
+        dest_ip: "{{ item.dest_ip }}"
+        application: "{{ item.application }}"
+        service: "{{ item.service }}"
+        category: "{{ item.url_category | default(['any']) }}"
+        action: "{{ item.action }}"
+        log_start: "{{ item.log_start | default(false) }}"
+        log_end: "{{ item.log_end | default(true) }}"
+        log_setting: "{{ item.log_setting | default('default') }}"
+        group_profile: "{{ item.group_profile | default(omit) }}"
+        location: "{{ item.location | default('bottom') }}"
+        existing_rule: "{{ item.existing_rule | default(omit) }}"
+        commit: false
+      loop: "{{ panos_microsegmentation_policies }}"
+      tags: [ microsegmentation, security_policies ]
+
+    - name: Configure dynamic address groups for segmentation
+      paloaltonetworks.panos.panos_address_group:
+        provider: "{{ panos_provider }}"
+        name: "{{ item.name }}"
+        description: "{{ item.description }}"
+        dynamic_value: "{{ item.dynamic_filter }}"
+        commit: false
+      loop: "{{ panos_dynamic_address_groups }}"
+      tags: [ microsegmentation, address_groups ]
+
+  # Phase 6: Application-Based Routing
+  - name: "Phase 6: Configure Application-Based Routing"
+    block:
+    - name: Configure application override policies
+      paloaltonetworks.panos.panos_config_element:
+        provider: "{{ panos_provider }}"
+        xpath: "/config/devices/entry[@name='localhost.localdomain']/rulebase/application-override/rules/entry[@name='{{ item.name }}']"
+        element: |
+          <description>{{ item.description }}</description>
+          <from>
+            {% for zone in item.from_zones %}
+            <member>{{ zone }}</member>
+            {% endfor %}
+          </from>
+          <to>
+            {% for zone in item.to_zones %}
+            <member>{{ zone }}</member>
+            {% endfor %}
+          </to>
+          <source>
+            {% for src in item.source %}
+            <member>{{ src }}</member>
+            {% endfor %}
+          </source>
+          <destination>
+            {% for dst in item.destination %}
+            <member>{{ dst }}</member>
+            {% endfor %}
+          </destination>
+          <port>{{ item.port }}</port>
+          <protocol>{{ item.protocol }}</protocol>
+          <application>{{ item.application }}</application>
+          <disable>{{ item.disable | default('no') }}</disable>
+        commit: false
+      loop: "{{ panos_application_override_rules }}"
+      tags: [ app_routing, application_override ]
+
+    - name: Configure application-based forwarding
+      paloaltonetworks.panos.panos_config_element:
+        provider: "{{ panos_provider }}"
+        xpath: "/config/devices/entry[@name='localhost.localdomain']/network/application-based-routing/entry[@name='{{ item.name }}']"
+        element: |
+          <description>{{ item.description }}</description>
+          <source>
+            <zone>
+              {% for zone in item.source_zones %}
+              <member>{{ zone }}</member>
+              {% endfor %}
+            </zone>
+            <address>
+              {% for addr in item.source_addresses %}
+              <member>{{ addr }}</member>
+              {% endfor %}
+            </address>
+          </source>
+          <destination>
+            <zone>
+              {% for zone in item.destination_zones %}
+              <member>{{ zone }}</member>
+              {% endfor %}
+            </zone>
+            <address>
+              {% for addr in item.destination_addresses %}
+              <member>{{ addr }}</member>
+              {% endfor %}
+            </address>
+          </destination>
+          <application>
+            {% for app in item.applications %}
+            <member>{{ app }}</member>
+            {% endfor %}
+          </application>
+          <action>
+            <forward>
+              <egress-interface>{{ item.action.egress_interface }}</egress-interface>
+              <next-hop>{{ item.action.next_hop | default(omit) }}</next-hop>
+              <monitor>
+                <ip>{{ item.action.monitor_ip }}</ip>
+                <disable-if-unreachable>{{ item.action.disable_if_unreachable | default('yes') }}</disable-if-unreachable>
+              </monitor>
+            </forward>
+          </action>
+          <enable>{{ item.enable | default('yes') }}</enable>
+        commit: false
+      loop: "{{ panos_app_based_routing }}"
+      when: panos_app_based_routing is defined
+      tags: [ app_routing, forwarding ]
+
+  # Phase 7: Advanced Monitoring and Analytics
+  - name: "Phase 7: Configure Advanced Monitoring"
+    block:
+    - name: Configure network packet broker settings
+      paloaltonetworks.panos.panos_config_element:
+        provider: "{{ panos_provider }}"
+        xpath: "/config/devices/entry[@name='localhost.localdomain']/network/network-packet-broker"
+        element: |
+          <enable>{{ panos_network_packet_broker.enable | default('yes') }}</enable>
+          <ingress-zone>{{ panos_network_packet_broker.ingress_zone }}</ingress-zone>
+          <egress-zone>{{ panos_network_packet_broker.egress_zone }}</egress-zone>
+          <zone-protection-profile>{{ panos_network_packet_broker.zone_protection_profile | default(omit) }}</zone-protection-profile>
+          <log-setting>{{ panos_network_packet_broker.log_setting | default('default') }}</log-setting>
+        commit: false
+      when: panos_network_packet_broker is defined
+      tags: [ monitoring, packet_broker ]
+
+    - name: Configure flow-based monitoring
+      paloaltonetworks.panos.panos_config_element:
+        provider: "{{ panos_provider }}"
+        xpath: "/config/devices/entry[@name='localhost.localdomain']/deviceconfig/system/flow-based-monitoring"
+        element: |
+          <enable>{{ panos_flow_monitoring.enable | default('yes') }}</enable>
+          <sample-rate>{{ panos_flow_monitoring.sample_rate | default(2048) }}</sample-rate>
+          <inactive-flow-timeout>{{ panos_flow_monitoring.inactive_timeout | default(15) }}</inactive-flow-timeout>
+          <active-flow-timeout>{{ panos_flow_monitoring.active_timeout | default(1800) }}</active-flow-timeout>
+          <collectors>
+            {% for collector in panos_flow_monitoring.collectors %}
+            <entry name="{{ collector.name }}">
+              <ip-address>{{ collector.ip_address }}</ip-address>
+              <port>{{ collector.port | default(2055) }}</port>
+              <transport>{{ collector.transport | default('UDP') }}</transport>
+              <template-refresh-rate>{{ collector.template_refresh_rate | default(600) }}</template-refresh-rate>
+            </entry>
+            {% endfor %}
+          </collectors>
+        commit: false
+      when: panos_flow_monitoring is defined
+      tags: [ monitoring, flow_monitoring ]
+
+  # Phase 8: Branch Office and Remote Site Configuration
+  - name: "Phase 8: Configure Branch Office Connectivity"
+    block:
+    - name: Configure IPSec tunnels for branch connectivity
+      paloaltonetworks.panos.panos_ipsec_tunnel:
+        provider: "{{ panos_provider }}"
+        name: "{{ item.tunnel_name }}"
+        tunnel_interface: "{{ item.tunnel_interface }}"
+        ak_ike_gateway: "{{ item.ike_gateway }}"
+        ak_ipsec_crypto_profile: "{{ item.ipsec_crypto_profile }}"
+        commit: false
+      loop: "{{ panos_branch_ipsec_tunnels }}"
+      tags: [ branch_office, ipsec ]
+
+    - name: Configure IKE gateways for branch sites
+      paloaltonetworks.panos.panos_ike_gateway:
+        provider: "{{ panos_provider }}"
+        name: "{{ item.gateway_name }}"
+        interface: "{{ item.interface }}"
+        peer_ip_type: "{{ item.peer_ip_type | default('ip') }}"
+        peer_ip_value: "{{ item.peer_ip }}"
+        pre_shared_key: "{{ item.pre_shared_key }}"
+        ikev1_exchange_mode: "{{ item.ikev1_exchange_mode | default('main') }}"
+        ikev1_crypto_profile: "{{ item.ikev1_crypto_profile }}"
+        ikev2_crypto_profile: "{{ item.ikev2_crypto_profile }}"
+        enable_passive_mode: "{{ item.enable_passive_mode | default(false) }}"
+        enable_nat_traversal: "{{ item.enable_nat_traversal | default(true) }}"
+        nat_traversal_keep_alive: "{{ item.nat_traversal_keep_alive | default(10) }}"
+        nat_traversal_enable_udp_checksum: "{{ item.nat_traversal_enable_udp_checksum | default(false) }}"
+        enable_fragmentation: "{{ item.enable_fragmentation | default(true) }}"
+        commit: false
+      loop: "{{ panos_branch_ike_gateways }}"
+      no_log: true
+      tags: [ branch_office, ike ]
+
+  post_tasks:
+  # Phase 9: Configuration Validation and Performance Testing
+  - name: "Phase 9: SD-WAN and Advanced Networking Validation"
+    block:
+    - name: Commit SD-WAN configuration
+      paloaltonetworks.panos.panos_commit:
+        provider: "{{ panos_provider }}"
+        sync: true
+        commit_all: true
+      tags: [ commit ]
+
+    - name: Verify SD-WAN interface status
+      paloaltonetworks.panos.panos_op:
+        provider: "{{ panos_provider }}"
+        cmd: "show interface all"
+      register: sdwan_interface_status
+      tags: [ validation ]
+
+    - name: Check path quality monitoring status
+      paloaltonetworks.panos.panos_op:
+        provider: "{{ panos_provider }}"
+        cmd: "show sdwan path-quality-monitoring"
+      register: path_quality_status
+      ignore_errors: true
+      tags: [ validation, path_monitoring ]
+
+    - name: Verify QoS configuration
+      paloaltonetworks.panos.panos_op:
+        provider: "{{ panos_provider }}"
+        cmd: "show qos interface all"
+      register: qos_status
+      ignore_errors: true
+      tags: [ validation, qos ]
+
+    - name: Check routing table
+      paloaltonetworks.panos.panos_op:
+        provider: "{{ panos_provider }}"
+        cmd: "show routing route"
+      register: routing_table
+      tags: [ validation, routing ]
+
+    - name: Verify IPSec tunnel status
+      paloaltonetworks.panos.panos_op:
+        provider: "{{ panos_provider }}"
+        cmd: "show vpn tunnel"
+      register: ipsec_tunnel_status
+      ignore_errors: true
+      tags: [ validation, ipsec ]
+
+    - name: Test connectivity to branch sites
+      paloaltonetworks.panos.panos_op:
+        provider: "{{ panos_provider }}"
+        cmd: "ping host {{ item.test_ip }}"
+      register: branch_connectivity
+      loop: "{{ panos_branch_connectivity_tests | default([]) }}"
+      ignore_errors: true
+      tags: [ validation, connectivity ]
+
+    - name: Generate SD-WAN and Advanced Networking Report
+      copy:
+        content: |
+          Palo Alto Networks SD-WAN and Advanced Networking Report
+          ========================================================
+          Device: {{ inventory_hostname }}
+          Deployment Time: {{ ansible_date_time.iso8601 }}
+
+          === INTERFACE STATUS ===
+          {{ sdwan_interface_status.stdout | default('Interface information not available') }}
+
+          === PATH QUALITY MONITORING ===
+          {% if path_quality_status.stdout is defined %}
+          {{ path_quality_status.stdout }}
+          {% else %}
+          Path quality monitoring information not available
+          {% endif %}
+
+          === QOS STATUS ===
+          {% if qos_status.stdout is defined %}
+          {{ qos_status.stdout }}
+          {% else %}
+          QoS status information not available
+          {% endif %}
+
+          === ROUTING TABLE ===
+          {{ routing_table.stdout | default('Routing table not available') }}
+
+          === IPSEC TUNNEL STATUS ===
+          {% if ipsec_tunnel_status.stdout is defined %}
+          {{ ipsec_tunnel_status.stdout }}
+          {% else %}
+          IPSec tunnel status not available
+          {% endif %}
+
+          === BRANCH CONNECTIVITY TESTS ===
+          {% for test in branch_connectivity.results | default([]) %}
+          {% if test.stdout is defined %}
+          Test {{ loop.index }}: {{ test.stdout }}
+          {% else %}
+          Test {{ loop.index }}: Connectivity test failed or not available
+          {% endif %}
+          {% endfor %}
+
+          === CONFIGURATION SUMMARY ===
+          SD-WAN Interfaces: {{ (panos_sdwan_interfaces | default([])) | length }}
+          SD-WAN Zones: {{ (panos_sdwan_zones | default([])) | length }}
+          SD-WAN Policies: {{ (panos_sdwan_policies | default([])) | length }}
+          Path Quality Monitors: {{ (panos_path_quality_monitoring | default([])) | length }}
+          QoS Profiles: {{ (panos_advanced_qos_profiles | default([])) | length }}
+          Traffic Shaping Policies: {{ (panos_traffic_shaping_policies | default([])) | length }}
+          Virtual Routers: {{ (panos_virtual_routers | default([])) | length }}
+          PBR Rules: {{ (panos_pbr_rules | default([])) | length }}
+          Redistribution Profiles: {{ (panos_redistribution_profiles | default([])) | length }}
+          Microsegmentation Policies: {{ (panos_microsegmentation_policies | default([])) | length }}
+          Dynamic Address Groups: {{ (panos_dynamic_address_groups | default([])) | length }}
+          Application Override Rules: {{ (panos_application_override_rules | default([])) | length }}
+          Branch IPSec Tunnels: {{ (panos_branch_ipsec_tunnels | default([])) | length }}
+          Branch IKE Gateways: {{ (panos_branch_ike_gateways | default([])) | length }}
+
+          Features Configured:
+          - SD-WAN Policies: {{ 'Yes' if panos_sdwan_policies is defined else 'No' }}
+          - Path Quality Monitoring: {{ 'Yes' if panos_path_quality_monitoring is defined else 'No' }}
+          - Advanced QoS: {{ 'Yes' if panos_advanced_qos_profiles is defined else 'No' }}
+          - Policy-Based Routing: {{ 'Yes' if panos_pbr_rules is defined else 'No' }}
+          - Microsegmentation: {{ 'Yes' if panos_microsegmentation_policies is defined else 'No' }}
+          - Application-Based Routing: {{ 'Yes' if panos_app_based_routing is defined else 'No' }}
+          - Flow Monitoring: {{ 'Yes' if panos_flow_monitoring is defined else 'No' }}
+          - Branch Connectivity: {{ 'Yes' if panos_branch_ipsec_tunnels is defined else 'No' }}
+
+          Status: {{ 'SUCCESS' if ansible_failed_task is not defined else 'FAILED' }}
+        dest: "{{ playbook_dir }}/../reports/panos/{{ inventory_hostname }}_sdwan_advanced_networking_{{ ansible_date_time.epoch }}.txt"
+      delegate_to: localhost
+      tags: [ reporting ]
+
+# Example usage:
+# ansible-playbook panos_sdwan_advanced_networking.yml --limit palo_alto_devices
+# ansible-playbook panos_sdwan_advanced_networking.yml --tags sdwan,qos
+# ansible-playbook panos_sdwan_advanced_networking.yml --tags routing,microsegmentation --check

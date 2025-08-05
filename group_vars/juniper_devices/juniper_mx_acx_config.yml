@@ -1,0 +1,976 @@
+---
+# ===============================================
+# MX SERVICE PROVIDER CONFIGURATION VARIABLES
+# ===============================================
+
+# MX Service Provider System Configuration
+juniper_mx_config:
+  hostname: "{{ inventory_hostname }}"
+  domain_name: "sp.example.com"
+  timezone: "UTC"
+  login_banner: "SP Network - Authorized Access Only"
+  redundant_re: true
+  ae_device_count: 512
+  ssh_connection_limit: 100
+  router_id: "{{ ansible_host }}"
+  local_asn: 65001
+
+  # High-Speed Core Interfaces (100GE/400GE)
+  core_interfaces:
+  - interface: "et-0/0/0"
+    description: "Core Link to P1"
+    mtu: 9192
+    unit: 0
+    ipv4_address: "10.0.1.1"
+    ipv4_prefix: 30
+    ipv6_address: "2001:db8:core::1"
+    ipv6_prefix: 126
+
+  - interface: "et-0/0/1"
+    description: "Core Link to P2"
+    mtu: 9192
+    unit: 0
+    ipv4_address: "10.0.1.5"
+    ipv4_prefix: 30
+    ipv6_address: "2001:db8:core::5"
+    ipv6_prefix: 126
+
+  # Customer-Facing Interfaces
+  customer_interfaces:
+  - interface: "xe-0/1/0"
+    description: "Customer A - Enterprise Link"
+    mtu: 9192
+
+  - interface: "xe-0/1/1"
+    description: "Customer B - Data Center"
+    mtu: 9192
+
+  # Aggregated Ethernet for Redundancy
+  ae_interfaces:
+  - ae_interface: "ae0"
+    description: "Customer Multi-homing Bundle"
+    mtu: 9192
+    lacp_mode: "active"
+    lacp_periodic: "fast"
+    minimum_links: 1
+    maximum_links: 4
+    member_interfaces: [ "xe-0/2/0", "xe-0/2/1" ]
+
+  # MPLS Core Configuration
+  mpls_interfaces: [ "et-0/0/0", "et-0/0/1", "ae0" ]
+
+  rsvp_interfaces:
+  - interface: "et-0/0/0"
+    bandwidth: "10g"
+    subscription: 100
+    auth_key: "{{ vault_rsvp_auth_key }}"
+
+  - interface: "et-0/0/1"
+    bandwidth: "10g"
+    subscription: 100
+    auth_key: "{{ vault_rsvp_auth_key }}"
+
+  # MPLS LSPs for Traffic Engineering
+  mpls_lsps:
+  - lsp_name: "LSP_to_P1"
+    destination: "10.255.0.1"
+    bandwidth: "1g"
+    setup_priority: 7
+    hold_priority: 0
+    adaptive: true
+    fast_reroute: true
+
+  - lsp_name: "LSP_to_P2"
+    destination: "10.255.0.2"
+    bandwidth: "1g"
+    setup_priority: 7
+    hold_priority: 0
+    adaptive: true
+    fast_reroute: true
+
+  # MPLS Explicit Paths
+  mpls_paths:
+  - path_name: "path_to_P1"
+    hops:
+    - { hop_address: "10.0.1.2", hop_type: "strict" }
+    - { hop_address: "10.255.0.1", hop_type: "strict" }
+
+  - path_name: "path_to_P2"
+    hops:
+    - { hop_address: "10.0.1.6", hop_type: "strict" }
+    - { hop_address: "10.255.0.2", hop_type: "strict" }
+
+  # LSP Path Assignments
+  lsp_path_assignments:
+  - lsp_name: "LSP_to_P1"
+    primary_path: "path_to_P1"
+    secondary_path: "path_to_P2"
+
+  - lsp_name: "LSP_to_P2"
+    primary_path: "path_to_P2"
+    secondary_path: "path_to_P1"
+
+  # IGP Configuration (OSPF or ISIS)
+  igp_protocol: "ospf" # or "isis"
+
+  # OSPF Configuration
+  ospf_reference_bandwidth: "1000g"
+  ospf_spf_delay: 200
+  ospf_spf_holddown: 5000
+  ospf_rapid_runs: 5
+
+  ospf_interfaces:
+  - interface: "et-0/0/0.0"
+    area_id: "0.0.0.0"
+    interface_type: "point-to-point"
+    metric: 1
+    bfd_interval: 300
+    bfd_multiplier: 3
+
+  - interface: "et-0/0/1.0"
+    area_id: "0.0.0.0"
+    interface_type: "point-to-point"
+    metric: 1
+    bfd_interval: 300
+    bfd_multiplier: 3
+
+  # ISIS Configuration (alternative to OSPF)
+  isis_reference_bandwidth: "1000g"
+  isis_level: "2"
+  isis_auth_key: "{{ vault_isis_auth_key }}"
+  isis_auth_type: "md5"
+  isis_spf_delay: 200
+
+  isis_interfaces:
+  - interface: "et-0/0/0.0"
+    level: "2"
+    metric: 10
+    bfd_interval: 300
+    bfd_multiplier: 3
+
+  # BGP Configuration
+  bgp_groups:
+  - group_name: "ibgp_rr_clients"
+    group_type: "internal"
+    peer_as: 65001
+    local_as: 65001
+    import_policy: "import_from_rr_clients"
+    export_policy: "export_to_rr_clients"
+    route_reflector_cluster: "1.1.1.1"
+
+  - group_name: "ebgp_customers"
+    group_type: "external"
+    peer_as: 65100
+    local_as: 65001
+    import_policy: "import_from_customers"
+    export_policy: "export_to_customers"
+
+  # BGP VPN Groups
+  bgp_vpn_groups:
+  - group_name: "ibgp_vpn"
+    group_type: "internal"
+    peer_as: 65001
+
+  # BGP Neighbors
+  bgp_neighbors:
+  - group_name: "ibgp_rr_clients"
+    neighbor_ip: "10.255.0.1"
+    description: "RR Client P1"
+    peer_as: 65001
+    local_address: "{{ router_id }}"
+    auth_key: "{{ vault_bgp_auth_key }}"
+
+  - group_name: "ebgp_customers"
+    neighbor_ip: "192.168.100.1"
+    description: "Customer A"
+    peer_as: 65100
+    local_address: "192.168.100.2"
+    auth_key: "{{ vault_customer_bgp_key }}"
+
+  # L3VPN Configuration
+  l3vpn_vrfs:
+  - vrf_name: "CUSTOMER_A_VRF"
+    interface: "xe-0/1/0.100"
+    rd: "65001:100"
+    rt_import: "65001:100"
+    rt_export: "65001:100"
+
+  - vrf_name: "CUSTOMER_B_VRF"
+    interface: "xe-0/1/1.200"
+    rd: "65001:200"
+    rt_import: "65001:200"
+    rt_export: "65001:200"
+
+  # L3VPN Customer Interfaces
+  l3vpn_customer_interfaces:
+  - interface: "xe-0/1/0"
+    unit: 100
+    description: "Customer A L3VPN"
+    vlan_id: 100
+    ipv4_address: "192.168.100.2"
+    ipv4_prefix: 30
+    ipv6_address: "2001:db8:cust:a::2"
+    ipv6_prefix: 126
+
+  - interface: "xe-0/1/1"
+    unit: 200
+    description: "Customer B L3VPN"
+    vlan_id: 200
+    ipv4_address: "192.168.200.2"
+    ipv4_prefix: 30
+    ipv6_address: "2001:db8:cust:b::2"
+    ipv6_prefix: 126
+
+  # L3VPN Customer BGP
+  l3vpn_ce_bgp:
+  - vrf_name: "CUSTOMER_A_VRF"
+    ce_group_name: "customer_a_ce"
+    ce_asn: 65100
+    ce_ip: "192.168.100.1"
+    ce_description: "Customer A CE"
+    import_policy: "import_customer_a"
+    export_policy: "export_customer_a"
+
+  # L3VPN Customer OSPF
+  l3vpn_ce_ospf:
+  - vrf_name: "CUSTOMER_B_VRF"
+    area_id: "0.0.0.1"
+    interface: "xe-0/1/1.200"
+    domain_id: "192.168.200.1"
+    vpn_tag: 200
+
+  # L2VPN Configuration
+  l2vpn_instances:
+  - l2vpn_name: "CUSTOMER_C_L2VPN"
+    interface: "xe-0/1/2.300"
+    rd: "65001:300"
+    rt_import: "65001:300"
+    rt_export: "65001:300"
+    encapsulation: "ethernet"
+
+  # L2VPN Customer Interfaces
+  l2vpn_customer_interfaces:
+  - interface: "xe-0/1/2"
+    unit: 300
+    description: "Customer C L2VPN"
+    vlan_id: 300
+
+  # EVPN Configuration
+  evpn_instances:
+  - evpn_name: "EVPN_INSTANCE_1"
+    vlan_id: 400
+    interface: "xe-0/1/3.400"
+    rd: "65001:400"
+    rt_import: "65001:400"
+    rt_export: "65001:400"
+
+  # EVPN Multihoming
+  evpn_multihoming:
+  - evpn_name: "EVPN_INSTANCE_1"
+    esi_name: "ESI_1"
+    esi_id: "00:11:22:33:44:55:66:77:88:99"
+    df_election: "preference"
+    df_preference: 100
+
+  # Service Sets for Deep Packet Inspection
+  service_sets:
+  - service_set_name: "CUSTOMER_DPI"
+    nat_rule: "customer_nat"
+    inside_interface: "sp-0/0/0.1"
+    outside_interface: "sp-0/0/0.2"
+
+  # Flow-based Processing
+  flow_tap_filters:
+  - filter_name: "traffic_analysis"
+    term_name: "monitor_customer_traffic"
+    from_condition: "source-address 192.168.100.0/24"
+    service_set: "CUSTOMER_DPI"
+
+  # Advanced Route Policies
+  advanced_route_policies:
+  - policy_name: "customer_import_policy"
+    terms:
+    - term_name: "accept_customer_routes"
+      from:
+        protocol: "bgp"
+        community: "customer_routes"
+        route_filter: "192.168.0.0/16"
+        filter_type: "orlonger"
+      then:
+        action: "accept"
+        community_action: "add"
+        community_name: "origin_customer"
+        local_preference: 150
+
+  # BGP Communities
+  bgp_communities:
+  - name: "customer_routes"
+    members: [ "65001:100", "65001:200" ]
+
+  - name: "origin_customer"
+    members: [ "65001:999" ]
+
+  # Service Provider Forwarding Classes
+  sp_forwarding_classes:
+  - name: "network-control"
+    queue_num: 7
+    priority: "high"
+
+  - name: "premium"
+    queue_num: 5
+    priority: "high"
+
+  - name: "business"
+    queue_num: 3
+    priority: "medium"
+
+  - name: "economy"
+    queue_num: 1
+    priority: "low"
+
+  # Service Provider Schedulers
+  sp_schedulers:
+  - name: "premium_scheduler"
+    transmit_rate: "40%"
+    buffer_size: "25%"
+    priority: "strict-high"
+    drop_profile_low: "premium_low"
+    drop_profile_high: "premium_high"
+
+  - name: "business_scheduler"
+    transmit_rate: "35%"
+    buffer_size: "20%"
+    priority: "high"
+    drop_profile_low: "business_low"
+    drop_profile_high: "business_high"
+
+  # Traffic Control Profiles
+  traffic_control_profiles:
+  - profile_name: "customer_a_profile"
+    scheduler_map: "customer_scheduler_map"
+    guaranteed_rate: "100m"
+    shaping_rate: "1g"
+
+  # Service Provider Interface QoS
+  sp_interface_qos:
+  - interface: "xe-0/1/0"
+    unit: 100
+    scheduler_map: "customer_scheduler_map"
+    dscp_classifier: "enterprise_dscp"
+    dscp_rewrite: "enterprise_dscp_rewrite"
+    hierarchical_scheduler: "customer_a_profile"
+
+  # Flow Monitoring Templates
+  flow_monitoring_templates:
+  - template_name: "sp_traffic_analysis"
+    version: "v9"
+    template_id: 1024
+    fields:
+    - { field_name: "ipv4-source-address", field_length: 4 }
+    - { field_name: "ipv4-destination-address", field_length: 4 }
+    - { field_name: "octet-delta-count", field_length: 8 }
+    - { field_name: "packet-delta-count", field_length: 8 }
+
+  # Service Assurance Probes
+  service_assurance_probes:
+  - probe_name: "customer_sla"
+    test_name: "latency_test"
+    probe_type: "icmp-ping"
+    target_address: "192.168.100.1"
+    probe_count: 15
+    probe_interval: 1
+    test_interval: 300
+    loss_threshold: 3
+    total_loss_threshold: 10
+
+  # SNMP Configuration
+  snmp_description: "SP MX Router"
+  snmp_location: "Data Center 1"
+  snmp_contact: "Network Operations"
+  snmp_clients: [ "10.10.10.10", "10.10.10.11" ]
+
+# ===============================================
+# ACX METRO ETHERNET CONFIGURATION VARIABLES
+# ===============================================
+
+# ACX Metro Ethernet System Configuration
+juniper_acx_config:
+  hostname: "{{ inventory_hostname }}"
+  domain_name: "metro.example.com"
+  timezone: "UTC"
+  login_banner: "Metro Network - Authorized Access Only"
+  ae_device_count: 128
+  router_id: "{{ ansible_host }}"
+  local_asn: 65001
+
+  # BGP Graceful Restart
+  bgp_graceful_restart_time: 120
+  bgp_stale_routes_time: 300
+
+  # Tunnel Services PICs
+  tunnel_services_pics:
+  - pic_slot: "0/1/0"
+    tunnel_bandwidth: "10g"
+
+  # LLDP Interfaces
+  lldp_interfaces: [ "xe-0/0/0", "xe-0/0/1", "xe-0/1/0", "xe-0/1/1" ]
+
+  # Provider Uplink Interfaces
+  uplink_interfaces:
+  - interface: "xe-0/0/0"
+    description: "Uplink to Provider PE1"
+    mtu: 9216
+    unit: 0
+    ipv4_address: "10.1.1.1"
+    ipv4_prefix: 30
+    ipv6_address: "2001:db8:uplink::1"
+    ipv6_prefix: 126
+
+  - interface: "xe-0/0/1"
+    description: "Uplink to Provider PE2"
+    mtu: 9216
+    unit: 0
+    ipv4_address: "10.1.1.5"
+    ipv4_prefix: 30
+    ipv6_address: "2001:db8:uplink::5"
+    ipv6_prefix: 126
+
+  # Metro Ethernet Access Interfaces
+  access_interfaces:
+  - interface: "xe-0/1/0"
+    description: "Customer Metro Access 1"
+    mtu: 9216
+    speed: "1g"
+    link_mode: "full-duplex"
+
+  - interface: "xe-0/1/1"
+    description: "Customer Metro Access 2"
+    mtu: 9216
+    speed: "10g"
+    link_mode: "full-duplex"
+
+  # Metro AE Interfaces for Redundancy
+  metro_ae_interfaces:
+  - ae_interface: "ae0"
+    description: "Customer Multi-homing Bundle"
+    mtu: 9216
+    lacp_mode: "active"
+    lacp_periodic: "fast"
+    minimum_links: 1
+    link_speed: "10g"
+    member_interfaces: [ "xe-0/2/0", "xe-0/2/1" ]
+
+  # E-Line Services (Point-to-Point)
+  eline_services:
+  - interface_a: "xe-0/1/0"
+    unit_a: 100
+    vlan_id_a: 100
+    description_a: "E-Line Customer A Side A"
+    interface_b: "xe-0/1/1"
+    unit_b: 100
+    vlan_id_b: 100
+    description_b: "E-Line Customer A Side B"
+    remote_pe: "10.1.1.2"
+    vc_id: 1001
+    mtu: 1518
+
+  # E-LAN Services (Multipoint-to-Multipoint)
+  elan_services:
+  - elan_name: "ELAN_CUSTOMER_B"
+    rd: "65001:2001"
+    rt_import: "65001:2001"
+    rt_export: "65001:2001"
+    encapsulation: "ethernet"
+    interfaces: [ "xe-0/1/2.200", "xe-0/1/3.200" ]
+
+  # E-Tree Services (Root-Leaf)
+  etree_services:
+  - etree_name: "ETREE_CUSTOMER_C"
+    root_interface: "xe-0/1/4.300"
+    rd: "65001:3001"
+    rt_import: "65001:3001"
+    rt_export: "65001:3001"
+    root_site: "ROOT_SITE"
+    root_site_id: 1
+    leaf_sites:
+    - { leaf_interface: "xe-0/1/5.300", site_id: 2 }
+    - { leaf_interface: "xe-0/1/6.300", site_id: 3 }
+
+  # Advanced EVPN Instances with Multihoming
+  advanced_evpn_instances:
+  - evpn_name: "EVPN_DATACENTER_1"
+    vlan_id: 1000
+    interface: "ae0.1000"
+    rd: "65001:1000"
+    rt_import: "65001:1000"
+    rt_export: "65001:1000"
+    encapsulation: "vxlan"
+    vni_list: [ 10000, 10001, 10002 ]
+
+  - evpn_name: "EVPN_DATACENTER_2"
+    vlan_id: 2000
+    interface: "ae1.2000"
+    rd: "65001:2000"
+    rt_import: "65001:2000"
+    rt_export: "65001:2000"
+    encapsulation: "vxlan"
+    vni_list: [ 20000, 20001, 20002 ]
+
+  # EVPN Multihoming Advanced Configuration
+  evpn_multihoming_advanced:
+  - evpn_name: "EVPN_DATACENTER_1"
+    esi_name: "ESI_DC1_PRIMARY"
+    esi_id: "00:01:02:03:04:05:06:07:08:09"
+    df_election: "preference"
+    df_preference: 100
+    backup_hold_time: 30
+    interface: "ae0"
+
+  - evpn_name: "EVPN_DATACENTER_2"
+    esi_name: "ESI_DC2_SECONDARY"
+    esi_id: "00:11:12:13:14:15:16:17:18:19"
+    df_election: "mod"
+    df_preference: 200
+    backup_hold_time: 45
+    interface: "ae1"
+
+  # EVPN MAC Mobility Configuration
+  evpn_mac_mobility:
+  - evpn_name: "EVPN_DATACENTER_1"
+    mac_table_size: 65536
+    mac_aging_time: 600
+    dup_mac_window: 300
+    dup_mac_threshold: 3
+    mac_ip_adv: "enable"
+
+  - evpn_name: "EVPN_DATACENTER_2"
+    mac_table_size: 32768
+    mac_aging_time: 300
+    dup_mac_window: 180
+    dup_mac_threshold: 5
+    mac_ip_adv: "enable"
+
+  # EVPN VXLAN VTEP Configuration
+  evpn_vxlan_vteps:
+  - evpn_name: "EVPN_DATACENTER_1"
+    source_interface: "lo0.0"
+    remote_vteps: [ "10.1.2.1", "10.1.2.2", "10.1.2.3" ]
+    vni: 10000
+    vni_rt: "65001:10000"
+
+  - evpn_name: "EVPN_DATACENTER_2"
+    source_interface: "lo0.0"
+    remote_vteps: [ "10.1.3.1", "10.1.3.2", "10.1.3.3" ]
+    vni: 20000
+    vni_rt: "65001:20000"
+
+  # eBGP Peer Groups for Metro Services
+  ebgp_peer_groups:
+  - group_name: "METRO_CUSTOMERS"
+    group_type: "external"
+    peer_as: 65100
+    local_as: 65001
+    import_policy: "IMPORT_CUSTOMER_ROUTES"
+    export_policy: "EXPORT_METRO_SERVICES"
+    hold_time: 90
+    keepalive: 30
+    auth_key: "{{ vault_customer_bgp_key }}"
+
+  - group_name: "METRO_PROVIDERS"
+    group_type: "external"
+    peer_as: 65200
+    local_as: 65001
+    import_policy: "IMPORT_PROVIDER_ROUTES"
+    export_policy: "EXPORT_CUSTOMER_ROUTES"
+    hold_time: 180
+    keepalive: 60
+    auth_key: "{{ vault_provider_bgp_key }}"
+
+  - group_name: "EVPN_PEERS"
+    group_type: "external"
+    peer_as: 65300
+    local_as: 65001
+    import_policy: "IMPORT_EVPN_ROUTES"
+    export_policy: "EXPORT_EVPN_ROUTES"
+    hold_time: 90
+    keepalive: 30
+    auth_key: "{{ vault_evpn_bgp_key }}"
+
+  # eBGP Address Families
+  ebgp_address_families:
+  - group_name: "METRO_CUSTOMERS"
+  - group_name: "METRO_PROVIDERS"
+  - group_name: "EVPN_PEERS"
+
+  # eBGP Neighbors with Advanced Options
+  ebgp_neighbors:
+  - group_name: "METRO_CUSTOMERS"
+    neighbor_ip: "192.168.100.1"
+    description: "Customer A - Primary Link"
+    peer_as: 65100
+    local_address: "192.168.100.2"
+    multihop_ttl: 1
+    bfd_interval: 300
+    bfd_multiplier: 3
+
+  - group_name: "METRO_CUSTOMERS"
+    neighbor_ip: "192.168.101.1"
+    description: "Customer A - Secondary Link"
+    peer_as: 65100
+    local_address: "192.168.101.2"
+    multihop_ttl: 1
+    bfd_interval: 300
+    bfd_multiplier: 3
+
+  - group_name: "METRO_PROVIDERS"
+    neighbor_ip: "10.1.1.2"
+    description: "Provider PE1"
+    peer_as: 65200
+    local_address: "10.1.1.1"
+    multihop_ttl: 2
+    bfd_interval: 150
+    bfd_multiplier: 3
+
+  - group_name: "METRO_PROVIDERS"
+    neighbor_ip: "10.1.1.6"
+    description: "Provider PE2"
+    peer_as: 65200
+    local_address: "10.1.1.5"
+    multihop_ttl: 2
+    bfd_interval: 150
+    bfd_multiplier: 3
+
+  - group_name: "EVPN_PEERS"
+    neighbor_ip: "10.2.1.1"
+    description: "EVPN Peer Datacenter 1"
+    peer_as: 65300
+    local_address: "{{ ansible_host }}"
+    multihop_ttl: 5
+    bfd_interval: 200
+    bfd_multiplier: 3
+
+  - group_name: "EVPN_PEERS"
+    neighbor_ip: "10.2.1.2"
+    description: "EVPN Peer Datacenter 2"
+    peer_as: 65300
+    local_address: "{{ ansible_host }}"
+    multihop_ttl: 5
+    bfd_interval: 200
+    bfd_multiplier: 3
+
+  # eBGP Route Policies for Advanced Filtering
+  ebgp_route_policies:
+  - policy_name: "IMPORT_CUSTOMER_ROUTES"
+    terms:
+    - term_name: "ACCEPT_CUSTOMER_PREFIXES"
+      from:
+        protocol: "bgp"
+        neighbor: "192.168.100.1"
+        as_path: "CUSTOMER_AS_PATH"
+        community: "CUSTOMER_ROUTES"
+        route_filter: "192.168.0.0/16"
+        filter_type: "orlonger"
+      then:
+        action: "accept"
+        community_action: "add"
+        community_name: "CUSTOMER_ORIGIN"
+        local_preference: 150
+        med: 50
+
+    - term_name: "REJECT_DEFAULT"
+      from:
+        route_filter: "0.0.0.0/0"
+        filter_type: "exact"
+      then:
+        action: "reject"
+
+  - policy_name: "EXPORT_METRO_SERVICES"
+    terms:
+    - term_name: "EXPORT_LOCAL_SERVICES"
+      from:
+        protocol: "direct"
+        route_filter: "10.0.0.0/8"
+        filter_type: "orlonger"
+      then:
+        action: "accept"
+        community_action: "add"
+        community_name: "METRO_SERVICES"
+        med: 100
+
+    - term_name: "EXPORT_LEARNED_ROUTES"
+      from:
+        protocol: "bgp"
+        community: "TRANSIT_ALLOWED"
+      then:
+        action: "accept"
+        community_action: "add"
+        community_name: "TRANSIT_ROUTE"
+
+  - policy_name: "IMPORT_EVPN_ROUTES"
+    terms:
+    - term_name: "ACCEPT_EVPN_TYPE2"
+      from:
+        protocol: "bgp"
+        route_filter: "2:*:*:*:*/304"
+        filter_type: "orlonger"
+      then:
+        action: "accept"
+        community_action: "add"
+        community_name: "EVPN_MAC_IP"
+
+    - term_name: "ACCEPT_EVPN_TYPE3"
+      from:
+        protocol: "bgp"
+        route_filter: "3:*:*:*:*/304"
+        filter_type: "orlonger"
+      then:
+        action: "accept"
+        community_action: "add"
+        community_name: "EVPN_IMET"
+
+  # AS-Path Regular Expressions
+  ebgp_as_paths:
+  - as_path_name: "CUSTOMER_AS_PATH"
+    as_path_regex: "^65100_"
+
+  - as_path_name: "PROVIDER_AS_PATH"
+    as_path_regex: "^65200_"
+
+  - as_path_name: "TRANSIT_AS_PATH"
+    as_path_regex: ".*65[0-9]+.*"
+
+  - as_path_name: "LOCAL_AS_PATH"
+    as_path_regex: "^$"
+
+  # eBGP Communities for Service Classification
+  ebgp_communities:
+  - name: "CUSTOMER_ROUTES"
+    members: [ "65001:100", "65001:101" ]
+
+  - name: "CUSTOMER_ORIGIN"
+    members: [ "65001:1000" ]
+
+  - name: "METRO_SERVICES"
+    members: [ "65001:2000", "65001:2001" ]
+
+  - name: "TRANSIT_ALLOWED"
+    members: [ "65001:3000" ]
+
+  - name: "TRANSIT_ROUTE"
+    members: [ "65001:3001" ]
+
+  - name: "EVPN_MAC_IP"
+    members: [ "65001:4000" ]
+
+  - name: "EVPN_IMET"
+    members: [ "65001:4001" ]
+
+  - name: "NO_EXPORT"
+    members: [ "65535:65281" ]
+
+  - name: "NO_ADVERTISE"
+    members: [ "65535:65282" ]
+
+  # Metro Customer Interfaces
+  metro_customer_interfaces:
+  - interface: "xe-0/1/2"
+    unit: 200
+    description: "ELAN Customer B Interface 1"
+    vlan_id: 200
+    interface_mode: "access"
+    bridge_vlan_id: 200
+
+  - interface: "xe-0/1/3"
+    unit: 200
+    description: "ELAN Customer B Interface 2"
+    vlan_id: 200
+    interface_mode: "access"
+    bridge_vlan_id: 200
+
+  # MEF UNI Interfaces
+  mef_uni_interfaces:
+  - interface: "xe-0/1/7"
+    unit: 400
+    interface_mode: "access"
+    vlan_id_list: [ 400 ]
+    scheduler_map: "uni_scheduler_map"
+    exp_classifier: "uni_exp_classifier"
+
+  # MEF NNI Interfaces
+  mef_nni_interfaces:
+  - interface: "xe-0/0/2"
+    unit: 0
+    vlan_id_list: [ 400, 401, 402 ]
+    scheduler_map: "nni_scheduler_map"
+
+  # MEF Bandwidth Profiles
+  mef_bandwidth_profiles:
+  - profile_name: "customer_d_10m"
+    cir: "10m"
+    eir: "20m"
+    cbs: "64k"
+    ebs: "128k"
+
+  # MEF SLA Profiles
+  mef_sla_profiles:
+  - cos_class: "premium"
+    queue_num: 5
+    priority: "high"
+    scheduler_name: "premium_metro_scheduler"
+    transmit_rate: "50%"
+    buffer_size: "30%"
+
+  # CFM Domains for OAM
+  cfm_domains:
+  - md_name: "CUSTOMER_DOMAIN"
+    md_level: 5
+    ma_name: "CUSTOMER_MA"
+    cci_interval: "1s"
+    loss_threshold: 3
+    mep_id: 1
+    interface: "xe-0/1/7.400"
+    direction: "up"
+
+  # LFM Interfaces
+  lfm_interfaces:
+  - interface: "xe-0/1/0"
+    pdu_interval: "1s"
+    link_discovery: "enable"
+
+  # Performance Monitoring
+  performance_monitoring:
+  - probe_name: "metro_latency"
+    test_name: "customer_sla_test"
+    probe_type: "icmp-ping"
+    target_type: "address"
+    target_address: "192.168.10.1"
+    probe_count: 15
+    probe_interval: 1
+    test_interval: 300
+    loss_threshold: 3
+    history_size: 100
+
+  # Y.1731 Performance Monitoring
+  y1731_performance:
+  - session_name: "customer_loss_measurement"
+    measurement_type: "loss"
+    source_mep: 1
+    destination_mep: 2
+    priority: 0
+    measurement_interval: "15-mins"
+
+  # Metro Forwarding Classes
+  metro_forwarding_classes:
+  - name: "metro-premium"
+    queue_num: 5
+    priority: "high"
+    policing_priority: "high"
+
+  - name: "metro-standard"
+    queue_num: 3
+    priority: "medium"
+    policing_priority: "medium"
+
+  # Metro Schedulers
+  metro_schedulers:
+  - name: "metro_premium_scheduler"
+    transmit_rate: "40%"
+    buffer_size: "25%"
+    priority: "strict-high"
+    excess_priority: "high"
+    drop_profile_low: "metro_premium_low"
+    drop_profile_high: "metro_premium_high"
+
+  # Metro Policers
+  metro_policers:
+  - policer_name: "customer_10m_policer"
+    bandwidth_limit: "10m"
+    burst_size_limit: "1m"
+    exceed_action: "discard"
+    loss_priority: "high"
+
+  # QoS Classifiers
+  qos_classifiers:
+  - classifier_name: "metro_dscp_classifier"
+    fc_name: "metro-premium"
+    loss_priority: "low"
+    dscp_values: [ "46", "34" ]
+    exp_values: [ "5", "4" ]
+
+  # Metro Interface QoS
+  metro_interface_qos:
+  - interface: "xe-0/1/7"
+    unit: 400
+    scheduler_map: "metro_scheduler_map"
+    dscp_classifier: "metro_dscp_classifier"
+    exp_classifier: "metro_exp_classifier"
+    dscp_rewrite: "metro_dscp_rewrite"
+    exp_rewrite: "metro_exp_rewrite"
+
+  # Synchronous Ethernet
+  sync_ethernet_interfaces:
+  - interface: "xe-0/0/0"
+    priority: 1
+    wait_to_restore: 300
+    quality_level: "prc"
+
+  - interface: "xe-0/0/1"
+    priority: 2
+    wait_to_restore: 300
+    quality_level: "prc"
+
+  # PTP Slave Interfaces
+  ptp_slave_interfaces:
+  - interface: "xe-0/0/0"
+    sync_interval: -3
+    delay_request_interval: -3
+
+  # NTP Configuration
+  ntp_servers:
+  - server: "10.10.10.100"
+    version: 4
+
+  - server: "10.10.10.101"
+    version: 4
+
+  ntp_source_address: "{{ ansible_host }}"
+
+  # Service Activation Tests
+  service_activation_tests:
+  - test_name: "customer_throughput_test"
+    test_type: "throughput"
+    interface: "xe-0/1/7.400"
+    destination_address: "192.168.10.1"
+    test_duration: 60
+    test_rate: "10m"
+
+  # Loopback Tests
+  loopback_tests:
+  - interface: "xe-0/1/0"
+    unit: 500
+    interface_mode: "access"
+    loopback_filter: "loopback_filter_1"
+
+  # Storm Control
+  storm_control_interfaces:
+  - interface: "xe-0/1/7"
+    bandwidth_limit: "10m"
+    burst_size: "1m"
+
+  # Port Security
+  port_security_interfaces:
+  - interface: "xe-0/1/7"
+    mac_limit: 10
+    limit_action: "drop"
+
+  # Metro Firewall Filters
+  metro_firewall_filters:
+  - filter_name: "metro_security_filter"
+    terms:
+    - term_name: "allow_customer_traffic"
+      from_condition: "source-address 192.168.10.0/24"
+      then_action: "accept"
+
+    - term_name: "deny_others"
+      from_condition: "any"
+      then_action: "discard"

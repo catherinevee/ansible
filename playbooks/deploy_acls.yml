@@ -1,0 +1,279 @@
+---
+# Advanced ACL deployment across multiple vendors with IPv4/IPv6 support
+- name: Deploy Access Control Lists Across Network Infrastructure
+  hosts: cisco_devices,juniper_devices,arista_devices
+  gather_facts: false
+  vars:
+    deployment_timestamp: "{{ ansible_date_time.iso8601 }}"
+    standard_acl_rules:
+      management_access:
+      - sequence: 10
+        action: permit
+        source: "192.168.1.0/24"
+        log: false
+      - sequence: 20
+        action: permit
+        source: "10.0.0.0/8"
+        log: false
+      - sequence: 30
+        action: deny
+        source: "any"
+        log: true
+      security_baseline:
+      - sequence: 10
+        action: deny
+        source: "any"
+        destination: "192.168.1.0/24"
+        protocol: "tcp"
+        destination_port: "22"
+        log: true
+      - sequence: 20
+        action: permit
+        source: "10.0.0.0/8"
+        destination: "any"
+        protocol: "tcp"
+        destination_port: "80,443"
+
+  tasks:
+  - name: Display ACL deployment information
+    ansible.builtin.debug:
+      msg:
+      - "=== ACL Configuration Deployment ==="
+      - "Device: {{ inventory_hostname }}"
+      - "Timestamp: {{ deployment_timestamp }}"
+      - "Standard ACL Templates: {{ standard_acl_rules.keys() | list }}"
+      - "======================================"
+
+# Cisco ACL Configuration
+- name: Deploy ACLs on Cisco Devices
+  hosts: cisco_devices
+  gather_facts: false
+  connection: network_cli
+
+  tasks:
+  - name: Configure standard IP access lists
+    cisco.ios.ios_acls:
+      config:
+      - afi: "ipv4"
+        acls:
+        - name: "{{ item.name }}"
+          acl_type: "{{ item.type | default('standard') }}"
+          aces:
+          - sequence: "{{ ace.sequence }}"
+            grant: "{{ ace.action }}"
+            source:
+              address: "{{ ace.source.split('/')[0] }}"
+              netmask: "{{ ace.source | ipaddr('netmask') if '/' in ace.source else '0.0.0.0' }}"
+            log: "{{ ace.log | default(false) }}"
+          loop: "{{ item.rules }}"
+          loop_control:
+            loop_var: ace
+      state: merged
+    loop: "{{ cisco_standard_acls | default([]) }}"
+    register: cisco_standard_acls_result
+    # Deploy standard ACLs for basic traffic filtering
+
+  - name: Configure extended IP access lists
+    cisco.ios.ios_acls:
+      config:
+      - afi: "ipv4"
+        acls:
+        - name: "{{ item.name }}"
+          acl_type: "extended"
+          aces:
+          - sequence: "{{ ace.sequence }}"
+            grant: "{{ ace.action }}"
+            protocol: "{{ ace.protocol | default('ip') }}"
+            source:
+              address: "{{ ace.source.split('/')[0] if '/' in ace.source else ace.source }}"
+              netmask: "{{ ace.source | ipaddr('netmask') if '/' in ace.source else ('0.0.0.0' if ace.source == 'any' else '255.255.255.255') }}"
+            destination:
+              address: "{{ ace.destination.split('/')[0] if '/' in ace.destination else ace.destination }}"
+              netmask: "{{ ace.destination | ipaddr('netmask') if '/' in ace.destination else ('0.0.0.0' if ace.destination == 'any' else '255.255.255.255') }}"
+            protocol_options:
+              tcp:
+                destination_port:
+                  eq: "{{ ace.destination_port if ace.protocol == 'tcp' and ace.destination_port is defined else omit }}"
+              udp:
+                destination_port:
+                  eq: "{{ ace.destination_port if ace.protocol == 'udp' and ace.destination_port is defined else omit }}"
+            log: "{{ ace.log | default(false) }}"
+          loop: "{{ item.rules }}"
+          loop_control:
+            loop_var: ace
+      state: merged
+    loop: "{{ cisco_extended_acls | default([]) }}"
+    register: cisco_extended_acls_result
+    # Deploy extended ACLs with protocol-specific matching
+
+  - name: Configure IPv6 access lists
+    cisco.ios.ios_acls:
+      config:
+      - afi: "ipv6"
+        acls:
+        - name: "{{ item.name }}"
+          aces:
+          - sequence: "{{ ace.sequence }}"
+            grant: "{{ ace.action }}"
+            protocol: "{{ ace.protocol | default('ipv6') }}"
+            source:
+              address: "{{ ace.source_ipv6 | default('any') }}"
+            destination:
+              address: "{{ ace.destination_ipv6 | default('any') }}"
+            log: "{{ ace.log | default(false) }}"
+          loop: "{{ item.rules }}"
+          loop_control:
+            loop_var: ace
+      state: merged
+    loop: "{{ cisco_ipv6_acls | default([]) }}"
+    when: cisco_ipv6_acls is defined
+    register: cisco_ipv6_acls_result
+    # Deploy IPv6 ACLs for dual-stack environments
+
+  - name: Apply ACLs to interfaces
+    cisco.ios.ios_config:
+      lines:
+      - "ip access-group {{ item.acl_name }} {{ item.direction }}"
+      parents: "interface {{ item.interface }}"
+    loop: "{{ cisco_acl_interface_assignments | default([]) }}"
+    when:
+    - cisco_acl_interface_assignments is defined
+    - item.acl_type | default('ipv4') == 'ipv4'
+    register: cisco_acl_assignments
+    # Apply IPv4 ACLs to interfaces
+
+  - name: Apply IPv6 ACLs to interfaces
+    cisco.ios.ios_config:
+      lines:
+      - "ipv6 traffic-filter {{ item.acl_name }} {{ item.direction }}"
+      parents: "interface {{ item.interface }}"
+    loop: "{{ cisco_acl_interface_assignments | default([]) }}"
+    when:
+    - cisco_acl_interface_assignments is defined
+    - item.acl_type | default('ipv4') == 'ipv6'
+    # Apply IPv6 ACLs to interfaces
+
+    # Juniper Firewall Filter Configuration
+- name: Deploy Firewall Filters on Juniper Devices
+  hosts: juniper_devices
+  gather_facts: false
+  connection: netconf
+
+  tasks:
+  - name: Configure firewall filters on Junos
+    junipernetworks.junos.junos_config:
+      lines:
+      - "set firewall filter {{ item.name }} term {{ term.name }} from {{ term.from_condition }}"
+      - "set firewall filter {{ item.name }} term {{ term.name }} then {{ term.action }}"
+      loop: "{{ item.terms }}"
+      loop_control:
+        loop_var: term
+    loop: "{{ juniper_firewall_filters | default([]) }}"
+    register: junos_firewall_result
+    # Configure Junos firewall filters using hierarchical configuration
+
+  - name: Apply firewall filters to Juniper interfaces
+    junipernetworks.junos.junos_config:
+      lines:
+      - "set interfaces {{ item.interface }} unit {{ item.unit | default('0') }} family inet filter {{ item.direction }} {{ item.filter_name }}"
+    loop: "{{ juniper_filter_assignments | default([]) }}"
+    when: juniper_filter_assignments is defined
+    # Apply firewall filters to Juniper interfaces
+
+    # Arista ACL Configuration
+- name: Deploy ACLs on Arista Devices
+  hosts: arista_devices
+  gather_facts: false
+  connection: httpapi
+
+  tasks:
+  - name: Configure ACLs on Arista EOS
+    arista.eos.eos_acls:
+      config:
+      - afi: "ipv4"
+        acls:
+        - name: "{{ item.name }}"
+          aces:
+          - sequence: "{{ ace.sequence }}"
+            grant: "{{ ace.action }}"
+            protocol: "{{ ace.protocol | default('ip') }}"
+            source:
+              address: "{{ ace.source }}"
+            destination:
+              address: "{{ ace.destination }}"
+            destination_port:
+              eq: "{{ ace.destination_port | default(omit) }}"
+            log: "{{ ace.log | default(false) }}"
+          loop: "{{ item.rules }}"
+          loop_control:
+            loop_var: ace
+      state: merged
+    loop: "{{ arista_acls | default([]) }}"
+    register: arista_acls_result
+    # Configure Arista EOS ACLs
+
+  - name: Apply ACLs to Arista interfaces
+    arista.eos.eos_config:
+      lines:
+      - "ip access-group {{ item.acl_name }} {{ item.direction }}"
+      parents: "interface {{ item.interface }}"
+    loop: "{{ arista_acl_assignments | default([]) }}"
+    when: arista_acl_assignments is defined
+    # Apply ACLs to Arista interfaces
+
+    # ACL Validation and Verification
+- name: ACL Configuration Validation
+  hosts: cisco_devices,juniper_devices,arista_devices
+  gather_facts: false
+
+  tasks:
+  - name: Verify ACL configuration on Cisco
+    cisco.ios.ios_command:
+      commands:
+      - show access-lists
+      - show ip interface | include access list
+      - show ipv6 interface | include access list
+    register: cisco_acl_verification
+    when: ansible_network_os == "ios"
+    # Verify Cisco ACL configuration and application
+
+  - name: Verify firewall filters on Juniper
+    junipernetworks.junos.junos_command:
+      commands:
+      - show firewall
+      - show interfaces terse | match filter
+      format: text
+    register: junos_filter_verification
+    when: ansible_network_os == "junos"
+    # Verify Juniper firewall filter configuration
+
+  - name: Verify ACLs on Arista
+    arista.eos.eos_command:
+      commands:
+      - show access-lists
+      - show ip interface | include access-group
+    register: arista_acl_verification
+    when: ansible_network_os == "eos"
+    # Verify Arista ACL configuration
+
+  - name: Test ACL functionality with synthetic traffic
+    ansible.builtin.debug:
+      msg: "ACL functionality testing would be implemented here using traffic generators"
+    # Placeholder for ACL testing functionality
+
+  - name: Generate ACL deployment report
+    ansible.builtin.template:
+      src: "acl_deployment_report.j2"
+      dest: "{{ playbook_dir }}/../reports/acl_deployment_{{ inventory_hostname }}_{{ ansible_date_time.date }}.txt"
+      mode: '0644'
+    delegate_to: localhost
+    vars:
+      acl_deployment_data:
+        device: "{{ inventory_hostname }}"
+        timestamp: "{{ deployment_timestamp }}"
+        cisco_acls: "{{ cisco_standard_acls_result | default({}) }}"
+        cisco_extended_acls: "{{ cisco_extended_acls_result | default({}) }}"
+        junos_filters: "{{ junos_firewall_result | default({}) }}"
+        arista_acls: "{{ arista_acls_result | default({}) }}"
+        verification_results: "{{ cisco_acl_verification | default(junos_filter_verification) | default(arista_acl_verification) | default({}) }}"
+    # Generate comprehensive ACL deployment report

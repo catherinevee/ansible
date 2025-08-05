@@ -1,0 +1,437 @@
+---
+# ====================================================================
+# PALO ALTO BASIC CONFIGURATION EXAMPLES
+# ====================================================================
+# Comprehensive basic configuration examples for Palo Alto Networks
+# firewalls including PA-220, PA-440, PA-460, PA-3220, PA-3260, PA-5220,
+# PA-5260, PA-7050, PA-7080, VM-Series and Panorama
+# ====================================================================
+
+- name: Deploy Palo Alto Basic Configuration Examples
+  hosts: palo_alto_devices
+  gather_facts: false
+  connection: local
+  vars:
+    ansible_command_timeout: 60
+    ansible_connect_timeout: 30
+
+  tasks:
+  # ===========================================
+  # PALO ALTO PAN-OS SYSTEM CONFIGURATION
+  # ===========================================
+  - name: Configure Palo Alto System Settings
+    paloaltonetworks.panos.panos_mgtconfig:
+      ip_address: "{{ ansible_host }}"
+      username: "{{ ansible_user }}"
+      password: "{{ ansible_password }}"
+      hostname: "{{ inventory_hostname }}"
+      domain: "{{ domain_name | default('') }}"
+      dns_server_primary: "{{ primary_dns }}"
+      dns_server_secondary: "{{ secondary_dns }}"
+      timezone: "{{ timezone | default('US/Pacific') }}"
+      panorama_primary: "{{ panorama_primary | default('') }}"
+      panorama_secondary: "{{ panorama_secondary | default('') }}"
+      login_banner: "{{ banner_login | default('Authentication Required') }}"
+      update_server: "{{ update_server | default('updates.paloaltonetworks.com') }}"
+      verify_update_server: "{{ verify_update_server | default(true) }}"
+      commit: false
+    when: primary_dns is defined
+    tags: [ 'paloalto', 'system', 'basic' ]
+
+  - name: Configure Palo Alto Admin Users
+    paloaltonetworks.panos.panos_administrator:
+      ip_address: "{{ ansible_host }}"
+      username: "{{ ansible_user }}"
+      password: "{{ ansible_password }}"
+      admin_username: "{{ item.username }}"
+      admin_password: "{{ item.password }}"
+      role: "{{ item.role | default('superuser') }}"
+      password_profile: "{{ item.password_profile | default('') }}"
+      ssh_public_key: "{{ item.ssh_public_key | default('') }}"
+      client_certificate_only: "{{ item.cert_only | default(false) }}"
+      superuser_profile: "{{ item.superuser_profile | default('') }}"
+      state: present
+      commit: false
+    loop: "{{ admin_users | default([]) }}"
+    tags: [ 'paloalto', 'users', 'admin' ]
+
+  - name: Configure Palo Alto Management Interface
+    paloaltonetworks.panos.panos_management_profile:
+      ip_address: "{{ ansible_host }}"
+      username: "{{ ansible_user }}"
+      password: "{{ ansible_password }}"
+      name: "{{ mgmt_profile_name | default('MGMT-Profile') }}"
+      ping: "{{ mgmt_ping | default(true) }}"
+      telnet: "{{ mgmt_telnet | default(false) }}"
+      ssh: "{{ mgmt_ssh | default(true) }}"
+      http: "{{ mgmt_http | default(false) }}"
+      https: "{{ mgmt_https | default(true) }}"
+      snmp: "{{ mgmt_snmp | default(true) }}"
+      response_pages: "{{ mgmt_response_pages | default(true) }}"
+      userid_service: "{{ mgmt_userid_service | default(false) }}"
+      userid_syslog_listener_ssl: "{{ mgmt_userid_ssl | default(false) }}"
+      userid_syslog_listener_udp: "{{ mgmt_userid_udp | default(false) }}"
+      permitted_ips: "{{ mgmt_permitted_ips | default(['0.0.0.0/0']) }}"
+      commit: false
+    tags: [ 'paloalto', 'management', 'profile' ]
+
+  - name: Configure Palo Alto Ethernet Interfaces
+    paloaltonetworks.panos.panos_interface:
+      ip_address: "{{ ansible_host }}"
+      username: "{{ ansible_user }}"
+      password: "{{ ansible_password }}"
+      if_name: "{{ item.name }}"
+      mode: "{{ item.mode | default('layer3') }}"
+      ip: "{{ item.ip | default([]) }}"
+      ipv6_enabled: "{{ item.ipv6_enabled | default(false) }}"
+      management_profile: "{{ item.mgmt_profile | default('') }}"
+      mtu: "{{ item.mtu | default(1500) }}"
+      adjust_tcp_mss: "{{ item.adjust_tcp_mss | default(false) }}"
+      netflow_profile: "{{ item.netflow_profile | default('') }}"
+      lldp_enabled: "{{ item.lldp_enabled | default(false) }}"
+      lldp_profile: "{{ item.lldp_profile | default('') }}"
+      zone_name: "{{ item.zone | default('') }}"
+      vr_name: "{{ item.vr | default('default') }}"
+      vsys_dg: "{{ item.vsys | default('vsys1') }}"
+      comment: "{{ item.description | default('Interface ' + item.name) }}"
+      state: present
+      commit: false
+    loop: "{{ interfaces | default([]) }}"
+    tags: [ 'paloalto', 'interface', 'ethernet' ]
+
+  - name: Configure Palo Alto VLAN Interfaces
+    paloaltonetworks.panos.panos_vlan_interface:
+      ip_address: "{{ ansible_host }}"
+      username: "{{ ansible_user }}"
+      password: "{{ ansible_password }}"
+      if_name: "{{ item.name }}"
+      ip: "{{ item.ip | default([]) }}"
+      ipv6_enabled: "{{ item.ipv6_enabled | default(false) }}"
+      management_profile: "{{ item.mgmt_profile | default('') }}"
+      mtu: "{{ item.mtu | default(1500) }}"
+      adjust_tcp_mss: "{{ item.adjust_tcp_mss | default(false) }}"
+      netflow_profile: "{{ item.netflow_profile | default('') }}"
+      zone_name: "{{ item.zone | default('') }}"
+      vr_name: "{{ item.vr | default('default') }}"
+      vsys_dg: "{{ item.vsys | default('vsys1') }}"
+      comment: "{{ item.description | default('VLAN Interface ' + item.name) }}"
+      state: present
+      commit: false
+    loop: "{{ vlan_interfaces | default([]) }}"
+    tags: [ 'paloalto', 'interface', 'vlan' ]
+
+  - name: Configure Palo Alto Security Zones
+    paloaltonetworks.panos.panos_zone:
+      ip_address: "{{ ansible_host }}"
+      username: "{{ ansible_user }}"
+      password: "{{ ansible_password }}"
+      zone: "{{ item.name }}"
+      mode: "{{ item.mode | default('layer3') }}"
+      interface: "{{ item.interfaces | default([]) }}"
+      zone_profile: "{{ item.zone_profile | default('') }}"
+      log_setting: "{{ item.log_setting | default('') }}"
+      enable_userid: "{{ item.enable_userid | default(true) }}"
+      vsys_dg: "{{ item.vsys | default('vsys1') }}"
+      state: present
+      commit: false
+    loop: "{{ security_zones | default([]) }}"
+    tags: [ 'paloalto', 'zone', 'security' ]
+
+  - name: Configure Palo Alto Static Routes
+    paloaltonetworks.panos.panos_static_route:
+      ip_address: "{{ ansible_host }}"
+      username: "{{ ansible_user }}"
+      password: "{{ ansible_password }}"
+      name: "{{ item.name | default('Route_' + loop.index|string) }}"
+      destination: "{{ item.destination | default('0.0.0.0/0') }}"
+      nexthop_type: "{{ item.nexthop_type | default('ip-address') }}"
+      nexthop: "{{ item.nexthop }}"
+      interface: "{{ item.interface | default('') }}"
+      metric: "{{ item.metric | default(10) }}"
+      admin_dist: "{{ item.admin_distance | default(10) }}"
+      virtual_router: "{{ item.vr | default('default') }}"
+      state: present
+      commit: false
+    loop: "{{ static_routes | default([]) }}"
+    when: item.nexthop is defined
+    tags: [ 'paloalto', 'routing', 'static' ]
+
+  - name: Configure Palo Alto NTP
+    paloaltonetworks.panos.panos_ntp_server:
+      ip_address: "{{ ansible_host }}"
+      username: "{{ ansible_user }}"
+      password: "{{ ansible_password }}"
+      ntp_server_1: "{{ ntp_servers[0].server | default('') }}"
+      ntp_server_2: "{{ ntp_servers[1].server | default('') }}"
+      commit: false
+    when: ntp_servers is defined and ntp_servers | length > 0
+    tags: [ 'paloalto', 'ntp', 'time' ]
+
+  - name: Configure Palo Alto SNMP Settings
+    paloaltonetworks.panos.panos_snmp_profile:
+      ip_address: "{{ ansible_host }}"
+      username: "{{ ansible_user }}"
+      password: "{{ ansible_password }}"
+      snmp_profile: "{{ snmp_profile_name | default('default') }}"
+      version: "{{ snmp_version | default('v2c') }}"
+      community: "{{ snmp_ro_community }}"
+      location: "{{ snmp_location }}"
+      contact: "{{ snmp_contact }}"
+      commit: false
+    when:
+    - snmp_ro_community is defined
+    - snmp_location is defined
+    - snmp_contact is defined
+    tags: [ 'paloalto', 'snmp', 'monitoring' ]
+
+  - name: Configure Palo Alto Syslog Server
+    paloaltonetworks.panos.panos_syslog_server:
+      ip_address: "{{ ansible_host }}"
+      username: "{{ ansible_user }}"
+      password: "{{ ansible_password }}"
+      syslog_server: "{{ item.server }}"
+      syslog_port: "{{ item.port | default(514) }}"
+      transport: "{{ item.transport | default('UDP') }}"
+      format: "{{ item.format | default('BSD') }}"
+      facility: "{{ item.facility | default('LOG_USER') }}"
+      server_profile: "{{ item.profile | default('default') }}"
+      commit: false
+    loop: "{{ syslog_servers | default([]) }}"
+    tags: [ 'paloalto', 'logging', 'syslog' ]
+
+  - name: Configure Palo Alto Address Objects
+    paloaltonetworks.panos.panos_address_object:
+      ip_address: "{{ ansible_host }}"
+      username: "{{ ansible_user }}"
+      password: "{{ ansible_password }}"
+      name: "{{ item.name }}"
+      value: "{{ item.value }}"
+      address_type: "{{ item.type | default('ip-netmask') }}"
+      description: "{{ item.description | default('Address object created by Ansible') }}"
+      tag: "{{ item.tags | default([]) }}"
+      vsys_dg: "{{ item.vsys | default('vsys1') }}"
+      state: present
+      commit: false
+    loop: "{{ address_objects | default([]) }}"
+    tags: [ 'paloalto', 'address', 'objects' ]
+
+  - name: Configure Palo Alto Address Groups
+    paloaltonetworks.panos.panos_address_group:
+      ip_address: "{{ ansible_host }}"
+      username: "{{ ansible_user }}"
+      password: "{{ ansible_password }}"
+      name: "{{ item.name }}"
+      static_value: "{{ item.members | default([]) }}"
+      dynamic_value: "{{ item.dynamic_filter | default('') }}"
+      description: "{{ item.description | default('Address group created by Ansible') }}"
+      tag: "{{ item.tags | default([]) }}"
+      vsys_dg: "{{ item.vsys | default('vsys1') }}"
+      state: present
+      commit: false
+    loop: "{{ address_groups | default([]) }}"
+    tags: [ 'paloalto', 'address', 'groups' ]
+
+  - name: Configure Palo Alto Service Objects
+    paloaltonetworks.panos.panos_service_object:
+      ip_address: "{{ ansible_host }}"
+      username: "{{ ansible_user }}"
+      password: "{{ ansible_password }}"
+      name: "{{ item.name }}"
+      protocol: "{{ item.protocol | default('tcp') }}"
+      source_port: "{{ item.source_port | default('') }}"
+      destination_port: "{{ item.destination_port }}"
+      description: "{{ item.description | default('Service object created by Ansible') }}"
+      tag: "{{ item.tags | default([]) }}"
+      vsys_dg: "{{ item.vsys | default('vsys1') }}"
+      state: present
+      commit: false
+    loop: "{{ service_objects | default([]) }}"
+    when: item.destination_port is defined
+    tags: [ 'paloalto', 'service', 'objects' ]
+
+  - name: Configure Palo Alto Service Groups
+    paloaltonetworks.panos.panos_service_group:
+      ip_address: "{{ ansible_host }}"
+      username: "{{ ansible_user }}"
+      password: "{{ ansible_password }}"
+      name: "{{ item.name }}"
+      value: "{{ item.members }}"
+      description: "{{ item.description | default('Service group created by Ansible') }}"
+      tag: "{{ item.tags | default([]) }}"
+      vsys_dg: "{{ item.vsys | default('vsys1') }}"
+      state: present
+      commit: false
+    loop: "{{ service_groups | default([]) }}"
+    tags: [ 'paloalto', 'service', 'groups' ]
+
+  - name: Configure Palo Alto Security Policies
+    paloaltonetworks.panos.panos_security_rule:
+      ip_address: "{{ ansible_host }}"
+      username: "{{ ansible_user }}"
+      password: "{{ ansible_password }}"
+      rule_name: "{{ item.name }}"
+      description: "{{ item.description | default('Security policy created by Ansible') }}"
+      source_zone: "{{ item.source_zones | default(['any']) }}"
+      source_ip: "{{ item.source_addresses | default(['any']) }}"
+      source_user: "{{ item.source_users | default(['any']) }}"
+      hip_profiles: "{{ item.hip_profiles | default(['any']) }}"
+      destination_zone: "{{ item.destination_zones | default(['any']) }}"
+      destination_ip: "{{ item.destination_addresses | default(['any']) }}"
+      application: "{{ item.applications | default(['any']) }}"
+      service: "{{ item.services | default(['any']) }}"
+      category: "{{ item.categories | default(['any']) }}"
+      action: "{{ item.action | default('allow') }}"
+      log_setting: "{{ item.log_setting | default('') }}"
+      log_start: "{{ item.log_start | default(false) }}"
+      log_end: "{{ item.log_end | default(true) }}"
+      antivirus: "{{ item.antivirus_profile | default('') }}"
+      spyware: "{{ item.spyware_profile | default('') }}"
+      vulnerability: "{{ item.vulnerability_profile | default('') }}"
+      url_filtering: "{{ item.url_filtering_profile | default('') }}"
+      file_blocking: "{{ item.file_blocking_profile | default('') }}"
+      data_filtering: "{{ item.data_filtering_profile | default('') }}"
+      wildfire_analysis: "{{ item.wildfire_analysis | default('') }}"
+      group_profile: "{{ item.group_profile | default('') }}"
+      tag_name: "{{ item.tags | default([]) }}"
+      disabled: "{{ item.disabled | default(false) }}"
+      vsys_dg: "{{ item.vsys | default('vsys1') }}"
+      state: present
+      commit: false
+    loop: "{{ security_policies | default([]) }}"
+    tags: [ 'paloalto', 'policy', 'security' ]
+
+  - name: Configure Palo Alto NAT Policies
+    paloaltonetworks.panos.panos_nat_rule:
+      ip_address: "{{ ansible_host }}"
+      username: "{{ ansible_user }}"
+      password: "{{ ansible_password }}"
+      rule_name: "{{ item.name }}"
+      description: "{{ item.description | default('NAT policy created by Ansible') }}"
+      source_zone: "{{ item.source_zones | default([]) }}"
+      source_ip: "{{ item.source_addresses | default(['any']) }}"
+      destination_zone: "{{ item.destination_zone | default('') }}"
+      destination_ip: "{{ item.destination_addresses | default(['any']) }}"
+      service: "{{ item.service | default('any') }}"
+      to_interface: "{{ item.to_interface | default('') }}"
+      nat_type: "{{ item.nat_type | default('dynamic-ip') }}"
+      snat_type: "{{ item.snat_type | default('dynamic-ip') }}"
+      snat_address_type: "{{ item.snat_address_type | default('interface-address') }}"
+      snat_interface: "{{ item.snat_interface | default('') }}"
+      snat_interface_address: "{{ item.snat_interface_address | default('') }}"
+      snat_static_address: "{{ item.snat_static_address | default([]) }}"
+      snat_dynamic_address: "{{ item.snat_dynamic_address | default([]) }}"
+      dnat_address: "{{ item.dnat_address | default('') }}"
+      dnat_port: "{{ item.dnat_port | default('') }}"
+      tag: "{{ item.tags | default([]) }}"
+      disabled: "{{ item.disabled | default(false) }}"
+      vsys_dg: "{{ item.vsys | default('vsys1') }}"
+      state: present
+      commit: false
+    loop: "{{ nat_policies | default([]) }}"
+    tags: [ 'paloalto', 'policy', 'nat' ]
+
+  - name: Configure Palo Alto Admin Roles
+    paloaltonetworks.panos.panos_admin_role:
+      ip_address: "{{ ansible_host }}"
+      username: "{{ ansible_user }}"
+      password: "{{ ansible_password }}"
+      name: "{{ item.name }}"
+      xml_api_enabled: "{{ item.xml_api | default(false) }}"
+      rest_api_enabled: "{{ item.rest_api | default(false) }}"
+      role_based_cli_enabled: "{{ item.role_cli | default(false) }}"
+      cli_config_enabled: "{{ item.cli_config | default(false) }}"
+      cli_operational_enabled: "{{ item.cli_operational | default(false) }}"
+      web_ui_enabled: "{{ item.web_ui | default(true) }}"
+      state: present
+      commit: false
+    loop: "{{ admin_roles | default([]) }}"
+    tags: [ 'paloalto', 'admin', 'roles' ]
+
+  # ===========================================
+  # COMMIT CONFIGURATION
+  # ===========================================
+  - name: Commit Palo Alto Configuration
+    paloaltonetworks.panos.panos_commit:
+      ip_address: "{{ ansible_host }}"
+      username: "{{ ansible_user }}"
+      password: "{{ ansible_password }}"
+      sync: true
+      sync_timeout: 120
+    tags: [ 'paloalto', 'commit' ]
+
+  # ===========================================
+  # VERIFICATION
+  # ===========================================
+  - name: Verify Palo Alto Configuration
+    block:
+    - name: Get Palo Alto System Info
+      paloaltonetworks.panos.panos_facts:
+        ip_address: "{{ ansible_host }}"
+        username: "{{ ansible_user }}"
+        password: "{{ ansible_password }}"
+      register: paloalto_facts
+
+    - name: Get Palo Alto Interface Status
+      paloaltonetworks.panos.panos_op:
+        ip_address: "{{ ansible_host }}"
+        username: "{{ ansible_user }}"
+        password: "{{ ansible_password }}"
+        cmd: "show interface all"
+      register: interface_status
+
+    - name: Get Palo Alto Route Table
+      paloaltonetworks.panos.panos_op:
+        ip_address: "{{ ansible_host }}"
+        username: "{{ ansible_user }}"
+        password: "{{ ansible_password }}"
+        cmd: "show routing route"
+      register: route_table
+
+    - name: Display Palo Alto Configuration Status
+      ansible.builtin.debug:
+        msg: |
+          ====================================
+          PALO ALTO BASIC CONFIGURATION REPORT
+          ====================================
+          Device: {{ inventory_hostname }}
+          Platform: PALO ALTO PAN-OS
+
+          {% if paloalto_facts.ansible_facts is defined %}
+          Model: {{ paloalto_facts.ansible_facts.ansible_net_model | default('Unknown') }}
+          Version: {{ paloalto_facts.ansible_facts.ansible_net_version | default('Unknown') }}
+          Serial: {{ paloalto_facts.ansible_facts.ansible_net_serialnum | default('Unknown') }}
+          Hostname: {{ paloalto_facts.ansible_facts.ansible_net_hostname | default('Unknown') }}
+          {% endif %}
+
+          === CONFIGURATION STATUS ===
+          Hostname: {{ inventory_hostname }}
+          Domain: {{ domain_name | default('Not Set') }}
+          Admin Users: {{ admin_users | default([]) | length }}
+          Interfaces: {{ interfaces | default([]) | length }}
+          VLAN Interfaces: {{ vlan_interfaces | default([]) | length }}
+          Security Zones: {{ security_zones | default([]) | length }}
+          Static Routes: {{ static_routes | default([]) | length }}
+          NTP Servers: {{ ntp_servers | default([]) | length }}
+          Syslog Servers: {{ syslog_servers | default([]) | length }}
+          Address Objects: {{ address_objects | default([]) | length }}
+          Address Groups: {{ address_groups | default([]) | length }}
+          Service Objects: {{ service_objects | default([]) | length }}
+          Service Groups: {{ service_groups | default([]) | length }}
+          Security Policies: {{ security_policies | default([]) | length }}
+          NAT Policies: {{ nat_policies | default([]) | length }}
+          Admin Roles: {{ admin_roles | default([]) | length }}
+
+          === SYSTEM STATUS ===
+          {% if interface_status.stdout is defined %}
+          Interface Status:
+          {{ interface_status.stdout }}
+          {% endif %}
+
+          {% if route_table.stdout is defined %}
+          Route Table:
+          {{ route_table.stdout }}
+          {% endif %}
+
+          Deployment Status: {{ 'SUCCESS' if ansible_failed_result is not defined else 'FAILED' }}
+          ====================================
+    tags: [ 'paloalto', 'verify' ]

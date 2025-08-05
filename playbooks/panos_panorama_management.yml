@@ -1,0 +1,676 @@
+---
+# Palo Alto Networks Panorama Management Playbook
+# Comprehensive centralized management, device groups, templates, and policy orchestration
+# Supports: Multi-firewall management, policy distribution, template management, and reporting
+
+- name: Deploy Panorama Centralized Management Configuration
+  hosts: palo_alto_devices
+  gather_facts: false
+  connection: local
+  vars:
+    panos_provider:
+      ip_address: "{{ ansible_host }}"
+      username: "{{ vault_panorama_username }}"
+      password: "{{ vault_panorama_password }}"
+      api_key: "{{ vault_panorama_api_key | default(omit) }}"
+
+  tasks:
+  # Phase 1: Device Group Management
+  - name: "Phase 1: Configure Device Groups and Hierarchies"
+    block:
+    - name: Create device groups
+      paloaltonetworks.panos.panos_device_group:
+        provider: "{{ panos_provider }}"
+        name: "{{ item.name }}"
+        parent: "{{ item.parent | default(omit) }}"
+        description: "{{ item.description }}"
+      loop: "{{ panorama_device_groups }}"
+      tags: [ device_groups ]
+
+    - name: Add managed firewalls to device groups
+      paloaltonetworks.panos.panos_device_group_device:
+        provider: "{{ panos_provider }}"
+        device_group: "{{ item.device_group }}"
+        serial: "{{ item.serial_number }}"
+      loop: "{{ panorama_managed_devices }}"
+      tags: [ device_groups, managed_devices ]
+
+    - name: Configure device group hierarchies
+      paloaltonetworks.panos.panos_config_element:
+        provider: "{{ panos_provider }}"
+        xpath: "/config/devices/entry[@name='localhost.localdomain']/device-group/entry[@name='{{ item.name }}']"
+        element: |
+          <description>{{ item.description }}</description>
+          {% if item.parent is defined %}
+          <parent>{{ item.parent }}</parent>
+          {% endif %}
+          <devices>
+            {% for device in item.devices %}
+            <entry name="{{ device.serial }}">
+              <serial>{{ device.serial }}</serial>
+              <vsys>
+                {% for vsys in device.vsys | default(['vsys1']) %}
+                <entry name="{{ vsys }}"/>
+                {% endfor %}
+              </vsys>
+            </entry>
+            {% endfor %}
+          </devices>
+          <reference-templates>
+            {% for template in item.reference_templates | default([]) %}
+            <member>{{ template }}</member>
+            {% endfor %}
+          </reference-templates>
+        commit: false
+      loop: "{{ panorama_device_groups }}"
+      tags: [ device_groups, hierarchy ]
+
+  # Phase 2: Template Management
+  - name: "Phase 2: Configure Templates and Template Stacks"
+    block:
+    - name: Create configuration templates
+      paloaltonetworks.panos.panos_config_element:
+        provider: "{{ panos_provider }}"
+        xpath: "/config/devices/entry[@name='localhost.localdomain']/template/entry[@name='{{ item.name }}']"
+        element: |
+          <description>{{ item.description }}</description>
+          <settings>
+            <default-vsys>{{ item.settings.default_vsys | default('vsys1') }}</default-vsys>
+          </settings>
+          <config>
+            <devices>
+              <entry name="localhost.localdomain">
+                <deviceconfig>
+                  <system>
+                    <hostname>{{ item.config.hostname_template | default('$serial') }}</hostname>
+                    <domain>{{ item.config.domain | default('example.com') }}</domain>
+                    <dns-setting>
+                      <servers>
+                        {% for dns in item.config.dns_servers | default(['8.8.8.8', '8.8.4.4']) %}
+                        <primary>{{ dns }}</primary>
+                        {% if not loop.first %}
+                        <secondary>{{ dns }}</secondary>
+                        {% endif %}
+                        {% endfor %}
+                      </servers>
+                    </dns-setting>
+                    <ntp-servers>
+                      {% for ntp in item.config.ntp_servers | default(['pool.ntp.org']) %}
+                      <primary-ntp-server>
+                        <ntp-server-address>{{ ntp }}</ntp-server-address>
+                        <authentication-type>
+                          <none/>
+                        </authentication-type>
+                      </primary-ntp-server>
+                      {% endfor %}
+                    </ntp-servers>
+                    <timezone>{{ item.config.timezone | default('US/Eastern') }}</timezone>
+                  </system>
+                  <setting>
+                    <management>
+                      <hostname-type-in-syslog>{{ item.config.hostname_type_syslog | default('FQDN') }}</hostname-type-in-syslog>
+                      <initcfg>
+                        <type>
+                          <dhcp-client>
+                            <send-hostname>{{ item.config.dhcp_send_hostname | default('yes') }}</send-hostname>
+                            <send-client-id>{{ item.config.dhcp_send_client_id | default('yes') }}</send-client-id>
+                            <accept-dhcp-hostname>{{ item.config.dhcp_accept_hostname | default('yes') }}</accept-dhcp-hostname>
+                            <accept-dhcp-domain>{{ item.config.dhcp_accept_domain | default('yes') }}</accept-dhcp-domain>
+                          </dhcp-client>
+                        </type>
+                      </initcfg>
+                    </management>
+                  </setting>
+                </deviceconfig>
+                <network>
+                  <interface>
+                    <ethernet>
+                      {% for interface in item.config.interfaces | default([]) %}
+                      <entry name="{{ interface.name }}">
+                        {% if interface.layer3 is defined %}
+                        <layer3>
+                          <dhcp-client>
+                            <enable>{{ interface.layer3.dhcp_enable | default('no') }}</enable>
+                            {% if interface.layer3.dhcp_enable == 'no' and interface.layer3.ip is defined %}
+                            <create-default-route>no</create-default-route>
+                            {% endif %}
+                          </dhcp-client>
+                          {% if interface.layer3.ip is defined %}
+                          <ip>
+                            <entry name="{{ interface.layer3.ip }}"/>
+                          </ip>
+                          {% endif %}
+                          {% if interface.layer3.management_profile is defined %}
+                          <interface-management-profile>{{ interface.layer3.management_profile }}</interface-management-profile>
+                          {% endif %}
+                        </layer3>
+                        {% endif %}
+                        <comment>{{ interface.comment | default('') }}</comment>
+                      </entry>
+                      {% endfor %}
+                    </ethernet>
+                  </interface>
+                  {% if item.config.zones is defined %}
+                  <zone>
+                    {% for zone in item.config.zones %}
+                    <entry name="{{ zone.name }}">
+                      <network>
+                        <layer3>
+                          {% for interface in zone.interfaces %}
+                          <member>{{ interface }}</member>
+                          {% endfor %}
+                        </layer3>
+                      </network>
+                      {% if zone.protection_profile is defined %}
+                      <zone-protection-profile>{{ zone.protection_profile }}</zone-protection-profile>
+                      {% endif %}
+                      {% if zone.enable_user_identification is defined %}
+                      <enable-user-identification>{{ zone.enable_user_identification }}</enable-user-identification>
+                      {% endif %}
+                    </entry>
+                    {% endfor %}
+                  </zone>
+                  {% endif %}
+                </network>
+              </entry>
+            </devices>
+          </config>
+        commit: false
+      loop: "{{ panorama_templates }}"
+      tags: [ templates ]
+
+    - name: Create template stacks
+      paloaltonetworks.panos.panos_config_element:
+        provider: "{{ panos_provider }}"
+        xpath: "/config/devices/entry[@name='localhost.localdomain']/template-stack/entry[@name='{{ item.name }}']"
+        element: |
+          <description>{{ item.description }}</description>
+          <templates>
+            {% for template in item.templates %}
+            <member>{{ template }}</member>
+            {% endfor %}
+          </templates>
+          <devices>
+            {% for device in item.devices %}
+            <entry name="{{ device.serial }}">
+              <serial>{{ device.serial }}</serial>
+              {% if device.vsys is defined %}
+              <vsys>
+                {% for vsys in device.vsys %}
+                <entry name="{{ vsys }}"/>
+                {% endfor %}
+              </vsys>
+              {% endif %}
+            </entry>
+            {% endfor %}
+          </devices>
+        commit: false
+      loop: "{{ panorama_template_stacks }}"
+      tags: [ template_stacks ]
+
+  # Phase 3: Log Collector Configuration
+  - name: "Phase 3: Configure Log Collectors"
+    block:
+    - name: Configure log collectors
+      paloaltonetworks.panos.panos_config_element:
+        provider: "{{ panos_provider }}"
+        xpath: "/config/devices/entry[@name='localhost.localdomain']/log-collector-group/entry[@name='{{ item.name }}']"
+        element: |
+          <description>{{ item.description }}</description>
+          <log-collector>
+            {% for collector in item.collectors %}
+            <entry name="{{ collector.name }}">
+              <hostname>{{ collector.hostname }}</hostname>
+              <ip-address>{{ collector.ip_address }}</ip-address>
+              <port>{{ collector.port | default(28443) }}</port>
+              <transport>{{ collector.transport | default('SSL') }}</transport>
+            </entry>
+            {% endfor %}
+          </log-collector>
+        commit: false
+      loop: "{{ panorama_log_collectors }}"
+      when: panorama_log_collectors is defined
+      tags: [ log_collectors ]
+
+    - name: Configure log forwarding profiles for centralized logging
+      paloaltonetworks.panos.panos_log_forwarding_profile:
+        provider: "{{ panos_provider }}"
+        name: "{{ item.name }}"
+        description: "{{ item.description }}"
+        enhanced_logging: "{{ item.enhanced_logging | default(true) }}"
+        match_list:
+        - name: "{{ match.name }}"
+          log_type: "{{ match.log_type }}"
+          filter: "{{ match.filter | default('All Logs') }}"
+          send_to_panorama: "{{ match.send_to_panorama | default(true) }}"
+          snmp_profiles: "{{ match.snmp_profiles | default(omit) }}"
+          email_profiles: "{{ match.email_profiles | default(omit) }}"
+          syslog_profiles: "{{ match.syslog_profiles | default(omit) }}"
+          http_profiles: "{{ match.http_profiles | default(omit) }}"
+        commit: false
+      loop: "{{ panorama_log_forwarding_profiles }}"
+      loop_control:
+        loop_var: item
+      vars:
+        match: "{{ item.match_list[0] }}"
+      when: panorama_log_forwarding_profiles is defined
+      tags: [ log_forwarding ]
+
+  # Phase 4: Distributed Policy Management
+  - name: "Phase 4: Configure Distributed Security Policies"
+    block:
+    - name: Create shared security policies
+      paloaltonetworks.panos.panos_security_rule:
+        provider: "{{ panos_provider }}"
+        device_group: "{{ item.device_group }}"
+        rule_name: "{{ item.rule_name }}"
+        description: "{{ item.description }}"
+        source_zone: "{{ item.source_zone }}"
+        dest_zone: "{{ item.dest_zone }}"
+        source_ip: "{{ item.source_ip }}"
+        dest_ip: "{{ item.dest_ip }}"
+        application: "{{ item.application }}"
+        service: "{{ item.service }}"
+        category: "{{ item.category | default(omit) }}"
+        action: "{{ item.action }}"
+        log_setting: "{{ item.log_setting | default(omit) }}"
+        log_start: "{{ item.log_start | default(omit) }}"
+        log_end: "{{ item.log_end | default(true) }}"
+        group_profile: "{{ item.group_profile | default(omit) }}"
+        antivirus: "{{ item.antivirus | default(omit) }}"
+        vulnerability: "{{ item.vulnerability | default(omit) }}"
+        spyware: "{{ item.spyware | default(omit) }}"
+        url_filtering: "{{ item.url_filtering | default(omit) }}"
+        file_blocking: "{{ item.file_blocking | default(omit) }}"
+        wildfire_analysis: "{{ item.wildfire_analysis | default(omit) }}"
+        data_filtering: "{{ item.data_filtering | default(omit) }}"
+        location: "{{ item.location | default('pre') }}"
+        existing_rule: "{{ item.existing_rule | default(omit) }}"
+        commit: false
+      loop: "{{ panorama_shared_policies }}"
+      tags: [ shared_policies, security_rules ]
+
+    - name: Create device group specific policies
+      paloaltonetworks.panos.panos_security_rule:
+        provider: "{{ panos_provider }}"
+        device_group: "{{ item.device_group }}"
+        rule_name: "{{ item.rule_name }}"
+        description: "{{ item.description }}"
+        source_zone: "{{ item.source_zone }}"
+        dest_zone: "{{ item.dest_zone }}"
+        source_ip: "{{ item.source_ip }}"
+        dest_ip: "{{ item.dest_ip }}"
+        application: "{{ item.application }}"
+        service: "{{ item.service }}"
+        action: "{{ item.action }}"
+        log_setting: "{{ item.log_setting | default(omit) }}"
+        group_profile: "{{ item.group_profile | default(omit) }}"
+        location: "{{ item.location | default('bottom') }}"
+        commit: false
+      loop: "{{ panorama_device_group_policies }}"
+      tags: [ device_group_policies, security_rules ]
+
+  # Phase 5: Application and Threat Content Updates
+  - name: "Phase 5: Configure Content Updates and Distribution"
+    block:
+    - name: Configure content update schedules
+      paloaltonetworks.panos.panos_config_element:
+        provider: "{{ panos_provider }}"
+        xpath: "/config/devices/entry[@name='localhost.localdomain']/deviceconfig/system/update-schedule"
+        element: |
+          <threats>
+            <recurring>
+              <{{ panorama_content_updates.threats.frequency }}>
+                {% if panorama_content_updates.threats.frequency == 'daily' %}
+                <at>{{ panorama_content_updates.threats.time | default('01:02') }}</at>
+                {% elif panorama_content_updates.threats.frequency == 'weekly' %}
+                <day-of-week>{{ panorama_content_updates.threats.day | default('sunday') }}</day-of-week>
+                <at>{{ panorama_content_updates.threats.time | default('01:02') }}</at>
+                {% endif %}
+                <action>download-and-install</action>
+              </{{ panorama_content_updates.threats.frequency }}>
+            </recurring>
+            <sync-to-peer>{{ panorama_content_updates.threats.sync_to_peer | default('yes') }}</sync-to-peer>
+            <threshold>{{ panorama_content_updates.threats.threshold | default(48) }}</threshold>
+          </threats>
+          <anti-virus>
+            <recurring>
+              <{{ panorama_content_updates.antivirus.frequency }}>
+                <at>{{ panorama_content_updates.antivirus.time | default('01:04') }}</at>
+                {% if panorama_content_updates.antivirus.frequency == 'weekly' %}
+                <day-of-week>{{ panorama_content_updates.antivirus.day | default('sunday') }}</day-of-week>
+                {% endif %}
+                <action>download-and-install</action>
+              </{{ panorama_content_updates.antivirus.frequency }}>
+            </recurring>
+            <sync-to-peer>{{ panorama_content_updates.antivirus.sync_to_peer | default('yes') }}</sync-to-peer>
+            <threshold>{{ panorama_content_updates.antivirus.threshold | default(48) }}</threshold>
+          </anti-virus>
+          <global-protect-datafile>
+            <recurring>
+              <{{ panorama_content_updates.globalprotect.frequency }}>
+                <at>{{ panorama_content_updates.globalprotect.time | default('01:06') }}</at>
+                {% if panorama_content_updates.globalprotect.frequency == 'weekly' %}
+                <day-of-week>{{ panorama_content_updates.globalprotect.day | default('sunday') }}</day-of-week>
+                {% endif %}
+                <action>download-and-install</action>
+              </{{ panorama_content_updates.globalprotect.frequency }}>
+            </recurring>
+          </global-protect-datafile>
+        commit: false
+      when: panorama_content_updates is defined
+      tags: [ content_updates ]
+
+    - name: Configure dynamic content distribution
+      paloaltonetworks.panos.panos_config_element:
+        provider: "{{ panos_provider }}"
+        xpath: "/config/devices/entry[@name='localhost.localdomain']/deviceconfig/system/content-distribution"
+        element: |
+          <managed-devices>
+            <sync>{{ panorama_content_distribution.sync_managed_devices | default('yes') }}</sync>
+            <max-concurrent-downloads>{{ panorama_content_distribution.max_concurrent_downloads | default(10) }}</max-concurrent-downloads>
+          </managed-devices>
+          <distributed-update>
+            <enable>{{ panorama_content_distribution.distributed_update_enable | default('yes') }}</enable>
+            <interval>{{ panorama_content_distribution.interval | default(60) }}</interval>
+            <batch-size>{{ panorama_content_distribution.batch_size | default(5) }}</batch-size>
+          </distributed-update>
+        commit: false
+      when: panorama_content_distribution is defined
+      tags: [ content_distribution ]
+
+  # Phase 6: High Availability Configuration
+  - name: "Phase 6: Configure Panorama High Availability"
+    block:
+    - name: Configure Panorama HA settings
+      paloaltonetworks.panos.panos_config_element:
+        provider: "{{ panos_provider }}"
+        xpath: "/config/devices/entry[@name='localhost.localdomain']/deviceconfig/high-availability"
+        element: |
+          <enabled>yes</enabled>
+          <group>
+            <group-id>{{ panorama_ha_config.group_id | default(1) }}</group-id>
+            <mode>
+              <active-passive>
+                <passive-link-state>{{ panorama_ha_config.passive_link_state | default('shutdown') }}</passive-link-state>
+                <monitor-fail-holddown>{{ panorama_ha_config.monitor_fail_holddown | default(1) }}</monitor-fail-holddown>
+              </active-passive>
+            </mode>
+            <peer-ip>{{ panorama_ha_config.peer_ip }}</peer-ip>
+            <backup-peer-ip>{{ panorama_ha_config.backup_peer_ip | default(omit) }}</backup-peer-ip>
+            <configuration-synchronization>
+              <enabled>{{ panorama_ha_config.config_sync_enabled | default('yes') }}</enabled>
+            </configuration-synchronization>
+          </group>
+          <interface>
+            <ha1>
+              <port>{{ panorama_ha_config.ha1_port | default('ethernet1/1') }}</port>
+              <ip-address>{{ panorama_ha_config.ha1_ip }}</ip-address>
+              <netmask>{{ panorama_ha_config.ha1_netmask | default('255.255.255.0') }}</netmask>
+              <gateway>{{ panorama_ha_config.ha1_gateway | default(omit) }}</gateway>
+            </ha1>
+            {% if panorama_ha_config.ha1_backup is defined %}
+            <ha1-backup>
+              <port>{{ panorama_ha_config.ha1_backup.port }}</port>
+              <ip-address>{{ panorama_ha_config.ha1_backup.ip }}</ip-address>
+              <netmask>{{ panorama_ha_config.ha1_backup.netmask | default('255.255.255.0') }}</netmask>
+              <gateway>{{ panorama_ha_config.ha1_backup.gateway | default(omit) }}</gateway>
+            </ha1-backup>
+            {% endif %}
+          </interface>
+        commit: false
+      when: panorama_ha_config is defined
+      tags: [ panorama_ha ]
+
+  # Phase 7: Collector Group and Report Management
+  - name: "Phase 7: Configure Reports and Dashboards"
+    block:
+    - name: Configure custom reports
+      paloaltonetworks.panos.panos_config_element:
+        provider: "{{ panos_provider }}"
+        xpath: "/config/devices/entry[@name='localhost.localdomain']/log-collector-group/entry[@name='{{ item.collector_group }}']/reports/entry[@name='{{ item.name }}']"
+        element: |
+          <type>
+            <{{ item.report_type }}>
+              <aggregate-by>
+                {% for aggregate in item.aggregate_by %}
+                <member>{{ aggregate }}</member>
+                {% endfor %}
+              </aggregate-by>
+              <values>
+                {% for value in item.values %}
+                <member>{{ value }}</member>
+                {% endfor %}
+              </values>
+              <sortby>{{ item.sort_by | default(item.values[0]) }}</sortby>
+              <topcnt>{{ item.top_count | default(100) }}</topcnt>
+              <caption>{{ item.caption }}</caption>
+              <query>{{ item.query }}</query>
+              <start-time>{{ item.start_time | default('last-7-days') }}</start-time>
+              <end-time>{{ item.end_time | default('now') }}</end-time>
+            </{{ item.report_type }}>
+          </type>
+          <period>{{ item.period | default('last-7-days') }}</period>
+          <description>{{ item.description }}</description>
+        commit: false
+      loop: "{{ panorama_custom_reports }}"
+      when: panorama_custom_reports is defined
+      tags: [ reports ]
+
+    - name: Configure report groups
+      paloaltonetworks.panos.panos_config_element:
+        provider: "{{ panos_provider }}"
+        xpath: "/config/devices/entry[@name='localhost.localdomain']/log-collector-group/entry[@name='{{ item.collector_group }}']/report-group/entry[@name='{{ item.name }}']"
+        element: |
+          <description>{{ item.description }}</description>
+          <reports>
+            {% for report in item.reports %}
+            <member>{{ report }}</member>
+            {% endfor %}
+          </reports>
+        commit: false
+      loop: "{{ panorama_report_groups }}"
+      when: panorama_report_groups is defined
+      tags: [ report_groups ]
+
+    - name: Configure email scheduler for reports
+      paloaltonetworks.panos.panos_config_element:
+        provider: "{{ panos_provider }}"
+        xpath: "/config/devices/entry[@name='localhost.localdomain']/log-collector-group/entry[@name='{{ item.collector_group }}']/email-scheduler/entry[@name='{{ item.name }}']"
+        element: |
+          <description>{{ item.description }}</description>
+          <report-group>{{ item.report_group }}</report-group>
+          <email-server-profile>{{ item.email_server_profile }}</email-server-profile>
+          <to>
+            {% for recipient in item.recipients %}
+            <member>{{ recipient }}</member>
+            {% endfor %}
+          </to>
+          <subject>{{ item.subject }}</subject>
+          <format>{{ item.format | default('pdf') }}</format>
+          <recurring>
+            <{{ item.frequency }}>
+              {% if item.frequency == 'daily' %}
+              <at>{{ item.time | default('08:00') }}</at>
+              {% elif item.frequency == 'weekly' %}
+              <day-of-week>{{ item.day | default('monday') }}</day-of-week>
+              <at>{{ item.time | default('08:00') }}</at>
+              {% elif item.frequency == 'monthly' %}
+              <day-of-month>{{ item.day_of_month | default(1) }}</day-of-month>
+              <at>{{ item.time | default('08:00') }}</at>
+              {% endif %}
+            </{{ item.frequency }}>
+          </recurring>
+        commit: false
+      loop: "{{ panorama_email_schedules }}"
+      when: panorama_email_schedules is defined
+      tags: [ email_reports ]
+
+  # Phase 8: API and Automation Configuration
+  - name: "Phase 8: Configure API Keys and Automation"
+    block:
+    - name: Configure API key profiles
+      paloaltonetworks.panos.panos_config_element:
+        provider: "{{ panos_provider }}"
+        xpath: "/config/mgt-config/users/entry[@name='{{ item.username }}']"
+        element: |
+          <permissions>
+            <role-based>
+              <{{ item.role }}/>
+            </role-based>
+          </permissions>
+          <client-certificate-only>{{ item.client_certificate_only | default('no') }}</client-certificate-only>
+          <password-profile>
+            <password-change-on-first-login>{{ item.password_change_on_first_login | default('yes') }}</password-change-on-first-login>
+            <password-history-count>{{ item.password_history_count | default(24) }}</password-history-count>
+            <password-change-period-days>{{ item.password_change_period_days | default(90) }}</password-change-period-days>
+            <password-change-period-block-user>{{ item.password_change_period_block_user | default('yes') }}</password-change-period-block-user>
+          </password-profile>
+        commit: false
+      loop: "{{ panorama_api_users }}"
+      when: panorama_api_users is defined
+      tags: [ api_management ]
+
+    - name: Configure external services integration
+      paloaltonetworks.panos.panos_config_element:
+        provider: "{{ panos_provider }}"
+        xpath: "/config/devices/entry[@name='localhost.localdomain']/deviceconfig/system/external-services"
+        element: |
+          <palo-alto-networks-services>
+            <application-insights>
+              <enabled>{{ panorama_external_services.application_insights.enabled | default('yes') }}</enabled>
+              <threat-data-feed>{{ panorama_external_services.application_insights.threat_data_feed | default('yes') }}</threat-data-feed>
+              <url-data-feed>{{ panorama_external_services.application_insights.url_data_feed | default('yes') }}</url-data-feed>
+              <dns-data-feed>{{ panorama_external_services.application_insights.dns_data_feed | default('yes') }}</dns-data-feed>
+            </application-insights>
+            <device-telemetry>
+              <enabled>{{ panorama_external_services.device_telemetry.enabled | default('yes') }}</enabled>
+              <threat-prevention-telemetry>{{ panorama_external_services.device_telemetry.threat_prevention | default('yes') }}</threat-prevention-telemetry>
+              <url-filtering-telemetry>{{ panorama_external_services.device_telemetry.url_filtering | default('yes') }}</url-filtering-telemetry>
+              <dns-telemetry>{{ panorama_external_services.device_telemetry.dns_telemetry | default('yes') }}</dns-telemetry>
+              <file-identification-telemetry>{{ panorama_external_services.device_telemetry.file_identification | default('yes') }}</file-identification-telemetry>
+            </device-telemetry>
+          </palo-alto-networks-services>
+        commit: false
+      when: panorama_external_services is defined
+      tags: [ external_services ]
+
+  post_tasks:
+  # Phase 9: Configuration Validation and Deployment
+  - name: "Phase 9: Panorama Configuration Validation and Deployment"
+    block:
+    - name: Validate device group configuration
+      paloaltonetworks.panos.panos_op:
+        provider: "{{ panos_provider }}"
+        cmd: "show devicegroups"
+      register: device_groups_status
+      tags: [ validation ]
+
+    - name: Validate template configuration
+      paloaltonetworks.panos.panos_op:
+        provider: "{{ panos_provider }}"
+        cmd: "show templates"
+      register: templates_status
+      tags: [ validation ]
+
+    - name: Check managed device connectivity
+      paloaltonetworks.panos.panos_op:
+        provider: "{{ panos_provider }}"
+        cmd: "show devices connected"
+      register: managed_devices_status
+      tags: [ validation ]
+
+    - name: Validate High Availability status
+      paloaltonetworks.panos.panos_op:
+        provider: "{{ panos_provider }}"
+        cmd: "show high-availability state"
+      register: panorama_ha_status
+      ignore_errors: true
+      when: panorama_ha_config is defined
+      tags: [ validation, ha ]
+
+    - name: Check content version status
+      paloaltonetworks.panos.panos_op:
+        provider: "{{ panos_provider }}"
+        cmd: "show system info"
+      register: content_version_status
+      tags: [ validation ]
+
+    - name: Commit Panorama configuration
+      paloaltonetworks.panos.panos_commit:
+        provider: "{{ panos_provider }}"
+        sync: true
+        commit_all: true
+      tags: [ commit ]
+
+    - name: Push configuration to managed devices
+      paloaltonetworks.panos.panos_commit_push:
+        provider: "{{ panos_provider }}"
+        style: "device group"
+        name: "{{ item }}"
+        sync: true
+        force: false
+        include_template: true
+        merge_with_candidate: false
+      loop: "{{ panorama_device_groups | map(attribute='name') | list }}"
+      when: panorama_push_config | default(true)
+      tags: [ commit, push ]
+
+    - name: Generate Panorama Management Report
+      copy:
+        content: |
+          Palo Alto Networks Panorama Management Report
+          ============================================
+          Panorama Device: {{ inventory_hostname }}
+          Deployment Time: {{ ansible_date_time.iso8601 }}
+
+          === DEVICE GROUPS STATUS ===
+          {{ device_groups_status.stdout | default('Device groups information not available') }}
+
+          === TEMPLATES STATUS ===
+          {{ templates_status.stdout | default('Templates information not available') }}
+
+          === MANAGED DEVICES STATUS ===
+          {{ managed_devices_status.stdout | default('Managed devices information not available') }}
+
+          {% if panorama_ha_status is defined and panorama_ha_status.stdout is defined %}
+          === PANORAMA HIGH AVAILABILITY STATUS ===
+          {{ panorama_ha_status.stdout }}
+          {% endif %}
+
+          === CONTENT VERSION STATUS ===
+          {{ content_version_status.stdout | default('Content version information not available') }}
+
+          === CONFIGURATION SUMMARY ===
+          Device Groups: {{ (panorama_device_groups | default([])) | length }}
+          Templates: {{ (panorama_templates | default([])) | length }}
+          Template Stacks: {{ (panorama_template_stacks | default([])) | length }}
+          Managed Devices: {{ (panorama_managed_devices | default([])) | length }}
+          Log Collectors: {{ (panorama_log_collectors | default([])) | length }}
+          Shared Policies: {{ (panorama_shared_policies | default([])) | length }}
+          Device Group Policies: {{ (panorama_device_group_policies | default([])) | length }}
+          Custom Reports: {{ (panorama_custom_reports | default([])) | length }}
+          Report Groups: {{ (panorama_report_groups | default([])) | length }}
+          Email Schedules: {{ (panorama_email_schedules | default([])) | length }}
+          API Users: {{ (panorama_api_users | default([])) | length }}
+
+          Features Configured:
+          - Device Groups: {{ 'Yes' if panorama_device_groups is defined else 'No' }}
+          - Templates: {{ 'Yes' if panorama_templates is defined else 'No' }}
+          - Template Stacks: {{ 'Yes' if panorama_template_stacks is defined else 'No' }}
+          - Log Collectors: {{ 'Yes' if panorama_log_collectors is defined else 'No' }}
+          - High Availability: {{ 'Yes' if panorama_ha_config is defined else 'No' }}
+          - Content Updates: {{ 'Yes' if panorama_content_updates is defined else 'No' }}
+          - Custom Reports: {{ 'Yes' if panorama_custom_reports is defined else 'No' }}
+          - API Management: {{ 'Yes' if panorama_api_users is defined else 'No' }}
+          - External Services: {{ 'Yes' if panorama_external_services is defined else 'No' }}
+
+          Status: {{ 'SUCCESS' if ansible_failed_task is not defined else 'FAILED' }}
+        dest: "{{ playbook_dir }}/../reports/panos/{{ inventory_hostname }}_panorama_management_{{ ansible_date_time.epoch }}.txt"
+      delegate_to: localhost
+      tags: [ reporting ]
+
+# Example usage:
+# ansible-playbook panos_panorama_management.yml --limit panorama_devices
+# ansible-playbook panos_panorama_management.yml --tags device_groups,templates
+# ansible-playbook panos_panorama_management.yml --tags shared_policies --check

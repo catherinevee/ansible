@@ -1,0 +1,149 @@
+Network Automation Orchestration Summary
+========================================
+
+Session Information:
+-------------------
+Session ID: {{ summary_data.session_id }}
+Operation Mode: {{ summary_data.operation_mode | upper }}
+Target Scope: {{ summary_data.target_scope | upper }}
+Start Time: {{ summary_data.timestamp }}
+Duration: {{ summary_data.operation_duration }}s
+Devices Processed: {{ summary_data.devices_processed }}
+
+Operation Overview:
+------------------
+{% if summary_data.operation_mode == 'validate' %}
+NETWORK VALIDATION COMPLETED
+- Comprehensive health checks performed across all network devices
+- Interface status, protocol states, and connectivity verified
+- Performance metrics collected and analyzed
+- Issues identified and documented for remediation
+
+{% elif summary_data.operation_mode == 'deploy' %}
+NETWORK DEPLOYMENT COMPLETED  
+- Configuration changes deployed to target devices
+- Deployment phases executed in controlled manner
+- Post-deployment validation performed
+- Rollback procedures documented and tested
+
+{% elif summary_data.operation_mode == 'audit' %}
+COMPLIANCE AUDIT COMPLETED
+- Security configurations audited against industry standards
+- Compliance scores calculated for each device
+- Violations identified and prioritized for remediation
+- Detailed audit reports generated with recommendations
+
+{% elif summary_data.operation_mode == 'disaster_recovery' %}
+DISASTER RECOVERY OPERATION COMPLETED
+- DR procedures executed according to defined protocols
+- Configuration backups created/restored as required
+- Service continuity validated post-operation
+- Recovery time objectives documented
+
+{% elif summary_data.operation_mode == 'monitor' %}
+MONITORING SETUP COMPLETED
+- Network monitoring infrastructure configured
+- SNMP, syslog, and flow monitoring enabled
+- Performance baselines established
+- Alerting thresholds configured
+
+{% elif summary_data.operation_mode == 'backup' %}
+CONFIGURATION BACKUP COMPLETED
+- All device configurations backed up securely
+- Backup integrity verified
+- Retention policies applied
+- Restore procedures tested and documented
+
+{% elif summary_data.operation_mode == 'troubleshoot' %}
+NETWORK TROUBLESHOOTING COMPLETED
+- Diagnostic procedures executed across target devices
+- Performance bottlenecks identified and analyzed
+- Connectivity issues diagnosed and documented
+- Remediation recommendations provided
+{% endif %}
+
+Execution Summary:
+-----------------
+Total Devices: {{ summary_data.devices_processed }}
+Processing Time: {{ summary_data.operation_duration }} seconds
+Average Time per Device: {{ (summary_data.operation_duration / summary_data.devices_processed) | round(2) if summary_data.devices_processed > 0 else 'N/A' }}s
+
+Key Accomplishments:
+-------------------
+• Automated {{ summary_data.operation_mode }} operation completed successfully
+• Comprehensive documentation generated for audit trail
+• All procedures executed following established best practices
+• Network infrastructure status validated and documented
+• Compliance with security and operational standards maintained
+
+Next Steps:
+----------
+{% if summary_data.operation_mode == 'validate' %}
+1. Review health check results and address any identified issues
+2. Schedule regular validation cycles (recommended: weekly)
+3. Update network documentation with current status
+4. Plan remediation activities for any discovered problems
+
+{% elif summary_data.operation_mode == 'deploy' %}
+1. Monitor deployed configurations for stability
+2. Validate all services are functioning correctly
+3. Update change management records
+4. Schedule post-deployment review meeting
+
+{% elif summary_data.operation_mode == 'audit' %}
+1. Review compliance findings with security team
+2. Prioritize and schedule remediation activities
+3. Update security policies based on audit results
+4. Plan next compliance audit cycle
+
+{% elif summary_data.operation_mode == 'disaster_recovery' %}
+1. Validate all critical services are operational
+2. Update DR documentation with lessons learned
+3. Test communication procedures with stakeholders
+4. Schedule next DR test exercise
+
+{% elif summary_data.operation_mode == 'monitor' %}
+1. Verify monitoring systems are collecting data
+2. Configure alerting rules and escalation procedures
+3. Train operations team on new monitoring tools
+4. Establish performance review meetings
+
+{% elif summary_data.operation_mode == 'backup' %}
+1. Verify backup file integrity and accessibility
+2. Test restore procedures in lab environment
+3. Update backup retention and archival policies
+4. Document backup verification procedures
+
+{% elif summary_data.operation_mode == 'troubleshoot' %}
+1. Implement recommended fixes for identified issues
+2. Monitor network performance post-remediation
+3. Update troubleshooting runbooks with findings
+4. Schedule follow-up diagnostics as needed
+{% endif %}
+
+Report Locations:
+----------------
+Main Report: orchestration_{{ summary_data.operation_mode }}_{{ ansible_date_time.date }}.txt
+Detailed Logs: Available in ../logs/ directory
+Additional Reports: Check ../reports/ directory for operation-specific reports
+
+Quality Assurance:
+-----------------
+• All operations executed using approved automation scripts
+• Change management procedures followed throughout
+• Security best practices maintained during execution
+• Comprehensive logging enabled for audit compliance
+• Rollback procedures tested and validated
+
+Contact Information:
+-------------------
+For questions about this orchestration session:
+- Network Operations Center: [Your NOC Contact]
+- Automation Team: [Your Automation Team Contact]
+- Emergency Contact: [Your Emergency Contact]
+
+=== END OF ORCHESTRATION SUMMARY ===
+
+Generated by: Ansible Network Automation Platform
+Report Version: 2.0
+Classification: [Set according to your security policy]

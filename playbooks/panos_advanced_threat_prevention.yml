@@ -1,0 +1,650 @@
+---
+# Palo Alto Networks advanced threat prevention configuration
+# WildFire analysis, threat intelligence feeds, and SSL inspection
+# Requires PAN-OS 9.0+ for full feature support
+
+- name: Deploy Advanced Threat Prevention on Palo Alto Networks
+  hosts: palo_alto_devices
+  gather_facts: false
+  connection: local
+  vars:
+    panos_provider:
+      ip_address: "{{ ansible_host }}"
+      username: "{{ vault_panos_username }}"
+      password: "{{ vault_panos_password }}"
+      api_key: "{{ vault_panos_api_key | default(omit) }}"
+
+  tasks:
+  # WildFire analysis platform configuration
+  - name: "Phase 1: Configure WildFire Analysis Platform"
+    block:
+    - name: Configure WildFire analysis profiles
+      paloaltonetworks.panos.panos_config_element:
+        provider: "{{ panos_provider }}"
+        xpath: "/config/devices/entry[@name='localhost.localdomain']/device-group/entry[@name='{{ device_group | default('shared') }}']/profiles/wildfire-analysis/entry[@name='{{ item.name }}']"
+        element: |
+          <rules>
+            <entry name="{{ rule.name }}">
+              <application>
+                {% for app in rule.applications %}
+                <member>{{ app }}</member>
+                {% endfor %}
+              </application>
+              <file-type>
+                {% for ft in rule.file_types %}
+                <member>{{ ft }}</member>
+                {% endfor %}
+              </file-type>
+              <direction>{{ rule.direction }}</direction>
+              <analysis>{{ rule.analysis_type }}</analysis>
+            </entry>
+          </rules>
+        commit: false
+      loop: "{{ panos_wildfire_config.analysis_profiles }}"
+      loop_control:
+        loop_var: item
+      vars:
+        rule: "{{ item.rules[0] }}"
+      tags: [ wildfire, threat_prevention ]
+
+    - name: Configure WildFire global settings
+      paloaltonetworks.panos.panos_config_element:
+        provider: "{{ panos_provider }}"
+        xpath: "/config/devices/entry[@name='localhost.localdomain']/deviceconfig/system/wildfire"
+        element: |
+          <file-size-limit>{{ panos_wildfire_config.global_settings.file_size_limit | default(10) }}</file-size-limit>
+          <report-grayware-file>{{ panos_wildfire_config.global_settings.report_grayware | default('yes') }}</report-grayware-file>
+          <report-benign-file>{{ panos_wildfire_config.global_settings.report_benign | default('no') }}</report-benign-file>
+          <cloud-inline-analysis>{{ panos_wildfire_config.global_settings.cloud_inline_analysis | default('yes') }}</cloud-inline-analysis>
+        commit: false
+      tags: [ wildfire, global_settings ]
+
+  # Phase 2: DNS Security Configuration
+  - name: "Phase 2: Configure DNS Security"
+    block:
+    - name: Configure DNS security profiles
+      paloaltonetworks.panos.panos_config_element:
+        provider: "{{ panos_provider }}"
+        xpath: "/config/devices/entry[@name='localhost.localdomain']/device-group/entry[@name='{{ device_group | default('shared') }}']/profiles/dns-security/entry[@name='{{ item.name }}']"
+        element: |
+          <description>{{ item.description }}</description>
+          <botnet-domains>
+            <dns-security-categories>
+              {% for category in item.botnet_categories %}
+              <entry name="{{ category.name }}">
+                <log-level>{{ category.log_level }}</log-level>
+                <action>{{ category.action }}</action>
+                <packet-capture>{{ category.packet_capture | default('disable') }}</packet-capture>
+              </entry>
+              {% endfor %}
+            </dns-security-categories>
+            <lists>
+              {% for list_item in item.custom_lists %}
+              <entry name="{{ list_item.name }}">
+                <action>{{ list_item.action }}</action>
+                <log-level>{{ list_item.log_level }}</log-level>
+              </entry>
+              {% endfor %}
+            </lists>
+            <sinkhole>
+              <ipv4-address>{{ item.sinkhole.ipv4_address | default('pan-sinkhole-default-ip') }}</ipv4-address>
+              <ipv6-address>{{ item.sinkhole.ipv6_address | default('::1') }}</ipv6-address>
+            </sinkhole>
+          </botnet-domains>
+        commit: false
+      loop: "{{ panos_dns_security.profiles }}"
+      tags: [ dns_security, threat_prevention ]
+
+  # Phase 3: SSL Decryption Configuration
+  - name: "Phase 3: Configure SSL Decryption"
+    block:
+    - name: Import SSL decryption certificates
+      paloaltonetworks.panos.panos_import:
+        provider: "{{ panos_provider }}"
+        category: certificate
+        filename: "{{ item.cert_file }}"
+        certificate_name: "{{ item.name }}"
+        format: "{{ item.format | default('pem') }}"
+        passphrase: "{{ item.passphrase | default(omit) }}"
+      loop: "{{ panos_ssl_decryption.certificates }}"
+      no_log: true
+      tags: [ ssl_decryption, certificates ]
+
+    - name: Configure SSL decryption policies
+      paloaltonetworks.panos.panos_decryption_rule:
+        provider: "{{ panos_provider }}"
+        rule_name: "{{ item.rule_name }}"
+        source_zones: "{{ item.source_zones }}"
+        dest_zones: "{{ item.dest_zones }}"
+        source_ips: "{{ item.source_ips }}"
+        dest_ips: "{{ item.dest_ips }}"
+        applications: "{{ item.applications }}"
+        services: "{{ item.services }}"
+        categories: "{{ item.url_categories | default(omit) }}"
+        action: "{{ item.action }}"
+        decryption_profile: "{{ item.decryption_profile | default(omit) }}"
+        log_setting: "{{ item.log_setting | default('default') }}"
+        description: "{{ item.description }}"
+        commit: false
+      loop: "{{ panos_ssl_decryption.decryption_policies }}"
+      tags: [ ssl_decryption, policies ]
+
+    - name: Configure SSL decryption profiles
+      paloaltonetworks.panos.panos_config_element:
+        provider: "{{ panos_provider }}"
+        xpath: "/config/devices/entry[@name='localhost.localdomain']/device-group/entry[@name='{{ device_group | default('shared') }}']/profiles/decryption/entry[@name='{{ item.name }}']"
+        element: |
+          <ssl-protocol-settings>
+            <min-version>{{ item.ssl_protocol.min_version | default('tls1-0') }}</min-version>
+            <max-version>{{ item.ssl_protocol.max_version | default('max') }}</max-version>
+            <keyxchg-algo-dhe>{{ item.ssl_protocol.keyxchg_algo_dhe | default('yes') }}</keyxchg-algo-dhe>
+            <keyxchg-algo-rsa>{{ item.ssl_protocol.keyxchg_algo_rsa | default('yes') }}</keyxchg-algo-rsa>
+            <keyxchg-algo-ecdhe>{{ item.ssl_protocol.keyxchg_algo_ecdhe | default('yes') }}</keyxchg-algo-ecdhe>
+            <enc-algo-3des>{{ item.ssl_protocol.enc_algo_3des | default('no') }}</enc-algo-3des>
+            <enc-algo-aes-128-cbc>{{ item.ssl_protocol.enc_algo_aes_128_cbc | default('yes') }}</enc-algo-aes-128-cbc>
+            <enc-algo-aes-256-cbc>{{ item.ssl_protocol.enc_algo_aes_256_cbc | default('yes') }}</enc-algo-aes-256-cbc>
+            <enc-algo-aes-128-gcm>{{ item.ssl_protocol.enc_algo_aes_128_gcm | default('yes') }}</enc-algo-aes-128-gcm>
+            <enc-algo-aes-256-gcm>{{ item.ssl_protocol.enc_algo_aes_256_gcm | default('yes') }}</enc-algo-aes-256-gcm>
+            <auth-algo-sha1>{{ item.ssl_protocol.auth_algo_sha1 | default('yes') }}</auth-algo-sha1>
+            <auth-algo-sha256>{{ item.ssl_protocol.auth_algo_sha256 | default('yes') }}</auth-algo-sha256>
+            <auth-algo-sha384>{{ item.ssl_protocol.auth_algo_sha384 | default('yes') }}</auth-algo-sha384>
+            <auth-algo-md5>{{ item.ssl_protocol.auth_algo_md5 | default('no') }}</auth-algo-md5>
+          </ssl-protocol-settings>
+          <ssl-decrypt-settings>
+            <decrypt-cert-name>{{ item.decrypt_settings.certificate_name }}</decrypt-cert-name>
+            <session-ticket-lifetime>{{ item.decrypt_settings.session_ticket_lifetime | default(300) }}</session-ticket-lifetime>
+            <strip-alpn>{{ item.decrypt_settings.strip_alpn | default('no') }}</strip-alpn>
+            <disabled-predefine-urlcats>
+              {% for category in item.decrypt_settings.disabled_url_categories | default([]) %}
+              <member>{{ category }}</member>
+              {% endfor %}
+            </disabled-predefine-urlcats>
+          </ssl-decrypt-settings>
+        commit: false
+      loop: "{{ panos_ssl_decryption.decryption_profiles }}"
+      tags: [ ssl_decryption, profiles ]
+
+  # Phase 4: User-ID Configuration
+  - name: "Phase 4: Configure User-ID"
+    block:
+    - name: Configure User-ID agents
+      paloaltonetworks.panos.panos_config_element:
+        provider: "{{ panos_provider }}"
+        xpath: "/config/devices/entry[@name='localhost.localdomain']/deviceconfig/system/user-id-service"
+        element: |
+          <enable-user-identification>yes</enable-user-identification>
+          <user-id-agents>
+            {% for agent in panos_userid_config.agents %}
+            <entry name="{{ agent.name }}">
+              <host>{{ agent.host }}</host>
+              <port>{{ agent.port | default(5007) }}</port>
+              <ntlm-auth>{{ agent.ntlm_auth | default('no') }}</ntlm-auth>
+              <ldap-proxy>{{ agent.ldap_proxy | default('no') }}</ldap-proxy>
+              <collectorname>{{ agent.collector_name | default(agent.name) }}</collectorname>
+              <secret>{{ agent.secret | default('') }}</secret>
+            </entry>
+            {% endfor %}
+          </user-id-agents>
+        commit: false
+      when: panos_userid_config.agents is defined
+      tags: [ userid, authentication ]
+
+    - name: Configure Group Mapping settings
+      paloaltonetworks.panos.panos_config_element:
+        provider: "{{ panos_provider }}"
+        xpath: "/config/devices/entry[@name='localhost.localdomain']/deviceconfig/system/group-mapping"
+        element: |
+          <group-include-list>
+            {% for group in panos_userid_config.group_mapping.include_groups %}
+            <member>{{ group }}</member>
+            {% endfor %}
+          </group-include-list>
+          <group-exclude-list>
+            {% for group in panos_userid_config.group_mapping.exclude_groups %}
+            <member>{{ group }}</member>
+            {% endfor %}
+          </group-exclude-list>
+          <update-interval>{{ panos_userid_config.group_mapping.update_interval | default(3600) }}</update-interval>
+        commit: false
+      when: panos_userid_config.group_mapping is defined
+      tags: [ userid, group_mapping ]
+
+    - name: Configure authentication profiles
+      paloaltonetworks.panos.panos_authentication_profile:
+        provider: "{{ panos_provider }}"
+        name: "{{ item.name }}"
+        lockout_failed_attempts: "{{ item.lockout.failed_attempts | default(3) }}"
+        lockout_time: "{{ item.lockout.lockout_time | default(30) }}"
+        username_modifier: "{{ item.username_modifier | default('%USERINPUT%') }}"
+        type:
+        - ldap:
+            servers:
+            - server: "{{ ldap.server }}"
+              port: "{{ ldap.port | default(389) }}"
+            ldap_type: "{{ ldap.type | default('active-directory') }}"
+            base: "{{ ldap.base_dn }}"
+            bind_dn: "{{ ldap.bind_dn }}"
+            password: "{{ ldap.bind_password }}"
+            ssl: "{{ ldap.ssl | default(false) }}"
+      loop: "{{ panos_authentication_profiles }}"
+      loop_control:
+        loop_var: item
+      vars:
+        ldap: "{{ item.ldap_settings }}"
+      when: panos_authentication_profiles is defined
+      tags: [ userid, authentication ]
+
+  # Phase 5: Advanced Anti-Malware Configuration
+  - name: "Phase 5: Configure Advanced Anti-Malware"
+    block:
+    - name: Configure advanced anti-malware profiles
+      paloaltonetworks.panos.panos_config_element:
+        provider: "{{ panos_provider }}"
+        xpath: "/config/devices/entry[@name='localhost.localdomain']/device-group/entry[@name='{{ device_group | default('shared') }}']/profiles/virus/entry[@name='{{ item.name }}']"
+        element: |
+          <description>{{ item.description }}</description>
+          <decoder>
+            {% for decoder in item.decoders %}
+            <entry name="{{ decoder.name }}">
+              <action>{{ decoder.action }}</action>
+              <wildfire-action>{{ decoder.wildfire_action }}</wildfire-action>
+              <machine-learning-action>{{ decoder.machine_learning_action | default('default') }}</machine-learning-action>
+              <machine-learning-threshold>{{ decoder.ml_threshold | default(50) }}</machine-learning-threshold>
+            </entry>
+            {% endfor %}
+          </decoder>
+          <application-exception>
+            {% for exception in item.application_exceptions | default([]) %}
+            <entry name="{{ exception.application }}">
+              <action>{{ exception.action }}</action>
+            </entry>
+            {% endfor %}
+          </application-exception>
+          <machine-learning-model>
+            <windows-pe>
+              <enable>{{ item.machine_learning.windows_pe.enable | default('yes') }}</enable>
+              <action>{{ item.machine_learning.windows_pe.action | default('alert') }}</action>
+            </windows-pe>
+            <powershell>
+              <enable>{{ item.machine_learning.powershell.enable | default('yes') }}</enable>
+              <action>{{ item.machine_learning.powershell.action | default('alert') }}</action>
+            </powershell>
+          </machine-learning-model>
+        commit: false
+      loop: "{{ panos_advanced_malware.profiles }}"
+      tags: [ anti_malware, machine_learning ]
+
+  # Phase 6: Behavioral Analysis Configuration
+  - name: "Phase 6: Configure Behavioral Analysis"
+    block:
+    - name: Configure behavioral analysis profiles
+      paloaltonetworks.panos.panos_config_element:
+        provider: "{{ panos_provider }}"
+        xpath: "/config/devices/entry[@name='localhost.localdomain']/device-group/entry[@name='{{ device_group | default('shared') }}']/profiles/spyware/entry[@name='{{ item.name }}']"
+        element: |
+          <description>{{ item.description }}</description>
+          <rules>
+            {% for rule in item.rules %}
+            <entry name="{{ rule.name }}">
+              <severity>
+                {% for severity in rule.severities %}
+                <member>{{ severity }}</member>
+                {% endfor %}
+              </severity>
+              <category>
+                {% for category in rule.categories %}
+                <member>{{ category }}</member>
+                {% endfor %}
+              </category>
+              <action>
+                <{{ rule.action }}>
+                  {% if rule.action == 'block-ip' %}
+                  <track-by>{{ rule.track_by | default('source-and-destination') }}</track-by>
+                  <duration>{{ rule.duration | default(3600) }}</duration>
+                  {% endif %}
+                </{{ rule.action }}>
+              </action>
+              <packet-capture>{{ rule.packet_capture | default('disable') }}</packet-capture>
+              <sinkhole>
+                <ipv4-address>{{ rule.sinkhole.ipv4 | default('pan-sinkhole-default-ip') }}</ipv4-address>
+                <ipv6-address>{{ rule.sinkhole.ipv6 | default('::1') }}</ipv6-address>
+              </sinkhole>
+            </entry>
+            {% endfor %}
+          </rules>
+          <botnet-domains>
+            <lists>
+              {% for list_item in item.botnet_lists | default([]) %}
+              <entry name="{{ list_item.name }}">
+                <action>
+                  <{{ list_item.action }}>
+                    {% if list_item.action == 'block-ip' %}
+                    <track-by>{{ list_item.track_by | default('source') }}</track-by>
+                    <duration>{{ list_item.duration | default(3600) }}</duration>
+                    {% endif %}
+                  </{{ list_item.action }}>
+                </action>
+                <packet-capture>{{ list_item.packet_capture | default('disable') }}</packet-capture>
+              </entry>
+              {% endfor %}
+            </lists>
+            <dns-security-categories>
+              {% for dns_category in item.dns_categories | default([]) %}
+              <entry name="{{ dns_category.name }}">
+                <log-level>{{ dns_category.log_level }}</log-level>
+                <action>{{ dns_category.action }}</action>
+              </entry>
+              {% endfor %}
+            </dns-security-categories>
+            <sinkhole>
+              <ipv4-address>{{ item.default_sinkhole.ipv4 | default('pan-sinkhole-default-ip') }}</ipv4-address>
+              <ipv6-address>{{ item.default_sinkhole.ipv6 | default('::1') }}</ipv6-address>
+            </sinkhole>
+          </botnet-domains>
+        commit: false
+      loop: "{{ panos_behavioral_analysis.profiles }}"
+      tags: [ behavioral_analysis, threat_prevention ]
+
+  # Phase 7: IoT Security Configuration
+  - name: "Phase 7: Configure IoT Security"
+    block:
+    - name: Configure IoT security profiles
+      paloaltonetworks.panos.panos_config_element:
+        provider: "{{ panos_provider }}"
+        xpath: "/config/devices/entry[@name='localhost.localdomain']/device-group/entry[@name='{{ device_group | default('shared') }}']/profiles/iot-security/entry[@name='{{ item.name }}']"
+        element: |
+          <description>{{ item.description }}</description>
+          <device-risk-behaviors>
+            {% for behavior in item.device_risk_behaviors %}
+            <entry name="{{ behavior.name }}">
+              <severity>{{ behavior.severity }}</severity>
+              <action>{{ behavior.action }}</action>
+              <log-level>{{ behavior.log_level | default('medium') }}</log-level>
+            </entry>
+            {% endfor %}
+          </device-risk-behaviors>
+          <device-policy-violations>
+            {% for violation in item.policy_violations %}
+            <entry name="{{ violation.name }}">
+              <severity>{{ violation.severity }}</severity>
+              <action>{{ violation.action }}</action>
+              <log-level>{{ violation.log_level | default('medium') }}</log-level>
+            </entry>
+            {% endfor %}
+          </device-policy-violations>
+          <suspicious-domains>
+            <action>{{ item.suspicious_domains.action | default('alert') }}</action>
+            <log-level>{{ item.suspicious_domains.log_level | default('medium') }}</log-level>
+            <packet-capture>{{ item.suspicious_domains.packet_capture | default('disable') }}</packet-capture>
+          </suspicious-domains>
+        commit: false
+      loop: "{{ panos_iot_security.profiles }}"
+      when: panos_iot_security.profiles is defined
+      tags: [ iot_security, threat_prevention ]
+
+  # Phase 8: Threat Intelligence Configuration
+  - name: "Phase 8: Configure External Threat Intelligence"
+    block:
+    - name: Configure external dynamic lists
+      paloaltonetworks.panos.panos_config_element:
+        provider: "{{ panos_provider }}"
+        xpath: "/config/devices/entry[@name='localhost.localdomain']/device-group/entry[@name='{{ device_group | default('shared') }}']/external-list/entry[@name='{{ item.name }}']"
+        element: |
+          <type>
+            <{{ item.type }}>
+              <url>{{ item.url }}</url>
+              <certificate-profile>{{ item.certificate_profile | default('None') }}</certificate-profile>
+              <auth>
+                <username>{{ item.auth.username | default('') }}</username>
+                <password>{{ item.auth.password | default('') }}</password>
+              </auth>
+              <recurring>
+                <{{ item.recurring.frequency }}>
+                  {% if item.recurring.frequency == 'hourly' %}
+                  <at>{{ item.recurring.at | default(0) }}</at>
+                  {% elif item.recurring.frequency == 'daily' %}
+                  <at>{{ item.recurring.at | default('01:20') }}</at>
+                  {% elif item.recurring.frequency == 'weekly' %}
+                  <day-of-week>{{ item.recurring.day_of_week | default('sunday') }}</day-of-week>
+                  <at>{{ item.recurring.at | default('01:25') }}</at>
+                  {% endif %}
+                </{{ item.recurring.frequency }}>
+              </recurring>
+              <exception-list>
+                {% for exception in item.exceptions | default([]) %}
+                <member>{{ exception }}</member>
+                {% endfor %}
+              </exception-list>
+            </{{ item.type }}>
+          </type>
+          <description>{{ item.description }}</description>
+        commit: false
+      loop: "{{ panos_threat_intelligence.external_lists }}"
+      when: panos_threat_intelligence.external_lists is defined
+      tags: [ threat_intelligence, external_lists ]
+
+  # Phase 9: Application and Content-Based Security
+  - name: "Phase 9: Configure Application-Based Security"
+    block:
+    - name: Configure custom application signatures
+      paloaltonetworks.panos.panos_config_element:
+        provider: "{{ panos_provider }}"
+        xpath: "/config/devices/entry[@name='localhost.localdomain']/device-group/entry[@name='{{ device_group | default('shared') }}']/application/entry[@name='{{ item.name }}']"
+        element: |
+          <category>{{ item.category }}</category>
+          <subcategory>{{ item.subcategory }}</subcategory>
+          <technology>{{ item.technology }}</technology>
+          <risk>{{ item.risk_level }}</risk>
+          <description>{{ item.description }}</description>
+          <default>
+            <port>
+              {% for port in item.default_ports %}
+              <member>{{ port }}</member>
+              {% endfor %}
+            </port>
+            <ident-by-ip-protocol>{{ item.ident_by_ip_protocol | default('no') }}</ident-by-ip-protocol>
+          </default>
+          <signature>
+            {% for signature in item.signatures %}
+            <entry name="{{ signature.name }}">
+              <comment>{{ signature.comment }}</comment>
+              <scope>{{ signature.scope | default('transaction') }}</scope>
+              <order-free>{{ signature.order_free | default('no') }}</order-free>
+              <and-condition>
+                {% for condition in signature.and_conditions %}
+                <entry name="{{ condition.name }}">
+                  <or-condition>
+                    {% for or_cond in condition.or_conditions %}
+                    <entry name="{{ or_cond.name }}">
+                      <operator>
+                        <{{ or_cond.operator.type }}>
+                          <context>{{ or_cond.operator.context }}</context>
+                          <pattern>{{ or_cond.operator.pattern }}</pattern>
+                          {% if or_cond.operator.qualifier is defined %}
+                          <qualifier>
+                            {% for qualifier in or_cond.operator.qualifier %}
+                            <entry name="{{ qualifier.name }}">
+                              <value>{{ qualifier.value }}</value>
+                            </entry>
+                            {% endfor %}
+                          </qualifier>
+                          {% endif %}
+                        </{{ or_cond.operator.type }}>
+                      </operator>
+                    </entry>
+                    {% endfor %}
+                  </or-condition>
+                </entry>
+                {% endfor %}
+              </and-condition>
+            </entry>
+            {% endfor %}
+          </signature>
+        commit: false
+      loop: "{{ panos_custom_applications }}"
+      when: panos_custom_applications is defined
+      tags: [ custom_applications, app_id ]
+
+  # Phase 10: Advanced Logging and Correlation
+  - name: "Phase 10: Configure Advanced Logging"
+    block:
+    - name: Configure correlation objects
+      paloaltonetworks.panos.panos_config_element:
+        provider: "{{ panos_provider }}"
+        xpath: "/config/devices/entry[@name='localhost.localdomain']/device-group/entry[@name='{{ device_group | default('shared') }}']/log-settings/correlation-objects/entry[@name='{{ item.name }}']"
+        element: |
+          <description>{{ item.description }}</description>
+          <time-attribute>{{ item.time_attribute | default('time_generated') }}</time-attribute>
+          <interval>{{ item.interval | default(60) }}</interval>
+          <threshold>{{ item.threshold }}</threshold>
+          <group-by>
+            {% for group_field in item.group_by %}
+            <member>{{ group_field }}</member>
+            {% endfor %}
+          </group-by>
+          <filter>{{ item.filter }}</filter>
+        commit: false
+      loop: "{{ panos_log_correlation.correlation_objects }}"
+      when: panos_log_correlation.correlation_objects is defined
+      tags: [ logging, correlation ]
+
+    - name: Configure correlation rules
+      paloaltonetworks.panos.panos_config_element:
+        provider: "{{ panos_provider }}"
+        xpath: "/config/devices/entry[@name='localhost.localdomain']/device-group/entry[@name='{{ device_group | default('shared') }}']/log-settings/correlation-rules/entry[@name='{{ item.name }}']"
+        element: |
+          <description>{{ item.description }}</description>
+          <log-type>{{ item.log_type }}</log-type>
+          <time-period>{{ item.time_period | default(300) }}</time-period>
+          <threshold>{{ item.threshold }}</threshold>
+          <aggregation>
+            <correlation-object>{{ item.correlation_object }}</correlation-object>
+          </aggregation>
+          <tag-name>{{ item.tag_name }}</tag-name>
+          <action>
+            {% for action in item.actions %}
+            <entry name="{{ action.name }}">
+              <type>{{ action.type }}</type>
+              {% if action.type == 'tagging' %}
+              <timeout>{{ action.timeout | default(3600) }}</timeout>
+              <target>{{ action.target | default('source-address') }}</target>
+              {% elif action.type == 'email' %}
+              <email-server>{{ action.email_server }}</email-server>
+              <to>{{ action.to }}</to>
+              <subject>{{ action.subject }}</subject>
+              {% endif %}
+            </entry>
+            {% endfor %}
+          </action>
+        commit: false
+      loop: "{{ panos_log_correlation.correlation_rules }}"
+      when: panos_log_correlation.correlation_rules is defined
+      tags: [ logging, correlation ]
+
+  post_tasks:
+  # Phase 11: Configuration Validation and Reporting
+  - name: "Phase 11: Advanced Threat Prevention Validation"
+    block:
+    - name: Commit all threat prevention configurations
+      paloaltonetworks.panos.panos_commit:
+        provider: "{{ panos_provider }}"
+        sync: true
+        commit_all: true
+      tags: [ commit ]
+
+    - name: Verify WildFire configuration
+      paloaltonetworks.panos.panos_op:
+        provider: "{{ panos_provider }}"
+        cmd: "request wildfire registration-status-get"
+      register: wildfire_status
+      ignore_errors: true
+      tags: [ validation, wildfire ]
+
+    - name: Verify SSL decryption status
+      paloaltonetworks.panos.panos_op:
+        provider: "{{ panos_provider }}"
+        cmd: "show system info"
+      register: system_info
+      tags: [ validation ]
+
+    - name: Verify User-ID agents
+      paloaltonetworks.panos.panos_op:
+        provider: "{{ panos_provider }}"
+        cmd: "show user-id-service statistics"
+      register: userid_stats
+      ignore_errors: true
+      tags: [ validation, userid ]
+
+    - name: Test threat prevention functionality
+      paloaltonetworks.panos.panos_op:
+        provider: "{{ panos_provider }}"
+        cmd: "test security-policy-match source {{ test_source | default('192.168.1.100') }} destination {{ test_destination | default('8.8.8.8') }} protocol 6 destination-port 443"
+      register: policy_test
+      ignore_errors: true
+      tags: [ validation, testing ]
+
+    - name: Generate Advanced Threat Prevention Report
+      copy:
+        content: |
+          Palo Alto Networks Advanced Threat Prevention Report
+          ===================================================
+          Device: {{ inventory_hostname }}
+          Deployment Time: {{ ansible_date_time.iso8601 }}
+
+          === WILDFIRE STATUS ===
+          {% if wildfire_status.stdout is defined %}
+          {{ wildfire_status.stdout }}
+          {% else %}
+          WildFire status check failed or not available
+          {% endif %}
+
+          === SYSTEM INFORMATION ===
+          {{ system_info.stdout | default('System information not available') }}
+
+          === USER-ID STATISTICS ===
+          {% if userid_stats.stdout is defined %}
+          {{ userid_stats.stdout }}
+          {% else %}
+          User-ID statistics not available
+          {% endif %}
+
+          === POLICY TEST RESULTS ===
+          {% if policy_test.stdout is defined %}
+          {{ policy_test.stdout }}
+          {% else %}
+          Policy test not executed or failed
+          {% endif %}
+
+          === CONFIGURATION SUMMARY ===
+          WildFire Profiles: {{ (panos_wildfire_config.analysis_profiles | default([])) | length }}
+          DNS Security Profiles: {{ (panos_dns_security.profiles | default([])) | length }}
+          SSL Decryption Policies: {{ (panos_ssl_decryption.decryption_policies | default([])) | length }}
+          SSL Decryption Profiles: {{ (panos_ssl_decryption.decryption_profiles | default([])) | length }}
+          Anti-Malware Profiles: {{ (panos_advanced_malware.profiles | default([])) | length }}
+          Behavioral Analysis Profiles: {{ (panos_behavioral_analysis.profiles | default([])) | length }}
+          IoT Security Profiles: {{ (panos_iot_security.profiles | default([])) | length if panos_iot_security is defined else 0 }}
+          External Threat Lists: {{ (panos_threat_intelligence.external_lists | default([])) | length if panos_threat_intelligence is defined else 0 }}
+          Custom Applications: {{ (panos_custom_applications | default([])) | length }}
+          Correlation Objects: {{ (panos_log_correlation.correlation_objects | default([])) | length if panos_log_correlation is defined else 0 }}
+          Correlation Rules: {{ (panos_log_correlation.correlation_rules | default([])) | length if panos_log_correlation is defined else 0 }}
+
+          Features Configured:
+          - WildFire Analysis: {{ 'Yes' if panos_wildfire_config is defined else 'No' }}
+          - DNS Security: {{ 'Yes' if panos_dns_security is defined else 'No' }}
+          - SSL Decryption: {{ 'Yes' if panos_ssl_decryption is defined else 'No' }}
+          - User-ID: {{ 'Yes' if panos_userid_config is defined else 'No' }}
+          - Advanced Anti-Malware: {{ 'Yes' if panos_advanced_malware is defined else 'No' }}
+          - Behavioral Analysis: {{ 'Yes' if panos_behavioral_analysis is defined else 'No' }}
+          - IoT Security: {{ 'Yes' if panos_iot_security is defined else 'No' }}
+          - Threat Intelligence: {{ 'Yes' if panos_threat_intelligence is defined else 'No' }}
+          - Log Correlation: {{ 'Yes' if panos_log_correlation is defined else 'No' }}
+
+          Status: {{ 'SUCCESS' if ansible_failed_task is not defined else 'FAILED' }}
+        dest: "{{ playbook_dir }}/../reports/panos/{{ inventory_hostname }}_advanced_threat_prevention_{{ ansible_date_time.epoch }}.txt"
+      delegate_to: localhost
+      tags: [ reporting ]
+
+# Example usage:
+# ansible-playbook panos_advanced_threat_prevention.yml --limit palo_alto_devices
+# ansible-playbook panos_advanced_threat_prevention.yml --tags wildfire,dns_security
+# ansible-playbook panos_advanced_threat_prevention.yml --tags ssl_decryption --check
